@@ -1,12 +1,15 @@
 import os, re, requests
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
 from qbittorrentapi import Client
 from transmission_rpc import Client as transmissionrpc
 from deluge_web_client import DelugeWebClient as delugewebclient
 from dotenv import load_dotenv
 from urllib.parse import urlparse
+import secrets
+
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(16))
 
 #Load environment variables
 load_dotenv()
@@ -34,6 +37,12 @@ DL_PASSWORD = os.getenv("DL_PASSWORD")
 DL_CATEGORY = os.getenv("DL_CATEGORY", "Audiobookbay-Audiobooks")
 SAVE_PATH_BASE = os.getenv("SAVE_PATH_BASE")
 
+# put.io OAuth credentials
+PUTIO_CLIENT_ID = os.getenv("PUTIO_CLIENT_ID")
+PUTIO_CLIENT_SECRET = os.getenv("PUTIO_CLIENT_SECRET")
+PUTIO_REDIRECT_URI = os.getenv("PUTIO_REDIRECT_URI")
+PUTIO_SAVE_PARENT_ID = os.getenv("PUTIO_SAVE_PARENT_ID")  # Default folder ID to save to
+
 # Custom Nav Link Variables
 NAV_LINK_NAME = os.getenv("NAV_LINK_NAME")
 NAV_LINK_URL = os.getenv("NAV_LINK_URL")
@@ -49,6 +58,11 @@ print(f"DL_CATEGORY: {DL_CATEGORY}")
 print(f"SAVE_PATH_BASE: {SAVE_PATH_BASE}")
 print(f"NAV_LINK_NAME: {NAV_LINK_NAME}")
 print(f"NAV_LINK_URL: {NAV_LINK_URL}")
+if DOWNLOAD_CLIENT == 'putio':
+    print(f"PUTIO_CLIENT_ID: {'Set' if PUTIO_CLIENT_ID else 'Not Set'}")
+    print(f"PUTIO_CLIENT_SECRET: {'Set' if PUTIO_CLIENT_SECRET else 'Not Set'}")
+    print(f"PUTIO_REDIRECT_URI: {PUTIO_REDIRECT_URI}")
+    print(f"PUTIO_SAVE_PARENT_ID: {PUTIO_SAVE_PARENT_ID}")
 
 
 @app.context_processor
@@ -58,7 +72,58 @@ def inject_nav_link():
         'nav_link_url': os.getenv('NAV_LINK_URL')
     }
 
+@app.context_processor
+def inject_putio_auth_status():
+    if DOWNLOAD_CLIENT == 'putio':
+        return {
+            'putio_authenticated': 'putio_access_token' in session,
+            'putio_client_id': PUTIO_CLIENT_ID
+        }
+    return {
+        'putio_authenticated': False,
+        'putio_client_id': None
+    }
 
+# put.io OAuth routes
+@app.route('/putio/auth')
+def putio_auth():
+    if DOWNLOAD_CLIENT != 'putio':
+        return jsonify({'message': 'put.io is not configured as the download client'}), 400
+    
+    if not PUTIO_CLIENT_ID:
+        return jsonify({'message': 'put.io client ID not configured'}), 400
+    
+    # Generate authorization URL
+    auth_url = f"https://api.put.io/v2/oauth2/authenticate?client_id={PUTIO_CLIENT_ID}&response_type=code&redirect_uri={PUTIO_REDIRECT_URI}"
+    return redirect(auth_url)
+
+@app.route('/putio/callback')
+def putio_callback():
+    if DOWNLOAD_CLIENT != 'putio':
+        return jsonify({'message': 'put.io is not configured as the download client'}), 400
+    
+    code = request.args.get('code')
+    if not code:
+        return jsonify({'message': 'Authorization code not received'}), 400
+    
+    # Exchange code for access token
+    token_url = "https://api.put.io/v2/oauth2/access_token"
+    data = {
+        'client_id': PUTIO_CLIENT_ID,
+        'client_secret': PUTIO_CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'redirect_uri': PUTIO_REDIRECT_URI,
+        'code': code
+    }
+    
+    response = requests.post(token_url, data=data)
+    if response.status_code != 200:
+        return jsonify({'message': f'Failed to get access token: {response.text}'}), 400
+    
+    token_data = response.json()
+    session['putio_access_token'] = token_data.get('access_token')
+    
+    return redirect(url_for('search'))
 
 # Helper function to search AudiobookBay
 def search_audiobookbay(query, max_pages=5):
@@ -131,6 +196,56 @@ def extract_magnet_link(details_url):
         print(f"[ERROR] Failed to extract magnet link: {e}")
         return None
 
+# Helper function for put.io operations
+def send_to_putio(magnet_link, title=None):
+    """
+    Sends a magnet link to put.io using their API
+    """
+    if 'putio_access_token' not in session:
+        raise Exception("Not authenticated with put.io")
+    
+    api_url = "https://api.put.io/v2/transfers/add"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {session['putio_access_token']}"
+    }
+    
+    data = {
+        "url": magnet_link
+    }
+    
+    # Add parent folder ID if specified
+    if PUTIO_SAVE_PARENT_ID:
+        data["save_parent_id"] = PUTIO_SAVE_PARENT_ID
+    
+    response = requests.post(api_url, data=data, headers=headers)
+    
+    if response.status_code != 200:
+        raise Exception(f"Put.io API error: {response.text}")
+    
+    return response.json()
+
+# Helper function to get put.io transfer status
+def get_putio_transfers():
+    """
+    Gets the list of transfers from put.io
+    """
+    if 'putio_access_token' not in session:
+        raise Exception("Not authenticated with put.io")
+    
+    api_url = "https://api.put.io/v2/transfers/list"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {session['putio_access_token']}"
+    }
+    
+    response = requests.get(api_url, headers=headers)
+    
+    if response.status_code != 200:
+        raise Exception(f"Put.io API error: {response.text}")
+    
+    return response.json().get("transfers", [])
+
 # Helper function to sanitize titles
 def sanitize_title(title):
     return re.sub(r'[<>:"/\\|?*]', '', title).strip()
@@ -148,7 +263,7 @@ def search():
     return render_template('search.html', books=books)
 
 
-# Endpoint to send magnet link to qBittorrent
+# Endpoint to send magnet link to download client
 @app.route('/send', methods=['POST'])
 def send():
     data = request.json
@@ -175,12 +290,17 @@ def send():
             delugeweb = delugewebclient(url=DL_URL, password=DL_PASSWORD)
             delugeweb.login()
             delugeweb.add_torrent_magnet(magnet_link, save_directory=save_path, label=DL_CATEGORY)
+        elif DOWNLOAD_CLIENT == 'putio':
+            if 'putio_access_token' not in session:
+                return jsonify({'message': 'Not authenticated with put.io. Please login first.'}), 401
+            send_to_putio(magnet_link, title)
         else:
             return jsonify({'message': 'Unsupported download client'}), 400
 
         return jsonify({'message': f'Download added successfully! This may take some time, the download will show in Audiobookshelf when completed.'})
     except Exception as e:
         return jsonify({'message': str(e)}), 500
+
 @app.route('/status')
 def status():
     try:
@@ -225,6 +345,20 @@ def status():
                     "size": f"{torrent['total_size'] / (1024 * 1024):.2f} MB",
                 }
                 for k, torrent in torrents.result.items()
+            ]
+        elif DOWNLOAD_CLIENT == 'putio':
+            if 'putio_access_token' not in session:
+                return render_template('status.html', need_auth=True)
+                
+            transfers = get_putio_transfers()
+            torrent_list = [
+                {
+                    'name': transfer.get('name', 'Unknown'),
+                    'progress': transfer.get('percent_done', 0),
+                    'state': transfer.get('status', 'Unknown'),
+                    'size': f"{transfer.get('size', 0) / (1024 * 1024):.2f} MB"
+                }
+                for transfer in transfers
             ]
         else:
             return jsonify({'message': 'Unsupported download client'}), 400
