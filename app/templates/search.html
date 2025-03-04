@@ -11,16 +11,17 @@
     
     .title-container {
         text-align: center;
-        margin: 20px 0;
+        margin: 10px 0 20px;
     }
     
     .title-container h1 {
         color: white;
         font-size: 32px;
+        margin: 0;
     }
     
     .search-container {
-        margin: 20px auto;
+        margin: 0 auto 20px;
         max-width: 600px;
         text-align: center;
     }
@@ -30,6 +31,7 @@
         width: 70%;
         border-radius: 4px;
         border: 1px solid #ddd;
+        font-size: 16px;
     }
     
     .search-button {
@@ -39,43 +41,57 @@
         border: none;
         border-radius: 4px;
         cursor: pointer;
+        font-size: 16px;
     }
     
     .book-card {
         display: flex;
-        margin: 20px auto;
+        margin: 15px auto;
         max-width: 1200px;
         border-radius: 8px;
         overflow: hidden;
         background-color: white;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
+    
+    .book-cover-container {
+        width: 120px;
+        min-width: 120px;
+        height: 180px;
+        overflow: hidden;
+        background-color: #f0f0f0;
     }
     
     .book-cover {
-        width: 150px;
-        height: 220px;
+        width: 100%;
+        height: 100%;
         object-fit: cover;
     }
     
     .book-details {
         flex: 1;
-        padding: 20px;
+        padding: 12px 15px;
+        display: flex;
+        flex-direction: column;
     }
     
     .book-title {
-        font-size: 20px;
+        font-size: 18px;
         font-weight: bold;
-        margin-bottom: 15px;
+        margin-bottom: 8px;
         color: #c62828;
-        padding: 8px;
-        border-bottom: 2px solid #eee;
+        padding-bottom: 5px;
+        border-bottom: 1px solid #eee;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     
-    .book-metadata {
+    .metadata-grid {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 10px;
-        margin-bottom: 20px;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 5px 15px;
+        margin-bottom: 8px;
     }
     
     .metadata-item {
@@ -85,64 +101,58 @@
     
     .metadata-label {
         font-weight: bold;
-        margin-right: 8px;
+        margin-right: 5px;
         color: #555;
-        min-width: 80px;
+        flex-shrink: 0;
     }
     
     .metadata-value {
         background-color: #f5f5f5;
-        padding: 5px 10px;
-        border-radius: 4px;
+        padding: 3px 8px;
+        border-radius: 3px;
         color: #333;
+        font-size: 14px;
         flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     
-    .category-section {
-        margin-bottom: 15px;
-    }
-    
-    .section-title {
-        font-weight: bold;
-        color: #555;
-        margin-bottom: 5px;
-    }
-    
-    .tags-container {
+    .keywords-container {
         display: flex;
         flex-wrap: wrap;
         gap: 5px;
+        margin-top: auto;
+        padding-top: 8px;
+        border-top: 1px solid #eee;
+        max-height: 60px;
+        overflow-y: auto;
     }
     
-    .tag {
+    .keyword-tag {
         display: inline-block;
-        background-color: #e0e0e0;
-        color: #333;
-        padding: 5px 10px;
-        border-radius: 15px;
+        background-color: #e8f5e9;
+        color: #2e7d32;
+        padding: 3px 8px;
+        border-radius: 12px;
         font-size: 12px;
-    }
-    
-    .tag.category {
-        background-color: #bbdefb;
-    }
-    
-    .tag.keyword {
-        background-color: #dcedc8;
+        white-space: nowrap;
     }
     
     .book-actions {
         display: flex;
-        gap: 15px;
-        margin-top: 15px;
+        gap: 10px;
+        margin-top: 10px;
+        margin-left: auto;
     }
     
     .action-button {
-        padding: 10px 25px;
+        padding: 8px 15px;
         border: none;
         border-radius: 4px;
         cursor: pointer;
         font-weight: bold;
+        font-size: 14px;
         transition: background-color 0.2s;
     }
     
@@ -161,13 +171,13 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        margin: 30px 0;
+        margin: 20px 0;
     }
     
     .spinner {
-        border: 5px solid rgba(255, 255, 255, 0.3);
-        width: 50px;
-        height: 50px;
+        border: 4px solid rgba(255, 255, 255, 0.3);
+        width: 40px;
+        height: 40px;
         border-radius: 50%;
         border-left-color: white;
         animation: spin 1s linear infinite;
@@ -181,8 +191,8 @@
     .auth-banner {
         background-color: #f44336;
         color: white;
-        padding: 15px;
-        margin: 20px auto;
+        padding: 10px;
+        margin: 10px auto;
         max-width: 1200px;
         border-radius: 5px;
         text-align: center;
@@ -191,17 +201,15 @@
     /* For smaller screens */
     @media (max-width: 768px) {
         .book-card {
-            flex-direction: column;
+            flex-direction: row;
         }
         
-        .book-cover {
-            width: 100%;
-            height: auto;
-            max-height: 300px;
-        }
-        
-        .book-metadata {
+        .metadata-grid {
             grid-template-columns: 1fr;
+        }
+        
+        .book-actions {
+            margin-left: 0;
         }
     }
 </style>
@@ -215,7 +223,7 @@
 {% if not putio_authenticated and putio_client_id %}
 <div class="auth-banner">
     <p>You need to authenticate with put.io to download files.</p>
-    <a href="/putio/auth" style="background-color: white; color: #f44336; padding: 8px 16px; text-decoration: none; border-radius: 4px; display: inline-block; margin-top: 10px; font-weight: bold;">Login to put.io</a>
+    <a href="/putio/auth" style="background-color: white; color: #f44336; padding: 5px 10px; text-decoration: none; border-radius: 4px; display: inline-block; margin-top: 5px; font-weight: bold;">Login to put.io</a>
 </div>
 {% endif %}
 
@@ -232,26 +240,13 @@
 <div class="search-results">
     {% for book in books %}
     <div class="book-card">
-        <img src="{{ book.cover }}" alt="Cover for {{ book.title }}" class="book-cover">
+        <div class="book-cover-container">
+            <img src="{{ book.cover }}" alt="Cover" class="book-cover">
+        </div>
         <div class="book-details">
-            <div class="book-title">{{ book.title }}</div>
+            <div class="book-title" title="{{ book.title }}">{{ book.title }}</div>
             
-            <div class="book-metadata">
-                <!-- First row of metadata -->
-                <div class="metadata-item">
-                    <span class="metadata-label">Author:</span>
-                    <span class="metadata-value">{{ book.author }}</span>
-                </div>
-                <div class="metadata-item">
-                    <span class="metadata-label">Narrator:</span>
-                    <span class="metadata-value">{{ book.narrator }}</span>
-                </div>
-                <div class="metadata-item">
-                    <span class="metadata-label">Language:</span>
-                    <span class="metadata-value">{{ book.language }}</span>
-                </div>
-                
-                <!-- Second row of metadata -->
+            <div class="metadata-grid">
                 <div class="metadata-item">
                     <span class="metadata-label">Size:</span>
                     <span class="metadata-value">{{ book.size }}</span>
@@ -264,40 +259,22 @@
                     <span class="metadata-label">Bitrate:</span>
                     <span class="metadata-value">{{ book.bitrate }}</span>
                 </div>
-                
-                <!-- Third row with date -->
                 <div class="metadata-item">
-                    <span class="metadata-label">Posted:</span>
-                    <span class="metadata-value">{{ book.date_posted }}</span>
+                    <span class="metadata-label">Language:</span>
+                    <span class="metadata-value">{{ book.language }}</span>
                 </div>
             </div>
             
-            <!-- Categories section -->
-            {% if book.categories %}
-            <div class="category-section">
-                <div class="section-title">Categories:</div>
-                <div class="tags-container">
-                    {% for category in book.categories %}
-                    <span class="tag category">{{ category }}</span>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-            
-            <!-- Keywords section -->
             {% if book.keywords %}
-            <div class="category-section">
-                <div class="section-title">Keywords:</div>
-                <div class="tags-container">
-                    {% for keyword in book.keywords %}
-                    <span class="tag keyword">{{ keyword }}</span>
-                    {% endfor %}
-                </div>
+            <div class="keywords-container">
+                {% for keyword in book.keywords %}
+                <span class="keyword-tag">{{ keyword }}</span>
+                {% endfor %}
             </div>
             {% endif %}
             
             <div class="book-actions">
-                <button class="action-button details-btn" onclick="window.open('{{ book.link }}', '_blank')">View Details</button>
+                <button class="action-button details-btn" onclick="window.open('{{ book.link }}', '_blank')">Details</button>
                 <button class="action-button download-btn" onclick="sendToQB('{{ book.link|escape }}', '{{ book.title|escape }}')">Send to Put.io</button>
             </div>
         </div>
