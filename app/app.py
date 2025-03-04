@@ -172,83 +172,53 @@ def search_audiobookbay(query, max_pages=5):
                     link = f"https://{ABB_HOSTNAME}{title_element['href']}"
                     cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.jpg"
                     
-                    post_text = post.text.replace('\r', ' ').replace('\n', ' ')
+                    # Get post text and replace newlines with spaces to make regex easier
+                    post_text = post.text.strip().replace('\n', ' ')
                     
-                    # Extract file size - looking for specific pattern
+                    # Extract file size
                     size = "Unknown"
-                    size_match = re.search(r'(?:^|\s)Size:\s*([\d.]+\s*[KMGT]?B)(?:\s|$)', post_text)
+                    size_pattern = r'Size: ([\d.]+\s*[KMGT]B)'
+                    size_match = re.search(size_pattern, post_text)
                     if size_match:
                         size = size_match.group(1).strip()
                     
-                    # Extract format information - more specific pattern
+                    # Extract format information
                     format_info = "Unknown"
-                    format_match = re.search(r'(?:^|\s)Format:\s*([^,]+?)(?:\s*/|\s+Bitrate:|\s*$)', post_text)
+                    format_pattern = r'Format: ([^,]+)'
+                    format_match = re.search(format_pattern, post_text)
                     if format_match:
                         format_info = format_match.group(1).strip()
+                        # Check for MP3 / Bitrate format
+                        if ' / ' in format_info:
+                            format_info = format_info.split(' / ')[0].strip()
                     
-                    # Extract bitrate with better boundaries
+                    # Extract bitrate - simplified
                     bitrate = "Unknown"
-                    bitrate_match = re.search(r'(?:^|\s)Bitrate:\s*([^,\s]+)(?:\s|File Size:|$)', post_text)
+                    bitrate_pattern = r'Bitrate: ([^,]+)'
+                    bitrate_match = re.search(bitrate_pattern, post_text)
                     if bitrate_match:
                         bitrate = bitrate_match.group(1).strip()
+                        # Remove file size information if it got included
+                        if 'File Size:' in bitrate:
+                            bitrate = bitrate.split('File Size:')[0].strip()
                     
-                    # Extract language with proper boundaries
+                    # Extract language information
                     language = "English"  # Default to English
-                    language_match = re.search(r'(?:^|\s)Language:\s*([^,\s]+?)(?:\s|Keywords:|$)', post_text)
+                    language_pattern = r'Language: ([^,]+)'
+                    language_match = re.search(language_pattern, post_text)
                     if language_match:
                         language = language_match.group(1).strip()
+                        # Remove keywords if they got included
+                        if 'Keywords:' in language:
+                            language = language.split('Keywords:')[0].strip()
                     
-                    # Extract keywords - looking for exact pattern
+                    # Extract keywords
                     keywords = []
-                    keywords_match = re.search(r'(?:^|\s)Keywords:\s*([^\.]+?)(?:\.|$)', post_text)
+                    keywords_pattern = r'Keywords: ([^\.]+)'
+                    keywords_match = re.search(keywords_pattern, post_text)
                     if keywords_match:
                         keywords_text = keywords_match.group(1).strip()
-                        # Split by commas and clean up each keyword
-                        keywords = [kw.strip() for kw in keywords_text.split(',') if kw.strip()]
-                    
-                    # Alternative approach: extract data by looking at specific post sections
-                    # Try to find metadata blocks with label:value format
-                    metadata_blocks = post.select('.postInfo')
-                    for block in metadata_blocks:
-                        block_text = block.text.strip()
-                        
-                        # Process specific metadata if found
-                        if 'Size:' in block_text and size == "Unknown":
-                            size_match = re.search(r'Size:\s*([\d.]+\s*[KMGT]?B)', block_text)
-                            if size_match:
-                                size = size_match.group(1).strip()
-                        
-                        if 'Format:' in block_text and format_info == "Unknown":
-                            format_match = re.search(r'Format:\s*([^/\n]+)', block_text)
-                            if format_match:
-                                format_info = format_match.group(1).strip()
-                        
-                        if 'Bitrate:' in block_text and bitrate == "Unknown":
-                            bitrate_match = re.search(r'Bitrate:\s*([^\n]+?)(?:File Size:|$)', block_text)
-                            if bitrate_match:
-                                bitrate = bitrate_match.group(1).strip()
-                        
-                        if 'Language:' in block_text and language == "English":
-                            language_match = re.search(r'Language:\s*([^\n]+?)(?:Keywords:|$)', block_text)
-                            if language_match:
-                                language = language_match.group(1).strip()
-                    
-                    # Clean up any fields that might have excess information
-                    if 'File Size:' in bitrate:
-                        bitrate = bitrate.split('File Size:')[0].strip()
-                    
-                    if 'Keywords:' in language:
-                        language = language.split('Keywords:')[0].strip()
-                    
-                    # Process format data which often contains bitrate
-                    if '/' in format_info and bitrate == "Unknown":
-                        parts = format_info.split('/')
-                        if len(parts) > 1:
-                            format_info = parts[0].strip()
-                            # Try to extract bitrate from format
-                            bitrate_in_format = re.search(r'([\d]+\s*Kbps)', parts[1])
-                            if bitrate_in_format:
-                                bitrate = bitrate_in_format.group(1).strip()
+                        keywords = [kw.strip() for kw in keywords_text.split(',')]
                     
                     results.append({
                         'title': title,
