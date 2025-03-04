@@ -7,6 +7,8 @@
         background-color: #673ab7;
         color: #333;
         font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 0;
     }
     
     .title-container {
@@ -16,7 +18,7 @@
     
     .title-container h1 {
         color: white;
-        font-size: 32px;
+        font-size: 28px;
         margin: 0;
     }
     
@@ -24,6 +26,7 @@
         margin: 0 auto 20px;
         max-width: 600px;
         text-align: center;
+        padding: 0 15px;
     }
     
     .search-bar {
@@ -55,8 +58,8 @@
     }
     
     .book-cover-container {
-        min-width: 120px;
-        height: 180px;
+        min-width: 100px;
+        height: 150px;
         overflow: hidden;
         background-color: #f0f0f0;
     }
@@ -72,24 +75,29 @@
         padding: 12px 15px;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
     }
     
     .book-title {
-        font-size: 18px;
+        font-size: 16px;
         font-weight: bold;
         margin-bottom: 8px;
         color: #c62828;
         padding-bottom: 5px;
         border-bottom: 1px solid #eee;
-        white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        white-space: normal;
+        line-height: 1.3;
     }
     
     .metadata-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 5px 15px;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 5px;
         margin-bottom: 8px;
     }
     
@@ -107,10 +115,10 @@
     
     .metadata-value {
         background-color: #f5f5f5;
-        padding: 3px 8px;
+        padding: 3px 6px;
         border-radius: 3px;
         color: #333;
-        font-size: 14px;
+        font-size: 13px;
         flex: 1;
         white-space: nowrap;
         overflow: hidden;
@@ -124,7 +132,7 @@
         margin-top: auto;
         padding-top: 8px;
         border-top: 1px solid #eee;
-        max-height: 60px;
+        max-height: 40px;
         overflow-y: auto;
     }
     
@@ -132,26 +140,26 @@
         display: inline-block;
         background-color: #e8f5e9;
         color: #2e7d32;
-        padding: 3px 8px;
-        border-radius: 12px;
-        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        font-size: 11px;
         white-space: nowrap;
     }
     
     .book-actions {
         display: flex;
-        gap: 10px;
-        margin-top: 10px;
-        margin-left: auto;
+        gap: 8px;
+        margin-top: 8px;
+        justify-content: flex-end;
     }
     
     .action-button {
-        padding: 8px 15px;
+        padding: 6px 12px;
         border: none;
         border-radius: 4px;
         cursor: pointer;
         font-weight: bold;
-        font-size: 14px;
+        font-size: 13px;
         transition: background-color 0.2s;
     }
     
@@ -191,24 +199,70 @@
         background-color: #f44336;
         color: white;
         padding: 10px;
-        margin: 10px auto;
-        max-width: 1200px;
+        margin: 10px 15px;
         border-radius: 5px;
         text-align: center;
     }
     
-    /* For smaller screens */
+    .search-results {
+        padding: 0 15px;
+    }
+    
+    /* Improved Mobile Responsiveness */
     @media (max-width: 768px) {
+        .search-bar {
+            width: 60%;
+        }
+        
         .book-card {
-            flex-direction: row;
+            flex-direction: column;
+            max-width: 100%;
+        }
+        
+        .book-cover-container {
+            width: 100%;
+            height: 200px;
+            min-width: unset;
         }
         
         .metadata-grid {
             grid-template-columns: 1fr;
         }
         
+        .book-title {
+            font-size: 18px;
+        }
+        
         .book-actions {
-            margin-left: 0;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        
+        .action-button {
+            flex: 1;
+            text-align: center;
+            padding: 10px;
+        }
+    }
+    
+    /* Small Mobile Devices */
+    @media (max-width: 480px) {
+        .title-container h1 {
+            font-size: 24px;
+        }
+        
+        .search-bar {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        
+        .search-button {
+            width: 100%;
+        }
+        
+        .search-container {
+            display: flex;
+            flex-direction: column;
         }
     }
 </style>
