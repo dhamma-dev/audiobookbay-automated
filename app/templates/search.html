@@ -3,61 +3,147 @@
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/search.css') }}">
 <style>
+    body {
+        background-color: #673ab7;
+        color: #333;
+        font-family: Arial, sans-serif;
+    }
+    
+    .title-container {
+        text-align: center;
+        margin: 20px 0;
+    }
+    
+    .title-container h1 {
+        color: white;
+        font-size: 32px;
+    }
+    
+    .search-container {
+        margin: 20px auto;
+        max-width: 600px;
+        text-align: center;
+    }
+    
+    .search-bar {
+        padding: 10px;
+        width: 70%;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+    }
+    
+    .search-button {
+        padding: 10px 20px;
+        background-color: #4a148c;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    
     .book-card {
         display: flex;
-        margin-bottom: 20px;
-        border: 1px solid #ddd;
+        margin: 20px auto;
+        max-width: 1200px;
         border-radius: 8px;
         overflow: hidden;
-        background-color: #fff;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        background-color: white;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
     
     .book-cover {
-        width: 120px;
-        height: 180px;
+        width: 150px;
+        height: 220px;
         object-fit: cover;
     }
     
     .book-details {
         flex: 1;
-        padding: 15px;
+        padding: 20px;
     }
     
     .book-title {
-        font-size: 18px;
+        font-size: 20px;
         font-weight: bold;
-        margin-bottom: 10px;
+        margin-bottom: 15px;
+        color: #c62828;
+        padding: 8px;
+        border-bottom: 2px solid #eee;
     }
     
     .book-metadata {
         display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 8px;
-        margin-bottom: 15px;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-bottom: 20px;
     }
     
     .metadata-item {
         display: flex;
+        align-items: center;
     }
     
     .metadata-label {
         font-weight: bold;
-        margin-right: 5px;
+        margin-right: 8px;
         color: #555;
+        min-width: 80px;
+    }
+    
+    .metadata-value {
+        background-color: #f5f5f5;
+        padding: 5px 10px;
+        border-radius: 4px;
+        color: #333;
+        flex: 1;
+    }
+    
+    .category-section {
+        margin-bottom: 15px;
+    }
+    
+    .section-title {
+        font-weight: bold;
+        color: #555;
+        margin-bottom: 5px;
+    }
+    
+    .tags-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+    
+    .tag {
+        display: inline-block;
+        background-color: #e0e0e0;
+        color: #333;
+        padding: 5px 10px;
+        border-radius: 15px;
+        font-size: 12px;
+    }
+    
+    .tag.category {
+        background-color: #bbdefb;
+    }
+    
+    .tag.keyword {
+        background-color: #dcedc8;
     }
     
     .book-actions {
         display: flex;
-        gap: 10px;
+        gap: 15px;
+        margin-top: 15px;
     }
     
-    .book-actions button {
-        padding: 8px 15px;
+    .action-button {
+        padding: 10px 25px;
         border: none;
         border-radius: 4px;
         cursor: pointer;
         font-weight: bold;
+        transition: background-color 0.2s;
     }
     
     .details-btn {
@@ -66,22 +152,8 @@
     }
     
     .download-btn {
-        background-color: #34a853;
+        background-color: #4CAF50;
         color: white;
-    }
-    
-    .category-tag {
-        display: inline-block;
-        background-color: #f1f1f1;
-        padding: 3px 8px;
-        border-radius: 12px;
-        font-size: 12px;
-        margin-right: 5px;
-        margin-bottom: 5px;
-    }
-    
-    .search-container {
-        margin-bottom: 30px;
     }
     
     .loading-spinner {
@@ -89,15 +161,15 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        margin: 20px 0;
+        margin: 30px 0;
     }
     
     .spinner {
-        border: 4px solid rgba(0, 0, 0, 0.1);
-        width: 36px;
-        height: 36px;
+        border: 5px solid rgba(255, 255, 255, 0.3);
+        width: 50px;
+        height: 50px;
         border-radius: 50%;
-        border-left-color: #09f;
+        border-left-color: white;
         animation: spin 1s linear infinite;
     }
     
@@ -107,12 +179,30 @@
     }
     
     .auth-banner {
-        background-color: #333;
+        background-color: #f44336;
         color: white;
         padding: 15px;
-        margin-bottom: 20px;
+        margin: 20px auto;
+        max-width: 1200px;
         border-radius: 5px;
         text-align: center;
+    }
+    
+    /* For smaller screens */
+    @media (max-width: 768px) {
+        .book-card {
+            flex-direction: column;
+        }
+        
+        .book-cover {
+            width: 100%;
+            height: auto;
+            max-height: 300px;
+        }
+        
+        .book-metadata {
+            grid-template-columns: 1fr;
+        }
     }
 </style>
 {% endblock %}
@@ -125,18 +215,18 @@
 {% if not putio_authenticated and putio_client_id %}
 <div class="auth-banner">
     <p>You need to authenticate with put.io to download files.</p>
-    <a href="/putio/auth" class="btn" style="background-color: #4CAF50; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px;">Login to put.io</a>
+    <a href="/putio/auth" style="background-color: white; color: #f44336; padding: 8px 16px; text-decoration: none; border-radius: 4px; display: inline-block; margin-top: 10px; font-weight: bold;">Login to put.io</a>
 </div>
 {% endif %}
 
 <form method="post" class="search-container" onsubmit="showLoadingSpinner()">
-    <input type="text" name="query" placeholder="Enter book name" class="search-bar" required>
+    <input type="text" name="query" placeholder="Enter book name" class="search-bar" required value="{{ query if query else '' }}">
     <button type="submit" class="search-button">Search</button>
 </form>
 
 <div class="loading-spinner" id="loading-spinner">
     <div class="spinner"></div>
-    <p>Searching...</p>
+    <p style="color: white; margin-top: 10px;">Searching...</p>
 </div>
 
 <div class="search-results">
@@ -147,33 +237,68 @@
             <div class="book-title">{{ book.title }}</div>
             
             <div class="book-metadata">
+                <!-- First row of metadata -->
                 <div class="metadata-item">
                     <span class="metadata-label">Author:</span>
-                    <span>{{ book.author }}</span>
+                    <span class="metadata-value">{{ book.author }}</span>
                 </div>
                 <div class="metadata-item">
                     <span class="metadata-label">Narrator:</span>
-                    <span>{{ book.narrator }}</span>
+                    <span class="metadata-value">{{ book.narrator }}</span>
                 </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Language:</span>
+                    <span class="metadata-value">{{ book.language }}</span>
+                </div>
+                
+                <!-- Second row of metadata -->
                 <div class="metadata-item">
                     <span class="metadata-label">Size:</span>
-                    <span>{{ book.size }}</span>
+                    <span class="metadata-value">{{ book.size }}</span>
                 </div>
                 <div class="metadata-item">
+                    <span class="metadata-label">Format:</span>
+                    <span class="metadata-value">{{ book.format }}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Bitrate:</span>
+                    <span class="metadata-value">{{ book.bitrate }}</span>
+                </div>
+                
+                <!-- Third row with date -->
+                <div class="metadata-item">
                     <span class="metadata-label">Posted:</span>
-                    <span>{{ book.date_posted }}</span>
+                    <span class="metadata-value">{{ book.date_posted }}</span>
                 </div>
             </div>
             
-            <div class="book-categories">
-                {% for category in book.categories %}
-                <span class="category-tag">{{ category }}</span>
-                {% endfor %}
+            <!-- Categories section -->
+            {% if book.categories %}
+            <div class="category-section">
+                <div class="section-title">Categories:</div>
+                <div class="tags-container">
+                    {% for category in book.categories %}
+                    <span class="tag category">{{ category }}</span>
+                    {% endfor %}
+                </div>
             </div>
+            {% endif %}
+            
+            <!-- Keywords section -->
+            {% if book.keywords %}
+            <div class="category-section">
+                <div class="section-title">Keywords:</div>
+                <div class="tags-container">
+                    {% for keyword in book.keywords %}
+                    <span class="tag keyword">{{ keyword }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
             
             <div class="book-actions">
-                <button class="details-btn" onclick="window.open('{{ book.link }}', '_blank')">View Details</button>
-                <button class="download-btn" onclick="sendToQB('{{ book.link|escape }}', '{{ book.title|escape }}')">Send to Put.io</button>
+                <button class="action-button details-btn" onclick="window.open('{{ book.link }}', '_blank')">View Details</button>
+                <button class="action-button download-btn" onclick="sendToQB('{{ book.link|escape }}', '{{ book.title|escape }}')">Send to Put.io</button>
             </div>
         </div>
     </div>
