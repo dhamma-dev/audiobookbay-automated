@@ -60,3 +60,10 @@
     <a href="/putio/auth" class="btn btn-primary">Login to put.io</a>
 </div>
 {% endif %}
+<!-- Add this near the top of your search.html file -->
+{% if not putio_authenticated and putio_client_id %}
+<div class="auth-banner" style="background-color: #333; color: white; padding: 10px; margin-bottom: 20px; border-radius: 5px;">
+    <p>You need to authenticate with put.io to download files.</p>
+    <a href="/putio/auth" class="btn" style="background-color: #4CAF50; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px;">Login to put.io</a>
+</div>
+{% endif %}
