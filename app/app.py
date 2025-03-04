@@ -131,95 +131,110 @@ def search_audiobookbay(query, max_pages=5):
     }
     results = []
     for page in range(1, max_pages + 1):
-        url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}&cat=undefined%2Cundefined"
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
-            break
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for post in soup.select('.post'):
-            try:
-                title = post.select_one('.postTitle > h2 > a').text.strip()
-                link = f"https://{ABB_HOSTNAME}{post.select_one('.postTitle > h2 > a')['href']}"
-                cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.jpg"
+        url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}"
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code != 200:
+                print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
+                break
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            posts = soup.select('.post')
+            
+            # If no posts found on this page, stop pagination
+            if not posts:
+                break
                 
-                # Extract additional information from the post
-                post_info = post.select_one('.postInfo')
-                date_posted = post_info.select_one('.postDate').text.strip() if post_info.select_one('.postDate') else 'Unknown'
-                
-                # Extract categories, author, narrator if available
-                categories = []
-                author = 'Unknown'
-                narrator = 'Unknown'
-                size = 'Unknown'
-                
-                # Look for information in the post content
-                post_content = post.select_one('.postContent')
-                if post_content:
-                    content_text = post_content.text.strip()
+            for post in posts:
+                try:
+                    # Extract basic information
+                    title_element = post.select_one('.postTitle > h2 > a')
+                    if not title_element:
+                        continue
+                        
+                    title = title_element.text.strip()
+                    link = f"https://{ABB_HOSTNAME}{title_element['href']}"
+                    cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.jpg"
                     
-                    # Try to find author and narrator from the content text
-                    author_match = re.search(r'Author:\s*([^|]+)', content_text)
+                    # Extract file size if available in the post content
+                    size = "Unknown"
+                    size_match = re.search(r'Size:?\s*([\d.]+\s*[KMGT]?B)', post.text)
+                    if size_match:
+                        size = size_match.group(1).strip()
+                    
+                    # Extract post date if available
+                    date_posted = "Unknown"
+                    date_element = post.select_one('.postDate')
+                    if date_element:
+                        date_posted = date_element.text.strip()
+                    
+                    # Extract format information if available
+                    format_info = "Unknown"
+                    format_match = re.search(r'Format:?\s*([^,\n]+)', post.text)
+                    if format_match:
+                        format_info = format_match.group(1).strip()
+                    
+                    # Extract bitrate if available
+                    bitrate = "Unknown"
+                    bitrate_match = re.search(r'Bitrate:?\s*([^,\n]+)', post.text)
+                    if bitrate_match:
+                        bitrate = bitrate_match.group(1).strip()
+                    
+                    # Try to extract categories/tags
+                    categories = []
+                    category_elements = post.select('.postTags a')
+                    if category_elements:
+                        categories = [tag.text.strip() for tag in category_elements]
+                    
+                    # Extract language information if available
+                    language = "Unknown"
+                    language_match = re.search(r'Language:?\s*([^,\n]+)', post.text)
+                    if language_match:
+                        language = language_match.group(1).strip()
+                    
+                    # Author information
+                    author = "Unknown"
+                    author_match = re.search(r'Author(?:\(s\))?:?\s*([^,\n]+)', post.text)
                     if author_match:
                         author = author_match.group(1).strip()
                     
-                    narrator_match = re.search(r'Narrator:\s*([^|]+)', content_text)
+                    # Narrator information
+                    narrator = "Unknown"
+                    narrator_match = re.search(r'Narrator(?:\(s\))?:?\s*([^,\n]+)', post.text)
                     if narrator_match:
                         narrator = narrator_match.group(1).strip()
                     
-                    # Try to find size information
-                    size_match = re.search(r'Size:\s*([\d.]+\s*[KMGT]B)', content_text)
-                    if size_match:
-                        size = size_match.group(1).strip()
-                
-                # Extract categories from tags if available
-                category_tags = post.select('.postTags a')
-                if category_tags:
-                    categories = [tag.text.strip() for tag in category_tags]
-                
-                results.append({
-                    'title': title,
-                    'link': link, 
-                    'cover': cover,
-                    'date_posted': date_posted,
-                    'author': author,
-                    'narrator': narrator,
-                    'size': size,
-                    'categories': categories
-                })
-                
-            except Exception as e:
-                print(f"[ERROR] Skipping post due to error: {e}")
-                continue
-    
+                    # Extract keywords if available
+                    keywords = []
+                    keywords_match = re.search(r'Keywords:?\s*([^\n]+)', post.text)
+                    if keywords_match:
+                        keywords_text = keywords_match.group(1).strip()
+                        keywords = [kw.strip() for kw in keywords_text.split(',')]
+                    
+                    results.append({
+                        'title': title,
+                        'link': link,
+                        'cover': cover,
+                        'size': size,
+                        'date_posted': date_posted,
+                        'format': format_info,
+                        'bitrate': bitrate,
+                        'language': language,
+                        'author': author,
+                        'narrator': narrator,
+                        'categories': categories,
+                        'keywords': keywords
+                    })
+                    
+                except Exception as e:
+                    print(f"[ERROR] Error parsing post: {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"[ERROR] Error fetching page {page}: {e}")
+            break
+            
     return results
-
-# # Helper function to search AudiobookBay
-# def search_audiobookbay(query, max_pages=5):
-#     headers = {
-#         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-#     }
-#     results = []
-#     for page in range(1, max_pages + 1):
-#         url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}&cat=undefined%2Cundefined"
-#         response = requests.get(url, headers=headers)
-#         if response.status_code != 200:
-#             print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
-#             break
-
-#         soup = BeautifulSoup(response.text, 'html.parser')
-#         for post in soup.select('.post'):
-#             try:
-#                 title = post.select_one('.postTitle > h2 > a').text.strip()
-#                 link = f"https://{ABB_HOSTNAME}{post.select_one('.postTitle > h2 > a')['href']}"
-#                 cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.jpg"
-#                 results.append({'title': title, 'link': link, 'cover': cover})
-#             except Exception as e:
-#                 print(f"[ERROR] Skipping post due to error: {e}")
-#                 continue
-#     return results
-
 # Helper function to extract magnet link from details page
 def extract_magnet_link(details_url):
     headers = {
