@@ -162,12 +162,6 @@ def search_audiobookbay(query, max_pages=5):
                     if size_match:
                         size = size_match.group(1).strip()
                     
-                    # Extract post date if available
-                    date_posted = "Unknown"
-                    date_element = post.select_one('.postDate')
-                    if date_element:
-                        date_posted = date_element.text.strip()
-                    
                     # Extract format information if available
                     format_info = "Unknown"
                     format_match = re.search(r'Format:?\s*([^,\n]+)', post.text)
@@ -180,29 +174,11 @@ def search_audiobookbay(query, max_pages=5):
                     if bitrate_match:
                         bitrate = bitrate_match.group(1).strip()
                     
-                    # Try to extract categories/tags
-                    categories = []
-                    category_elements = post.select('.postTags a')
-                    if category_elements:
-                        categories = [tag.text.strip() for tag in category_elements]
-                    
                     # Extract language information if available
-                    language = "Unknown"
+                    language = "English"  # Default to English
                     language_match = re.search(r'Language:?\s*([^,\n]+)', post.text)
                     if language_match:
                         language = language_match.group(1).strip()
-                    
-                    # Author information
-                    author = "Unknown"
-                    author_match = re.search(r'Author(?:\(s\))?:?\s*([^,\n]+)', post.text)
-                    if author_match:
-                        author = author_match.group(1).strip()
-                    
-                    # Narrator information
-                    narrator = "Unknown"
-                    narrator_match = re.search(r'Narrator(?:\(s\))?:?\s*([^,\n]+)', post.text)
-                    if narrator_match:
-                        narrator = narrator_match.group(1).strip()
                     
                     # Extract keywords if available
                     keywords = []
@@ -216,13 +192,9 @@ def search_audiobookbay(query, max_pages=5):
                         'link': link,
                         'cover': cover,
                         'size': size,
-                        'date_posted': date_posted,
                         'format': format_info,
                         'bitrate': bitrate,
                         'language': language,
-                        'author': author,
-                        'narrator': narrator,
-                        'categories': categories,
                         'keywords': keywords
                     })
                     
