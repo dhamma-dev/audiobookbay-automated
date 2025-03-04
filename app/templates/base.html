@@ -14,7 +14,6 @@
     <!-- Navbar -->
     <div class="navbar">
         <a href="{{ url_for('search') }}" class="{% if request.endpoint == 'search' %}active{% endif %}">Search</a>
-        <a href="{{ url_for('status') }}" class="{% if request.endpoint == 'status' %}active{% endif %}">Status</a>
         {% if nav_link_name and nav_link_url %}
         <a href="{{ nav_link_url }}" target="_blank">{{ nav_link_name }}</a>
         {% endif %}
