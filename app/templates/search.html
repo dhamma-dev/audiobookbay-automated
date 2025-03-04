@@ -35,7 +35,7 @@
             <td>{{ book.title }}</td>
             <td> 
                 <button onclick="window.open('{{ book.link }}', '_blank')">Details</button>
-                <button onclick="sendToQB('{{ book.link|escape }}', '{{ book.title|escape }}')">Download to Server</button>
+                <button onclick="sendToQB('{{ book.link|escape }}', '{{ book.title|escape }}')">Send to Put.io</button>
             </td>
         </tr>
         {% endfor %}
