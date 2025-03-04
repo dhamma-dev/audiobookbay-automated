@@ -53,3 +53,10 @@
 </script>
 
 {% endblock %}
+<!-- Add this somewhere visible in your search.html file, like in a navbar or at the top of the page -->
+{% if not putio_authenticated and putio_client_id %}
+<div class="alert alert-warning">
+    <p>You need to authenticate with put.io to download files.</p>
+    <a href="/putio/auth" class="btn btn-primary">Login to put.io</a>
+</div>
+{% endif %}
