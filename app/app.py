@@ -93,8 +93,17 @@ def putio_auth():
     if not PUTIO_CLIENT_ID:
         return jsonify({'message': 'put.io client ID not configured'}), 400
     
-    # Generate authorization URL
-    auth_url = f"https://api.put.io/v2/oauth2/authenticate?client_id={PUTIO_CLIENT_ID}&response_type=code&redirect_uri={PUTIO_REDIRECT_URI}"
+    # Generate dynamic redirect URI based on the current request
+    host = request.host_url.rstrip('/')
+    dynamic_redirect_uri = f"{host}/putio/callback"
+    
+    # Store the dynamic redirect URI in session for use in callback
+    session['dynamic_redirect_uri'] = dynamic_redirect_uri
+    
+    # Generate authorization URL with dynamic redirect URI
+    auth_url = f"https://api.put.io/v2/oauth2/authenticate?client_id={PUTIO_CLIENT_ID}&response_type=code&redirect_uri={dynamic_redirect_uri}"
+    
+    print(f"Using dynamic redirect URI: {dynamic_redirect_uri}")
     return redirect(auth_url)
 
 @app.route('/putio/callback')
@@ -106,16 +115,23 @@ def putio_callback():
     if not code:
         return jsonify({'message': 'Authorization code not received'}), 400
     
+    # Retrieve the dynamic redirect URI from session
+    dynamic_redirect_uri = session.get('dynamic_redirect_uri')
+    if not dynamic_redirect_uri:
+        # Fall back to configured URI if not in session
+        dynamic_redirect_uri = PUTIO_REDIRECT_URI
+        
     # Exchange code for access token
     token_url = "https://api.put.io/v2/oauth2/access_token"
     data = {
         'client_id': PUTIO_CLIENT_ID,
         'client_secret': PUTIO_CLIENT_SECRET,
         'grant_type': 'authorization_code',
-        'redirect_uri': PUTIO_REDIRECT_URI,
+        'redirect_uri': dynamic_redirect_uri,
         'code': code
     }
     
+    print(f"Exchanging token with redirect URI: {dynamic_redirect_uri}")
     response = requests.post(token_url, data=data)
     if response.status_code != 200:
         return jsonify({'message': f'Failed to get access token: {response.text}'}), 400
