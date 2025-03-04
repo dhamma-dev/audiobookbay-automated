@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Background -->
+  <rect width="512" height="512" rx="100" fill="#673ab7"/>
+  
+  <!-- Book -->
+  <path d="M128 128 L384 128 L384 384 L128 384 Z" fill="#ffffff"/>
+  <path d="M136 136 L376 136 L376 376 L136 376 Z" fill="#673ab7"/>
+  
+  <!-- Book pages -->
+  <path d="M256 136 L256 376" stroke="#ffffff" stroke-width="4"/>
+  
+  <!-- Headphones -->
+  <path d="M96 256 Q96 160 256 160 Q416 160 416 256" stroke="#ffffff" stroke-width="20" fill="none"/>
+  <rect x="76" y="256" width="40" height="80" rx="20" fill="#ffffff"/>
+  <rect x="396" y="256" width="40" height="80" rx="20" fill="#ffffff"/>
+</svg>
