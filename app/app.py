@@ -37,10 +37,8 @@ DL_PASSWORD = os.getenv("DL_PASSWORD")
 DL_CATEGORY = os.getenv("DL_CATEGORY", "Audiobookbay-Audiobooks")
 SAVE_PATH_BASE = os.getenv("SAVE_PATH_BASE")
 
-# put.io OAuth credentials
-PUTIO_CLIENT_ID = os.getenv("PUTIO_CLIENT_ID")
-PUTIO_CLIENT_SECRET = os.getenv("PUTIO_CLIENT_SECRET")
-PUTIO_REDIRECT_URI = os.getenv("PUTIO_REDIRECT_URI")
+# put.io credentials
+PUTIO_ACCESS_TOKEN = os.getenv("PUTIO_ACCESS_TOKEN")  # Application-specific password
 PUTIO_SAVE_PARENT_ID = os.getenv("PUTIO_SAVE_PARENT_ID")  # Default folder ID to save to
 
 # Custom Nav Link Variables
@@ -59,9 +57,7 @@ print(f"SAVE_PATH_BASE: {SAVE_PATH_BASE}")
 print(f"NAV_LINK_NAME: {NAV_LINK_NAME}")
 print(f"NAV_LINK_URL: {NAV_LINK_URL}")
 if DOWNLOAD_CLIENT == 'putio':
-    print(f"PUTIO_CLIENT_ID: {'Set' if PUTIO_CLIENT_ID else 'Not Set'}")
-    print(f"PUTIO_CLIENT_SECRET: {'Set' if PUTIO_CLIENT_SECRET else 'Not Set'}")
-    print(f"PUTIO_REDIRECT_URI: {PUTIO_REDIRECT_URI}")
+    print(f"PUTIO_ACCESS_TOKEN: {'Set' if PUTIO_ACCESS_TOKEN else 'Not Set'}")
     print(f"PUTIO_SAVE_PARENT_ID: {PUTIO_SAVE_PARENT_ID}")
 
 
@@ -76,70 +72,11 @@ def inject_nav_link():
 def inject_putio_auth_status():
     if DOWNLOAD_CLIENT == 'putio':
         return {
-            'putio_authenticated': 'putio_access_token' in session,
-            'putio_client_id': PUTIO_CLIENT_ID
+            'putio_authenticated': bool(PUTIO_ACCESS_TOKEN)
         }
     return {
-        'putio_authenticated': False,
-        'putio_client_id': None
+        'putio_authenticated': False
     }
-
-# put.io OAuth routes
-@app.route('/putio/auth')
-def putio_auth():
-    if DOWNLOAD_CLIENT != 'putio':
-        return jsonify({'message': 'put.io is not configured as the download client'}), 400
-    
-    if not PUTIO_CLIENT_ID:
-        return jsonify({'message': 'put.io client ID not configured'}), 400
-    
-    # Generate dynamic redirect URI based on the current request
-    host = request.host_url.rstrip('/')
-    dynamic_redirect_uri = f"{host}/putio/callback"
-    
-    # Store the dynamic redirect URI in session for use in callback
-    session['dynamic_redirect_uri'] = dynamic_redirect_uri
-    
-    # Generate authorization URL with dynamic redirect URI
-    auth_url = f"https://api.put.io/v2/oauth2/authenticate?client_id={PUTIO_CLIENT_ID}&response_type=code&redirect_uri={dynamic_redirect_uri}"
-    
-    print(f"Using dynamic redirect URI: {dynamic_redirect_uri}")
-    return redirect(auth_url)
-
-@app.route('/putio/callback')
-def putio_callback():
-    if DOWNLOAD_CLIENT != 'putio':
-        return jsonify({'message': 'put.io is not configured as the download client'}), 400
-    
-    code = request.args.get('code')
-    if not code:
-        return jsonify({'message': 'Authorization code not received'}), 400
-    
-    # Retrieve the dynamic redirect URI from session
-    dynamic_redirect_uri = session.get('dynamic_redirect_uri')
-    if not dynamic_redirect_uri:
-        # Fall back to configured URI if not in session
-        dynamic_redirect_uri = PUTIO_REDIRECT_URI
-        
-    # Exchange code for access token
-    token_url = "https://api.put.io/v2/oauth2/access_token"
-    data = {
-        'client_id': PUTIO_CLIENT_ID,
-        'client_secret': PUTIO_CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'redirect_uri': dynamic_redirect_uri,
-        'code': code
-    }
-    
-    print(f"Exchanging token with redirect URI: {dynamic_redirect_uri}")
-    response = requests.post(token_url, data=data)
-    if response.status_code != 200:
-        return jsonify({'message': f'Failed to get access token: {response.text}'}), 400
-    
-    token_data = response.json()
-    session['putio_access_token'] = token_data.get('access_token')
-    
-    return redirect(url_for('search'))
 
 def search_audiobookbay(query, max_pages=5):
     headers = {
@@ -291,13 +228,13 @@ def send_to_putio(magnet_link, title=None):
     """
     Sends a magnet link to put.io using their API
     """
-    if 'putio_access_token' not in session:
-        raise Exception("Not authenticated with put.io")
+    if not PUTIO_ACCESS_TOKEN:
+        raise Exception("Put.io access token not configured")
     
     api_url = "https://api.put.io/v2/transfers/add"
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {session['putio_access_token']}"
+        "Authorization": f"Bearer {PUTIO_ACCESS_TOKEN}"
     }
     
     data = {
@@ -320,13 +257,13 @@ def get_putio_transfers():
     """
     Gets the list of transfers from put.io
     """
-    if 'putio_access_token' not in session:
-        raise Exception("Not authenticated with put.io")
+    if not PUTIO_ACCESS_TOKEN:
+        raise Exception("Put.io access token not configured")
     
     api_url = "https://api.put.io/v2/transfers/list"
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {session['putio_access_token']}"
+        "Authorization": f"Bearer {PUTIO_ACCESS_TOKEN}"
     }
     
     response = requests.get(api_url, headers=headers)
@@ -381,8 +318,8 @@ def send():
             delugeweb.login()
             delugeweb.add_torrent_magnet(magnet_link, save_directory=save_path, label=DL_CATEGORY)
         elif DOWNLOAD_CLIENT == 'putio':
-            if 'putio_access_token' not in session:
-                return jsonify({'message': 'Not authenticated with put.io. Please login first.'}), 401
+            if not PUTIO_ACCESS_TOKEN:
+                return jsonify({'message': 'Put.io access token not configured. Please set PUTIO_ACCESS_TOKEN environment variable.'}), 401
             send_to_putio(magnet_link, title)
         else:
             return jsonify({'message': 'Unsupported download client'}), 400
@@ -437,8 +374,8 @@ def status():
                 for k, torrent in torrents.result.items()
             ]
         elif DOWNLOAD_CLIENT == 'putio':
-            if 'putio_access_token' not in session:
-                return render_template('status.html', need_auth=True)
+            if not PUTIO_ACCESS_TOKEN:
+                return jsonify({'message': 'Put.io access token not configured. Please set PUTIO_ACCESS_TOKEN environment variable.'}), 401
                 
             transfers = get_putio_transfers()
             torrent_list = [

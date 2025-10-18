@@ -256,10 +256,9 @@
     <h1>Search for Audiobooks</h1>
 </div>
 
-{% if not putio_authenticated and putio_client_id %}
+{% if not putio_authenticated %}
 <div class="auth-banner">
-    <p>You need to authenticate with put.io to download files.</p>
-    <a href="/putio/auth" style="background-color: white; color: #f44336; padding: 8px 16px; text-decoration: none; border-radius: 4px; display: inline-block; margin-top: 8px; font-weight: bold;">Login to put.io</a>
+    <p>Put.io access token is not configured. Please set the PUTIO_ACCESS_TOKEN environment variable.</p>
 </div>
 {% endif %}
 

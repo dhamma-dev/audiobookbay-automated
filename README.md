@@ -33,15 +33,17 @@ AudiobookBay Downloader provides a simple and user-friendly interface for users 
 ## Installation
 
 ### Prerequisites
-- **Deluge, qBittorrent or Transmission** (with the WebUI enabled)
+- **Deluge, qBittorrent, Transmission, or Put.io** (with WebUI enabled for local clients)
 - **Docker** (optional, for containerized deployments)
 
 ### Environment Variables
 The app uses environment variables to configure its behavior. Below are the required variables:
 
+**For qBittorrent, Transmission, or Deluge:**
 ```env
+DOWNLOAD_CLIENT=qbittorrent    # or transmission, delugeweb
 DL_SCHEME=http
-DL_HOST=192.168.xxx.xxx        # IP or hostname of your qBittorrent or Transmission instance
+DL_HOST=192.168.xxx.xxx        # IP or hostname of your torrent client
 DL_PORT=8080                   # torrent WebUI port
 DL_USERNAME=YOUR_USER          # torrent username
 DL_PASSWORD=YOUR_PASSWORD      # torrent password
@@ -49,6 +51,21 @@ DL_CATEGORY=abb-downloader     # torrent category for downloads
 SAVE_PATH_BASE=/audiobooks     # Root path for audiobook downloads (relative to torrent)
 ABB_HOSTNAME='audiobookbay.is' #Default
 ```
+
+**For Put.io:**
+```env
+DOWNLOAD_CLIENT=putio
+PUTIO_ACCESS_TOKEN=YOUR_TOKEN  # OAuth token from put.io (see instructions below)
+PUTIO_SAVE_PARENT_ID=0         # Optional: Folder ID to save downloads (0 for root)
+ABB_HOSTNAME='audiobookbay.is' #Default
+```
+
+#### Getting Your Put.io Access Token
+1. Log in to your Put.io account
+2. Go to Settings → Applications → OAuth Apps
+3. Create a new application or use an existing one
+4. Copy the OAuth Token and use it as `PUTIO_ACCESS_TOKEN`
+
 The following optional variables add an additional entry to the navigation bar. This is useful for linking to your audiobook player or another related service:
 
 ```
@@ -60,6 +77,7 @@ NAV_LINK_URL=https://audiobooks.yourdomain.com/
 
 1. Use `docker-compose` for quick deployment. Example `docker-compose.yml`:
 
+   **For qBittorrent/Transmission/Deluge:**
    ```yaml
    version: '3.8'
 
@@ -78,7 +96,26 @@ NAV_LINK_URL=https://audiobooks.yourdomain.com/
          - DL_PASSWORD=pass
          - DL_CATEGORY=abb-downloader
          - SAVE_PATH_BASE=/audiobooks
-         - ABB_HOSTNAME='audiobookbay.is' #Default
+         - ABB_HOSTNAME=audiobookbay.is
+         - NAV_LINK_NAME=Open Audiobook Player #Optional
+         - NAV_LINK_URL=https://audiobooks.yourdomain.com/ #Optional
+   ```
+
+   **For Put.io:**
+   ```yaml
+   version: '3.8'
+
+   services:
+     audiobookbay-downloader:
+       image: ghcr.io/jamesry96/audiobookbay-automated:latest
+       ports:
+         - "5078:5078"
+       container_name: audiobookbay-downloader
+       environment:
+         - DOWNLOAD_CLIENT=putio
+         - PUTIO_ACCESS_TOKEN=YOUR_PUTIO_TOKEN
+         - PUTIO_SAVE_PARENT_ID=0
+         - ABB_HOSTNAME=audiobookbay.is
          - NAV_LINK_NAME=Open Audiobook Player #Optional
          - NAV_LINK_URL=https://audiobooks.yourdomain.com/ #Optional
    ```
@@ -94,10 +131,12 @@ NAV_LINK_URL=https://audiobooks.yourdomain.com/
    ```bash
    pip install -r requirements.txt
    
-2. Create a .env file in the project directory to configure your application. Below is an  example of the required variables:
+2. Create a .env file in the project directory to configure your application. Below are examples:
+
+    **For qBittorrent/Transmission/Deluge:**
     ```
     # Torrent Client Configuration
-    DOWNLOAD_CLIENT=transmission # Change to delugeweb, transmission or qbittorrent
+    DOWNLOAD_CLIENT=qbittorrent # Change to delugeweb, transmission, or putio
     DL_SCHEME=http
     DL_HOST=192.168.1.123
     DL_PORT=8080
@@ -106,9 +145,23 @@ NAV_LINK_URL=https://audiobooks.yourdomain.com/
     DL_CATEGORY=abb-downloader
     SAVE_PATH_BASE=/audiobooks
     
-    # AudiobookBar Hostname
-    ABB_HOSTNAME='audiobookbay.is' #Default
-    # ABB_HOSTNAME='audiobookbay.lu' #Alternative
+    # AudiobookBay Hostname
+    ABB_HOSTNAME=audiobookbay.is
+
+    # Optional Navigation Bar Entry
+    NAV_LINK_NAME=Open Audiobook Player
+    NAV_LINK_URL=https://audiobooks.yourdomain.com/
+    ```
+
+    **For Put.io:**
+    ```
+    # Put.io Configuration
+    DOWNLOAD_CLIENT=putio
+    PUTIO_ACCESS_TOKEN=YOUR_PUTIO_TOKEN
+    PUTIO_SAVE_PARENT_ID=0
+    
+    # AudiobookBay Hostname
+    ABB_HOSTNAME=audiobookbay.is
 
     # Optional Navigation Bar Entry
     NAV_LINK_NAME=Open Audiobook Player
