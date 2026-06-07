@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 360" width="240" height="360" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a2317"/>
+      <stop offset="1" stop-color="#17130d"/>
+    </linearGradient>
+    <linearGradient id="brass2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0b863"/>
+      <stop offset="1" stop-color="#b07f2f"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.42" r="0.5">
+      <stop offset="0" stop-color="#e3a44a" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#e3a44a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="240" height="360" fill="url(#cover)"/>
+  <rect width="240" height="360" fill="url(#halo)"/>
+  <!-- centered headphones: survives any crop -->
+  <g transform="translate(120 180)" fill="none" stroke="url(#brass2)" stroke-linecap="round">
+    <path d="M-42 8a42 42 0 0 1 84 0" stroke-width="7" stroke-opacity="0.9"/>
+    <rect x="-50" y="4" width="20" height="40" rx="10" fill="url(#brass2)" stroke="none"/>
+    <rect x="30" y="4" width="20" height="40" rx="10" fill="url(#brass2)" stroke="none"/>
+  </g>
+  <!-- faint sound bars beneath, centered -->
+  <g transform="translate(120 250)" stroke="url(#brass2)" stroke-width="5" stroke-linecap="round" opacity="0.55">
+    <line x1="-21" y1="-5" x2="-21" y2="5"/>
+    <line x1="-10.5" y1="-12" x2="-10.5" y2="12"/>
+    <line x1="0" y1="-7" x2="0" y2="7"/>
+    <line x1="10.5" y1="-14" x2="10.5" y2="14"/>
+    <line x1="21" y1="-6" x2="21" y2="6"/>
+  </g>
+</svg>

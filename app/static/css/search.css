@@ -1,119 +1,126 @@
-body {
-    font-family: Arial, sans-serif;
-    margin: 0;
-    padding: 0;
-    background: linear-gradient(135deg, #6a1b9a, #8e24aa, #9c27b0);
-    color: white;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-}
-h1 {
-    margin-top: 20px;
-    font-size: 2.5rem;
-    text-shadow: 2px 2px 5px rgba(0, 0, 0, 0.5);
-}
-form {
-    margin: 20px 0;
-    display: flex;
-    justify-content: center; /* Center the form content */
-    align-items: center; /* Center the form content vertically */
-}
-input[type="text"] {
-    padding: 10px;
-    border: none;
-    border-radius: 5px;
-    width: 300px;
-    font-size: 1rem;
-}
-button {
-    padding: 10px 20px;
-    width: 100%;
-    background-color: #512da8;
-    border: none;
-    border-radius: 5px;
-    color: white;
-    font-size: 1rem;
-    cursor: pointer;
-    transition: background-color 0.3s;
-    margin-bottom: 10px;
-}
-button:hover {
-    background-color: #673ab7;
-}
-table {
-    width: 90%;
-    max-width: 1000px;
-    margin-top: 20px;
-    border-collapse: collapse;
-    background-color: rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-    overflow: hidden;
-}
-td {
-    padding: 15px;
-    text-align: left;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-}
-img.cover {
-    border-radius: 5px;
-}
-.search-container {
-    display: flex;
-    flex-direction: column; /* Stack the input and button vertically */
-    align-items: center; /* Center the content horizontally */
-    width: 100%;
-}
-.search-bar {
-    width: 100%; /* Make the search bar full width */
-    padding: 10px; /* Adjust padding as needed */
-    box-sizing: border-box; /* Ensure padding is included in the width */
-    margin-bottom: 10px; /* Add some space between the input and button */
-}
-.search-button {
-    width: auto; /* Set the button width to auto */
-    padding: 10px 20px; /* Add padding to the button */
-    background-color: #512da8;
-    border: none;
-    border-radius: 5px;
-    color: white;
-    font-size: 1rem;
-    cursor: pointer;
-    transition: background-color 0.3s;
+.search-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-8);
 }
 
-/* Loading spinner styles */
-.loading-spinner {
-    display: none; /* Hidden by default */
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    margin-top: 20px;
+.search-input-wrapper {
+  position: relative;
+  flex: 1;
 }
 
-.spinner {
-    width: 50px;
-    height: 50px;
-    border: 5px solid rgba(255, 255, 255, 0.3);
-    border-top: 5px solid white;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
+.search-input-icon {
+  position: absolute;
+  left: var(--space-4);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-subtle);
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  transition: color var(--transition-fast);
 }
 
-.loading-spinner p {
-    margin-top: 10px;
-    font-size: 1rem;
-    color: white;
+.search-input-wrapper:focus-within .search-input-icon {
+  color: var(--color-accent);
 }
 
-/* Spinner animation */
-@keyframes spin {
-    0% {
-        transform: rotate(0deg);
-    }
-    100% {
-        transform: rotate(360deg);
-    }
+.search-input {
+  width: 100%;
+  padding: 14px var(--space-4) 14px 46px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.search-input::placeholder {
+  color: var(--color-text-subtle);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  background-color: var(--color-bg-tint);
+  box-shadow: 0 0 0 4px var(--color-accent-muted);
+}
+
+.search-results-header {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.search-results,
+.search-skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Hidden by default; shown only when JS adds .is-loading.
+   The [hidden] attribute (with !important in base.css) is the
+   authoritative off-switch, so skeletons can never get stuck on. */
+.search-skeletons {
+  display: none;
+}
+
+.search-skeletons.is-loading {
+  display: flex;
+}
+
+/* Stagger the result cards as they arrive. */
+.search-results > .book-card {
+  animation: rise-in var(--transition-base) ease both;
+}
+.search-results > .book-card:nth-child(2) { animation-delay: 60ms; }
+.search-results > .book-card:nth-child(3) { animation-delay: 120ms; }
+.search-results > .book-card:nth-child(4) { animation-delay: 180ms; }
+.search-results > .book-card:nth-child(5) { animation-delay: 240ms; }
+.search-results > .book-card:nth-child(n+6) { animation-delay: 300ms; }
+
+.skeleton-card .book-cover-container {
+  background-color: var(--color-surface-2);
+}
+
+.skeleton-card .skeleton-title {
+  height: 24px;
+  width: 70%;
+  margin-bottom: var(--space-2);
+}
+
+.skeleton-card .skeleton-meta {
+  height: 56px;
+}
+
+.skeleton-card .skeleton-actions {
+  height: 38px;
+  width: 220px;
+  margin-top: var(--space-2);
+}
+
+@media (min-width: 640px) {
+  .search-form {
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .search-form .btn-primary {
+    flex-shrink: 0;
+    align-self: stretch;
+    padding-left: var(--space-8);
+    padding-right: var(--space-8);
+  }
+
+  .skeleton-card .book-cover-container {
+    width: 132px;
+  }
 }

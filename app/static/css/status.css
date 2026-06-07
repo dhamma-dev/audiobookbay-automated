@@ -1,44 +1,28 @@
-body {
-    font-family: Arial, sans-serif;
-    margin: 0;
-    padding: 0;
-    background: linear-gradient(135deg, #6a1b9a, #8e24aa, #9c27b0);
-    color: white;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
+.downloads-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
-h1 {
-    margin-top: 20px;
-    font-size: 2.5rem;
-    text-shadow: 2px 2px 5px rgba(0, 0, 0, 0.5);
+
+.downloads-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  gap: var(--space-3);
 }
-table {
-    width: 90%;
-    max-width: 1000px;
-    margin-top: 20px;
-    border-collapse: collapse;
-    background-color: rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-    overflow: hidden;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+
+.downloads-count {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text);
 }
-th, td {
-    padding: 15px;
-    text-align: left;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-    color: white;
-}
-th {
-    background-color: rgba(0, 0, 0, 0.3);
-    font-weight: bold;
-    text-transform: uppercase;
-}
-td {
-    background-color: rgba(0, 0, 0, 0.1);
-}
-tr:hover td {
-    background-color: rgba(255, 255, 255, 0.2);
+
+.downloads-updated {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  font-variant-numeric: tabular-nums;
+  transition: opacity var(--transition-fast);
 }

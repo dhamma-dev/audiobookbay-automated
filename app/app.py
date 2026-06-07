@@ -1,5 +1,5 @@
 import os, re, requests
-from flask import Flask, request, render_template, jsonify, redirect, session, url_for
+from flask import Flask, request, render_template, jsonify
 from bs4 import BeautifulSoup
 from qbittorrentapi import Client
 from transmission_rpc import Client as transmissionrpc
@@ -15,6 +15,14 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(16))
 load_dotenv()
 
 ABB_HOSTNAME = os.getenv("ABB_HOSTNAME", "audiobookbay.lu")
+
+# Optional outbound request timeout in seconds (e.g. REQUEST_TIMEOUT="45").
+# Unset by default, which preserves the original behavior of waiting as long
+# as the mirror needs. The search UI shows a spinner and always clears it
+# when the response arrives, so a slow search can't leave the page "stuck".
+# Set this only if you want a hard cap on how long a mirror may take.
+_timeout_env = os.getenv("REQUEST_TIMEOUT")
+REQUEST_TIMEOUT = float(_timeout_env) if _timeout_env else None
 
 DOWNLOAD_CLIENT = os.getenv("DOWNLOAD_CLIENT")
 DL_URL = os.getenv("DL_URL")
@@ -61,21 +69,24 @@ if DOWNLOAD_CLIENT == 'putio':
     print(f"PUTIO_SAVE_PARENT_ID: {PUTIO_SAVE_PARENT_ID}")
 
 
-@app.context_processor
-def inject_nav_link():
-    return {
-        'nav_link_name': os.getenv('NAV_LINK_NAME'),
-        'nav_link_url': os.getenv('NAV_LINK_URL')
-    }
+CLIENT_LABELS = {
+    'qbittorrent': 'qBittorrent',
+    'transmission': 'Transmission',
+    'delugeweb': 'Deluge',
+    'putio': 'Put.io',
+}
+
 
 @app.context_processor
-def inject_putio_auth_status():
-    if DOWNLOAD_CLIENT == 'putio':
-        return {
-            'putio_authenticated': bool(PUTIO_ACCESS_TOKEN)
-        }
+def inject_app_config():
+    client = DOWNLOAD_CLIENT or ''
     return {
-        'putio_authenticated': False
+        'nav_link_name': os.getenv('NAV_LINK_NAME'),
+        'nav_link_url': os.getenv('NAV_LINK_URL'),
+        'download_client': client,
+        'download_client_label': CLIENT_LABELS.get(client, 'Download Client'),
+        'show_putio_banner': client == 'putio' and not PUTIO_ACCESS_TOKEN,
+        'page_title_suffix': 'AudiobookBay',
     }
 
 def search_audiobookbay(query, max_pages=5):
@@ -86,7 +97,7 @@ def search_audiobookbay(query, max_pages=5):
     for page in range(1, max_pages + 1):
         url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}"
         try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if response.status_code != 200:
                 print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
                 break
@@ -107,7 +118,7 @@ def search_audiobookbay(query, max_pages=5):
                         
                     title = title_element.text.strip()
                     link = f"https://{ABB_HOSTNAME}{title_element['href']}"
-                    cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.jpg"
+                    cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.svg"
                     
                     # Get post text and replace newlines with spaces to make regex easier
                     post_text = post.text.strip().replace('\n', ' ')
@@ -183,7 +194,7 @@ def extract_magnet_link(details_url):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
     }
     try:
-        response = requests.get(details_url, headers=headers)
+        response = requests.get(details_url, headers=headers, timeout=REQUEST_TIMEOUT)
         if response.status_code != 200:
             print(f"[ERROR] Failed to fetch details page. Status Code: {response.status_code}")
             return None
@@ -245,7 +256,7 @@ def send_to_putio(magnet_link, title=None):
     if PUTIO_SAVE_PARENT_ID:
         data["save_parent_id"] = PUTIO_SAVE_PARENT_ID
     
-    response = requests.post(api_url, data=data, headers=headers)
+    response = requests.post(api_url, data=data, headers=headers, timeout=REQUEST_TIMEOUT)
     
     if response.status_code != 200:
         raise Exception(f"Put.io API error: {response.text}")
@@ -266,7 +277,7 @@ def get_putio_transfers():
         "Authorization": f"Bearer {PUTIO_ACCESS_TOKEN}"
     }
     
-    response = requests.get(api_url, headers=headers)
+    response = requests.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
     
     if response.status_code != 200:
         raise Exception(f"Put.io API error: {response.text}")
@@ -281,13 +292,12 @@ def sanitize_title(title):
 @app.route('/', methods=['GET', 'POST'])
 def search():
     books = []
-    if request.method == 'POST':  # Form submitted
-        query = request.form['query']
-        #Convert to all lowercase
-        query = query.lower()
-        if query:  # Only search if the query is not empty
+    query = ''
+    if request.method == 'POST':
+        query = request.form.get('query', '').strip().lower()
+        if query:
             books = search_audiobookbay(query)
-    return render_template('search.html', books=books)
+    return render_template('search.html', books=books, query=query, result_count=len(books))
 
 
 # Endpoint to send magnet link to download client
@@ -328,68 +338,78 @@ def send():
     except Exception as e:
         return jsonify({'message': str(e)}), 500
 
+def get_torrent_list():
+    if DOWNLOAD_CLIENT == 'transmission':
+        transmission = transmissionrpc(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
+        torrents = transmission.get_torrents()
+        return [
+            {
+                'name': torrent.name,
+                'progress': round(torrent.progress, 2),
+                'state': torrent.status,
+                'size': f"{torrent.total_size / (1024 * 1024):.2f} MB"
+            }
+            for torrent in torrents
+        ]
+    if DOWNLOAD_CLIENT == 'qbittorrent':
+        qb = Client(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
+        qb.auth_log_in()
+        torrents = qb.torrents_info(category=DL_CATEGORY)
+        return [
+            {
+                'name': torrent.name,
+                'progress': round(torrent.progress * 100, 2),
+                'state': torrent.state,
+                'size': f"{torrent.total_size / (1024 * 1024):.2f} MB"
+            }
+            for torrent in torrents
+        ]
+    if DOWNLOAD_CLIENT == 'delugeweb':
+        delugeweb = delugewebclient(url=DL_URL, password=DL_PASSWORD)
+        delugeweb.login()
+        torrents = delugeweb.get_torrents_status(
+            filter_dict={"label": DL_CATEGORY},
+            keys=["name", "state", "progress", "total_size"],
+        )
+        return [
+            {
+                "name": torrent["name"],
+                "progress": round(torrent["progress"], 2),
+                "state": torrent["state"],
+                "size": f"{torrent['total_size'] / (1024 * 1024):.2f} MB",
+            }
+            for k, torrent in torrents.result.items()
+        ]
+    if DOWNLOAD_CLIENT == 'putio':
+        if not PUTIO_ACCESS_TOKEN:
+            raise ValueError('Put.io access token not configured. Please set PUTIO_ACCESS_TOKEN environment variable.')
+        transfers = get_putio_transfers()
+        return [
+            {
+                'name': transfer.get('name', 'Unknown'),
+                'progress': transfer.get('percent_done', 0),
+                'state': transfer.get('status', 'Unknown'),
+                'size': f"{transfer.get('size', 0) / (1024 * 1024):.2f} MB"
+            }
+            for transfer in transfers
+        ]
+    raise ValueError('Unsupported download client')
+
+
 @app.route('/status')
 def status():
     try:
-        if DOWNLOAD_CLIENT == 'transmission':
-            transmission = transmissionrpc(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
-            torrents = transmission.get_torrents()
-            torrent_list = [
-                {
-                    'name': torrent.name,
-                    'progress': round(torrent.progress, 2),
-                    'state': torrent.status,
-                    'size': f"{torrent.total_size / (1024 * 1024):.2f} MB"
-                }
-                for torrent in torrents
-            ]
-            return render_template('status.html', torrents=torrent_list)
-        elif DOWNLOAD_CLIENT == 'qbittorrent':
-            qb = Client(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
-            qb.auth_log_in()
-            torrents = qb.torrents_info(category=DL_CATEGORY)
-            torrent_list = [
-                {
-                    'name': torrent.name,
-                    'progress': round(torrent.progress * 100, 2),
-                    'state': torrent.state,
-                    'size': f"{torrent.total_size / (1024 * 1024):.2f} MB"
-                }
-                for torrent in torrents
-            ]
-        elif DOWNLOAD_CLIENT == "delugeweb":
-            delugeweb = delugewebclient(url=DL_URL, password=DL_PASSWORD)
-            delugeweb.login()
-            torrents = delugeweb.get_torrents_status(
-                filter_dict={"label": DL_CATEGORY},
-                keys=["name", "state", "progress", "total_size"],
-            )
-            torrent_list = [
-                {
-                    "name": torrent["name"],
-                    "progress": round(torrent["progress"], 2),
-                    "state": torrent["state"],
-                    "size": f"{torrent['total_size'] / (1024 * 1024):.2f} MB",
-                }
-                for k, torrent in torrents.result.items()
-            ]
-        elif DOWNLOAD_CLIENT == 'putio':
-            if not PUTIO_ACCESS_TOKEN:
-                return jsonify({'message': 'Put.io access token not configured. Please set PUTIO_ACCESS_TOKEN environment variable.'}), 401
-                
-            transfers = get_putio_transfers()
-            torrent_list = [
-                {
-                    'name': transfer.get('name', 'Unknown'),
-                    'progress': transfer.get('percent_done', 0),
-                    'state': transfer.get('status', 'Unknown'),
-                    'size': f"{transfer.get('size', 0) / (1024 * 1024):.2f} MB"
-                }
-                for transfer in transfers
-            ]
-        else:
-            return jsonify({'message': 'Unsupported download client'}), 400
+        torrent_list = get_torrent_list()
         return render_template('status.html', torrents=torrent_list)
+    except Exception as e:
+        return render_template('status.html', torrents=[], error=str(e))
+
+
+@app.route('/api/status')
+def api_status():
+    try:
+        torrent_list = get_torrent_list()
+        return jsonify({'torrents': torrent_list})
     except Exception as e:
         return jsonify({'message': f"Failed to fetch torrent status: {e}"}), 500
 

@@ -1,16 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Background -->
-  <rect width="512" height="512" rx="100" fill="#673ab7"/>
-  
-  <!-- Book -->
-  <path d="M128 128 L384 128 L384 384 L128 384 Z" fill="#ffffff"/>
-  <path d="M136 136 L376 136 L376 376 L136 376 Z" fill="#673ab7"/>
-  
-  <!-- Book pages -->
-  <path d="M256 136 L256 376" stroke="#ffffff" stroke-width="4"/>
-  
-  <!-- Headphones -->
-  <path d="M96 256 Q96 160 256 160 Q416 160 416 256" stroke="#ffffff" stroke-width="20" fill="none"/>
-  <rect x="76" y="256" width="40" height="80" rx="20" fill="#ffffff"/>
-  <rect x="396" y="256" width="40" height="80" rx="20" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#241d12"/>
+      <stop offset="1" stop-color="#14110c"/>
+    </linearGradient>
+    <linearGradient id="brass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0b863"/>
+      <stop offset="1" stop-color="#e3a44a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" fill="none" stroke="#e3a44a" stroke-opacity="0.25" stroke-width="1.5"/>
+  <!-- open book -->
+  <path d="M32 19c-4.2-2.6-9-3-13.5-2.4-1 .14-1.7 1-1.7 2v20.3c0 1.2 1 2.1 2.2 2 4-.4 8.3.1 11.9 2.3" fill="none" stroke="url(#brass)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 19c4.2-2.6 9-3 13.5-2.4 1 .14 1.7 1 1.7 2v20.3c0 1.2-1 2.1-2.2 2-4-.4-8.3.1-11.9 2.3" fill="none" stroke="url(#brass)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
+  <!-- sound wave -->
+  <g stroke="url(#brass)" stroke-width="2.6" stroke-linecap="round">
+    <line x1="25" y1="50" x2="25" y2="54"/>
+    <line x1="30" y1="47" x2="30" y2="57"/>
+    <line x1="35" y1="49" x2="35" y2="55"/>
+    <line x1="40" y1="45" x2="40" y2="59"/>
+  </g>
 </svg>

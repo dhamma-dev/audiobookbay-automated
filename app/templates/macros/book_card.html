@@ -1,0 +1,50 @@
+{% from "macros/metadata_item.html" import render as meta %}
+
+{% macro render(book, download_client_label) %}
+<div class="book-card">
+  <div class="book-cover-container">
+    <img
+      src="{{ book.cover }}"
+      alt="{{ book.title }} cover"
+      class="book-cover"
+      loading="lazy"
+      onerror="this.onerror=null;this.src='{{ url_for('static', filename='images/default-cover.svg') }}';"
+    >
+  </div>
+  <div class="book-details">
+    <h2 class="book-title">{{ book.title }}</h2>
+
+    <div class="metadata-grid">
+      {{ meta('Size', book.size) }}
+      {{ meta('Format', book.format) }}
+      {{ meta('Bitrate', book.bitrate) }}
+      {{ meta('Language', book.language) }}
+    </div>
+
+    {% if book.keywords %}
+    <div class="keywords-container">
+      {% for keyword in book.keywords %}
+      <span class="badge badge-accent">{{ keyword }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="book-actions">
+      <a href="{{ book.link }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+        <i data-lucide="external-link" aria-hidden="true"></i>
+        View on ABB
+      </a>
+      <button
+        type="button"
+        class="btn btn-primary"
+        data-action="download"
+        data-link="{{ book.link | e }}"
+        data-title="{{ book.title | e }}"
+      >
+        <i data-lucide="download" aria-hidden="true"></i>
+        Send to {{ download_client_label }}
+      </button>
+    </div>
+  </div>
+</div>
+{% endmacro %}

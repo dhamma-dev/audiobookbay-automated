@@ -3,25 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Flask App{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    {% block extra_css %}{% endblock %}
-    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
-<link rel="shortcut icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
-<link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='images/apple-touch-icon.png') }}">
+    <meta name="color-scheme" content="dark">
+    <title>{% block title %}AudiobookBay{% endblock %} — {{ page_title_suffix }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/layout.css') }}">
+    {% block page_css %}{% endblock %}
 </head>
 <body>
-    <!-- Navbar -->
-    <div class="navbar">
-        <a href="{{ url_for('search') }}" class="{% if request.endpoint == 'search' %}active{% endif %}">Search</a>
-        {% if nav_link_name and nav_link_url %}
-        <a href="{{ nav_link_url }}" target="_blank">{{ nav_link_name }}</a>
-        {% endif %}
-    </div>
+    <nav class="navbar" aria-label="Main navigation">
+        <div class="navbar-inner">
+            <a href="{{ url_for('search') }}" class="navbar-brand">
+                <img src="{{ url_for('static', filename='images/favicon.svg') }}" alt="">
+                AudiobookBay
+            </a>
+            <div class="navbar-links">
+                <a href="{{ url_for('search') }}" class="{% if request.endpoint == 'search' %}active{% endif %}">
+                    <i data-lucide="search" aria-hidden="true"></i>
+                    Search
+                </a>
+                <a href="{{ url_for('status') }}" class="{% if request.endpoint == 'status' %}active{% endif %}">
+                    <i data-lucide="download" aria-hidden="true"></i>
+                    Downloads
+                </a>
+                {% if nav_link_name and nav_link_url %}
+                <a href="{{ nav_link_url }}" target="_blank" rel="noopener noreferrer">
+                    <i data-lucide="external-link" aria-hidden="true"></i>
+                    {{ nav_link_name }}
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
 
-    <!-- Page Content -->
-    <div class="content">
+    <main class="content">
         {% block content %}{% endblock %}
-    </div>
+    </main>
+
+    <footer class="footer">
+        Powered by AudioBook Bay
+    </footer>
+
+    <div id="toast-container" role="region" aria-live="polite" aria-label="Notifications"></div>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 </body>
 </html>

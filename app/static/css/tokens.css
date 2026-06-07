@@ -1,0 +1,75 @@
+:root {
+  /* ---- Surfaces: warm, layered charcoal (a dim study at night) ---- */
+  --color-bg: #14110c;
+  --color-bg-tint: #1b1610;
+  --color-surface: #1f1a12;
+  --color-surface-2: #2a2317;
+  --color-border: #392f1f;
+  --color-border-strong: #4a3d28;
+  --color-border-focus: #e3a44a;
+
+  /* ---- Ink: parchment & faded paper ---- */
+  --color-text: #f2e9d8;
+  --color-text-muted: #b8a988;
+  --color-text-subtle: #877a5e;
+
+  /* ---- Accent: a brass reading lamp ---- */
+  --color-accent: #e3a44a;
+  --color-accent-hover: #f0b863;
+  --color-accent-ink: #2a1d09;
+  --color-accent-muted: rgba(227, 164, 74, 0.14);
+  --color-accent-soft: rgba(227, 164, 74, 0.22);
+
+  /* ---- Semantic states (kept inside the warm family) ---- */
+  --color-success: #8db86c;
+  --color-success-muted: rgba(141, 184, 108, 0.16);
+  --color-warning: #e08b3c;
+  --color-warning-muted: rgba(224, 139, 60, 0.16);
+  --color-error: #d76a52;
+  --color-error-muted: rgba(215, 106, 82, 0.16);
+  --color-info: #6fa6a8;
+  --color-info-muted: rgba(111, 166, 168, 0.18);
+
+  /* ---- Type ---- */
+  --font-sans: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Fraunces', 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.3rem;
+  --text-2xl: 1.6rem;
+  --text-3xl: 2.1rem;
+
+  /* ---- Spacing ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ---- Radii ---- */
+  --radius-sm: 7px;
+  --radius-md: 11px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* ---- Shadows: soft and warm, never harsh black ---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 6px 20px -6px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 18px 44px -12px rgba(0, 0, 0, 0.7);
+  --shadow-glow: 0 0 0 1px rgba(227, 164, 74, 0.25), 0 10px 30px -10px rgba(227, 164, 74, 0.2);
+
+  --nav-height: 60px;
+  --content-max: 960px;
+  --content-wide: 1120px;
+
+  --transition-fast: 140ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 240ms cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out-back: 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}

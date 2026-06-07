@@ -1,33 +1,52 @@
 {% extends "base.html" %}
+{% from "macros/download_row.html" import render as download_row %}
+{% from "macros/empty_state.html" import render as empty_state %}
 
-{% block title %}Torrent Status{% endblock %}
-
-{% block extra_css %}
+{% block title %}Downloads{% endblock %}
+{% block page_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}">
 {% endblock %}
 
 {% block content %}
-<div class="title-container">
-    <h1>Torrent Status</h1>
+<div class="page-header">
+    <div class="page-header-row">
+        <div>
+            <span class="page-header-eyebrow">Transfers</span>
+            <h1>Downloads</h1>
+            <p>Monitor active transfers from {{ download_client_label }}.</p>
+        </div>
+        <button type="button" class="btn btn-secondary" data-action="refresh-downloads">
+            <i data-lucide="refresh-cw" aria-hidden="true"></i>
+            Refresh
+        </button>
+    </div>
 </div>
-<table>
-    <thead>
-        <tr>
-            <th>Title</th>
-            <th>Progress</th>
-            <th>State</th>
-            <th>Size</th>
-        </tr>
-    </thead>
-    <tbody>
+
+{% if error %}
+<div class="alert alert-error" role="alert">
+    <i data-lucide="alert-circle" aria-hidden="true"></i>
+    <span>Couldn't load downloads: {{ error }}</span>
+</div>
+{% endif %}
+
+<div class="downloads-toolbar">
+    <span id="downloads-count" class="downloads-count">
+        {% if torrents %}
+        {{ torrents | length }} active download{{ 's' if torrents | length != 1 else '' }}
+        {% else %}
+        No active downloads
+        {% endif %}
+    </span>
+    <span id="downloads-updated" class="downloads-updated"></span>
+</div>
+
+<div id="downloads-list" class="downloads-list" role="region" aria-live="polite" aria-label="Active downloads">
+    {% if torrents %}
         {% for torrent in torrents %}
-        <tr>
-            <td>{{ torrent.name }}</td>
-            <td>{{ torrent.progress }}%</td>
-            <td>{{ torrent.state }}</td>
-            <td>{{ torrent.size }}</td>
-        </tr>
+        {{ download_row(torrent) }}
         {% endfor %}
-    </tbody>
-</table>
+    {% else %}
+    {{ empty_state('inbox', 'No active downloads', 'Downloads you send will appear here.') }}
+    {% endif %}
+</div>
 {% endblock %}

@@ -1,0 +1,26 @@
+{% macro state_badge_class(state) %}
+{%- set s = state | lower -%}
+{%- if 'downloading' in s or 'active' in s or 'checking' in s -%}badge-info
+{%- elif 'seeding' in s or 'uploading' in s or 'complete' in s or 'finished' in s -%}badge-success
+{%- elif 'error' in s or 'missing' in s or 'failed' in s -%}badge-error
+{%- else -%}badge-neutral
+{%- endif -%}
+{% endmacro %}
+
+{% macro render(torrent) %}
+<div class="download-card">
+  <div class="download-card-header">
+    <span class="download-name" title="{{ torrent.name }}">{{ torrent.name }}</span>
+    <span class="download-size">{{ torrent.size }}</span>
+  </div>
+  <div class="progress-row">
+    <div class="progress-bar" role="progressbar" aria-valuenow="{{ torrent.progress }}" aria-valuemin="0" aria-valuemax="100">
+      <div class="progress-bar-fill" style="width: {{ torrent.progress }}%"></div>
+    </div>
+    <span class="progress-percent">{{ torrent.progress }}%</span>
+  </div>
+  <div class="download-card-footer">
+    <span class="badge {{ state_badge_class(torrent.state) }}">{{ torrent.state }}</span>
+  </div>
+</div>
+{% endmacro %}

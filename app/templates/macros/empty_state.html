@@ -1,0 +1,7 @@
+{% macro render(icon, title, subtitle) %}
+<div class="empty-state">
+  <i data-lucide="{{ icon }}" class="empty-state-icon" aria-hidden="true"></i>
+  <p class="empty-state-title">{{ title }}</p>
+  <p class="empty-state-subtitle">{{ subtitle }}</p>
+</div>
+{% endmacro %}
