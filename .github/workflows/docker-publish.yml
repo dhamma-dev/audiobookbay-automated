@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch: {}
 
 # Allow the built-in GITHUB_TOKEN to push packages to this repo's GHCR namespace.
 permissions:
