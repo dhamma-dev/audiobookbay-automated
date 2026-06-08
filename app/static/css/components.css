@@ -251,6 +251,35 @@
   box-shadow: var(--shadow-md);
 }
 
+/* Preferred M4B results: accent border + a "Recommended" ribbon up top. */
+.book-card.is-m4b {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent-soft);
+}
+
+.book-card.is-m4b:hover {
+  border-color: var(--color-accent-hover);
+  box-shadow: 0 0 0 1px var(--color-accent-soft), var(--shadow-md);
+}
+
+.m4b-ribbon {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-4);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.m4b-ribbon svg {
+  width: 14px;
+  height: 14px;
+}
+
 .book-cover-container {
   position: relative;
   width: 100%;

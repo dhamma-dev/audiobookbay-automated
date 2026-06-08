@@ -59,6 +59,11 @@
   border-bottom: 1px solid var(--color-border);
 }
 
+.results-m4b-note {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
 .search-results,
 .search-skeletons {
   display: flex;

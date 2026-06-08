@@ -68,6 +68,7 @@
         {% if books %}
         <p class="search-results-header">
             {{ result_count }} result{{ 's' if result_count != 1 else '' }} for &ldquo;{{ query }}&rdquo;
+            {% if m4b_count %}<span class="results-m4b-note">· {{ m4b_count }} M4B {{ 'pick' if m4b_count == 1 else 'picks' }} up top</span>{% endif %}
         </p>
         {% for book in books %}
         {{ book_card(book, download_client_label) }}

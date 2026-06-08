@@ -376,6 +376,12 @@ def search_audiobookbay(query, max_pages=5):
                         keywords_text = keywords_match.group(1).strip()
                         keywords = [kw.strip() for kw in keywords_text.split(',')]
                     
+                    # Flag M4B (the preferred single-file audiobook format).
+                    # Check format, title and keywords since posts aren't
+                    # consistent about where they mention it.
+                    haystack = f"{title} {format_info} {' '.join(keywords)}".lower()
+                    is_m4b = 'm4b' in haystack
+
                     results.append({
                         'title': title,
                         'link': link,
@@ -384,7 +390,8 @@ def search_audiobookbay(query, max_pages=5):
                         'format': format_info,
                         'bitrate': bitrate,
                         'language': language,
-                        'keywords': keywords
+                        'keywords': keywords,
+                        'is_m4b': is_m4b
                     })
                     
                 except Exception as e:
@@ -507,7 +514,13 @@ def search():
         query = request.form.get('query', '').strip().lower()
         if query:
             books = search_audiobookbay(query)
-    return render_template('search.html', books=books, query=query, result_count=len(books))
+            # Float the preferred M4B results to the top. Python's sort is
+            # stable, so the mirror's original ordering is preserved within
+            # the M4B and non-M4B groups.
+            books.sort(key=lambda b: not b.get('is_m4b'))
+    m4b_count = sum(1 for b in books if b.get('is_m4b'))
+    return render_template('search.html', books=books, query=query,
+                           result_count=len(books), m4b_count=m4b_count)
 
 
 # Endpoint to send magnet link to download client

@@ -1,7 +1,13 @@
 {% from "macros/metadata_item.html" import render as meta %}
 
 {% macro render(book, download_client_label) %}
-<div class="book-card">
+<div class="book-card{% if book.is_m4b %} is-m4b{% endif %}">
+  {% if book.is_m4b %}
+  <div class="m4b-ribbon" title="M4B is a single-file audiobook with chapters and bookmarks — the recommended format.">
+    <i data-lucide="star" aria-hidden="true"></i>
+    Recommended · M4B
+  </div>
+  {% endif %}
   <div class="book-cover-container">
     <img
       src="{{ book.cover }}"
