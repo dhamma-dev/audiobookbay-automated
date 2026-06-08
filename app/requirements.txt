@@ -1,5 +1,5 @@
 flask
-requests
+requests[socks]
 beautifulsoup4
 qbittorrent-api
 python-dotenv

@@ -73,6 +73,12 @@ NAV_LINK_NAME=Open Audiobook Player
 NAV_LINK_URL=https://audiobooks.yourdomain.com/
 ```
 
+Requests to AudiobookBay (search and magnet-link lookups) are routed through Tor
+server's real IP. The app starts and manages its own Tor process on startup —
+USE_TOR=true                # Set to false to send AudiobookBay requests directly
+TOR_AUTOSTART=true          # Set to false to use an already-running Tor instead
+TOR_SOCKS_PORT=9050         # SOCKS port the app starts Tor on / connects to
+TOR_BOOTSTRAP_TIMEOUT=90    # Seconds to wait for Tor to connect before failing
 ### Using Docker
 
 1. Use `docker-compose` for quick deployment. Example `docker-compose.yml`:

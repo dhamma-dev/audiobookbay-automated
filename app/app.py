@@ -1,4 +1,4 @@
-import os, re, requests
+import os, re, requests, atexit, shutil, socket, subprocess, tempfile, threading
 from flask import Flask, request, render_template, jsonify
 from bs4 import BeautifulSoup
 from qbittorrentapi import Client
@@ -23,6 +23,127 @@ ABB_HOSTNAME = os.getenv("ABB_HOSTNAME", "audiobookbay.lu")
 # Set this only if you want a hard cap on how long a mirror may take.
 _timeout_env = os.getenv("REQUEST_TIMEOUT")
 REQUEST_TIMEOUT = float(_timeout_env) if _timeout_env else None
+
+# --- Tor ---------------------------------------------------------------------
+# Outbound requests to AudiobookBay are routed through Tor so the mirror only
+# ever sees a Tor exit node, never the server's real IP. The app starts and
+# manages its own Tor process, so nothing extra has to be running for this to
+# work -- it all comes up with the app.
+#
+#   USE_TOR              - master switch (default on). Set to "false" to send
+#                          AudiobookBay requests directly instead.
+#   TOR_AUTOSTART        - let the app launch its own tor process (default on).
+#                          Disable to point at an already-running Tor instead.
+#   TOR_SOCKS_PORT       - SOCKS port to use / start Tor on (default 9050).
+#   TOR_BOOTSTRAP_TIMEOUT- seconds to wait for Tor to connect (default 90).
+def _is_truthy(value):
+    return value.lower() not in ("0", "false", "no", "off", "")
+
+USE_TOR = _is_truthy(os.getenv("USE_TOR", "true"))
+TOR_AUTOSTART = _is_truthy(os.getenv("TOR_AUTOSTART", "true"))
+TOR_SOCKS_PORT = int(os.getenv("TOR_SOCKS_PORT", "9050"))
+TOR_BOOTSTRAP_TIMEOUT = int(os.getenv("TOR_BOOTSTRAP_TIMEOUT", "90"))
+
+_tor_process = None
+_tor_ready = threading.Event()
+
+
+def _socks_port_open(port):
+    """Return True if something is already accepting connections on the port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _consume_tor_output(proc):
+    """Drain Tor's stdout so its pipe never blocks, surfacing bootstrap progress
+    and warnings in the app logs and flagging when it reaches 100%."""
+    for line in proc.stdout:
+        line = line.strip()
+        if "Bootstrapped" in line or "[err]" in line or "[warn]" in line:
+            print(f"[TOR] {line}")
+        if "Bootstrapped 100%" in line:
+            _tor_ready.set()
+    _tor_ready.set()  # process ended -- unblock any waiter
+
+
+def _stop_tor():
+    if _tor_process and _tor_process.poll() is None:
+        _tor_process.terminate()
+        try:
+            _tor_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _tor_process.kill()
+
+
+def _start_tor():
+    """Launch a Tor process and block until it has bootstrapped. No-op if Tor is
+    already listening on TOR_SOCKS_PORT."""
+    global _tor_process
+
+    if _socks_port_open(TOR_SOCKS_PORT):
+        print(f"[TOR] Reusing Tor already listening on 127.0.0.1:{TOR_SOCKS_PORT}")
+        return
+
+    if not TOR_AUTOSTART:
+        raise RuntimeError(
+            f"USE_TOR is on but nothing is listening on 127.0.0.1:{TOR_SOCKS_PORT} "
+            "and TOR_AUTOSTART is off."
+        )
+
+    tor_bin = shutil.which("tor")
+    if not tor_bin:
+        raise RuntimeError(
+            "USE_TOR is on but the 'tor' binary was not found. Install Tor (the "
+            "Docker image bundles it) or set USE_TOR=false to send requests directly."
+        )
+
+    data_dir = tempfile.mkdtemp(prefix="abb-tor-")
+    print(f"[TOR] Starting Tor (SOCKS 127.0.0.1:{TOR_SOCKS_PORT})...")
+    _tor_process = subprocess.Popen(
+        [
+            tor_bin,
+            "--SocksPort", str(TOR_SOCKS_PORT),
+            "--DataDirectory", data_dir,
+            "--ClientOnly", "1",
+            "--AvoidDiskWrites", "1",
+            "--Log", "notice stdout",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    atexit.register(_stop_tor)
+    threading.Thread(target=_consume_tor_output, args=(_tor_process,), daemon=True).start()
+
+    if not _tor_ready.wait(timeout=TOR_BOOTSTRAP_TIMEOUT):
+        raise RuntimeError(f"Tor did not bootstrap within {TOR_BOOTSTRAP_TIMEOUT}s.")
+    if _tor_process.poll() is not None:
+        raise RuntimeError("Tor exited before it finished bootstrapping; see logs above.")
+    print("[TOR] Tor is ready; AudiobookBay requests will be routed through it.")
+
+
+def _build_session():
+    """Build the requests Session used for AudiobookBay scraping. When Tor is
+    enabled it proxies through Tor's SOCKS port; socks5h keeps DNS resolution on
+    the Tor side too, so the hostname never leaks."""
+    session = requests.Session()
+    if USE_TOR:
+        proxy = f"socks5h://127.0.0.1:{TOR_SOCKS_PORT}"
+        session.proxies = {"http": proxy, "https": proxy}
+    return session
+
+
+def init_outbound():
+    """Bring up Tor (if enabled) and build the scraping session. Called once at
+    startup so everything is ready before the first request."""
+    global SESSION
+    if USE_TOR:
+        _start_tor()
+    SESSION = _build_session()
+
+
+SESSION = None
 
 DOWNLOAD_CLIENT = os.getenv("DOWNLOAD_CLIENT")
 DL_URL = os.getenv("DL_URL")
@@ -55,6 +176,7 @@ NAV_LINK_URL = os.getenv("NAV_LINK_URL")
 
 #Print configuration
 print(f"ABB_HOSTNAME: {ABB_HOSTNAME}")
+print(f"USE_TOR: {USE_TOR}" + (f" (SOCKS 127.0.0.1:{TOR_SOCKS_PORT})" if USE_TOR else ""))
 print(f"DOWNLOAD_CLIENT: {DOWNLOAD_CLIENT}")
 print(f"DL_HOST: {DL_HOST}")
 print(f"DL_PORT: {DL_PORT}")
@@ -97,7 +219,7 @@ def search_audiobookbay(query, max_pages=5):
     for page in range(1, max_pages + 1):
         url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}"
         try:
-            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            response = SESSION.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if response.status_code != 200:
                 print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
                 break
@@ -194,7 +316,7 @@ def extract_magnet_link(details_url):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
     }
     try:
-        response = requests.get(details_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        response = SESSION.get(details_url, headers=headers, timeout=REQUEST_TIMEOUT)
         if response.status_code != 200:
             print(f"[ERROR] Failed to fetch details page. Status Code: {response.status_code}")
             return None
@@ -413,6 +535,11 @@ def api_status():
     except Exception as e:
         return jsonify({'message': f"Failed to fetch torrent status: {e}"}), 500
 
+
+
+# Bring up Tor and the scraping session before serving any requests. Done at
+# import time so it also covers WSGI servers, not just `python app.py`.
+init_outbound()
 
 
 if __name__ == '__main__':
