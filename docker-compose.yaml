@@ -8,6 +8,12 @@ services:
     container_name: audiobookbay-automated
     environment:
       - DOWNLOAD_CLIENT=${DOWNLOAD_CLIENT}
+      # Put.io auth: either OAuth (CLIENT_ID/SECRET, "Log in with Put.io") or a
+      # static PUTIO_ACCESS_TOKEN. See the README for setup.
+      - PUTIO_CLIENT_ID=${PUTIO_CLIENT_ID}
+      - PUTIO_CLIENT_SECRET=${PUTIO_CLIENT_SECRET}
+      - PUTIO_ACCESS_TOKEN=${PUTIO_ACCESS_TOKEN}
+      - PUTIO_SAVE_PARENT_ID=${PUTIO_SAVE_PARENT_ID}
       - DL_HOST=${DL_HOST}
       - DL_PORT=${DL_PORT}
       - DL_USERNAME=${DL_USERNAME}

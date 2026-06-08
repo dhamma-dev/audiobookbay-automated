@@ -37,6 +37,12 @@
                     {{ nav_link_name }}
                 </a>
                 {% endif %}
+                {% if putio_session_login %}
+                <a href="{{ url_for('putio_logout') }}">
+                    <i data-lucide="log-out" aria-hidden="true"></i>
+                    Log out of Put.io
+                </a>
+                {% endif %}
             </div>
         </div>
     </nav>

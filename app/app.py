@@ -1,5 +1,5 @@
 import os, re, requests, atexit, shutil, socket, subprocess, tempfile, threading
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
 from qbittorrentapi import Client
 from transmission_rpc import Client as transmissionrpc
@@ -167,8 +167,24 @@ DL_CATEGORY = os.getenv("DL_CATEGORY", "Audiobookbay-Audiobooks")
 SAVE_PATH_BASE = os.getenv("SAVE_PATH_BASE")
 
 # put.io credentials
+# put.io supports two ways to authenticate:
+#  1. OAuth login flow (the in-app "Log in with Put.io" button). Requires an
+#     OAuth app registered on put.io -> set PUTIO_CLIENT_ID / PUTIO_CLIENT_SECRET.
+#     The resulting per-user token is stored in the Flask session.
+#  2. A static application-specific token via PUTIO_ACCESS_TOKEN (no login needed).
+# If both are present the OAuth session token wins; otherwise whichever is set is
+# used. See get_putio_token().
+PUTIO_CLIENT_ID = os.getenv("PUTIO_CLIENT_ID")
+PUTIO_CLIENT_SECRET = os.getenv("PUTIO_CLIENT_SECRET")
+PUTIO_REDIRECT_URI = os.getenv("PUTIO_REDIRECT_URI")  # Optional fallback redirect URI
 PUTIO_ACCESS_TOKEN = os.getenv("PUTIO_ACCESS_TOKEN")  # Application-specific password
 PUTIO_SAVE_PARENT_ID = os.getenv("PUTIO_SAVE_PARENT_ID")  # Default folder ID to save to
+
+
+def get_putio_token():
+    """Return the active put.io token: the OAuth token from the user's session if
+    they logged in, otherwise the static PUTIO_ACCESS_TOKEN env var (if set)."""
+    return session.get('putio_access_token') or PUTIO_ACCESS_TOKEN
 
 # Custom Nav Link Variables
 NAV_LINK_NAME = os.getenv("NAV_LINK_NAME")
@@ -187,6 +203,8 @@ print(f"SAVE_PATH_BASE: {SAVE_PATH_BASE}")
 print(f"NAV_LINK_NAME: {NAV_LINK_NAME}")
 print(f"NAV_LINK_URL: {NAV_LINK_URL}")
 if DOWNLOAD_CLIENT == 'putio':
+    print(f"PUTIO_CLIENT_ID: {'Set' if PUTIO_CLIENT_ID else 'Not Set'}")
+    print(f"PUTIO_CLIENT_SECRET: {'Set' if PUTIO_CLIENT_SECRET else 'Not Set'}")
     print(f"PUTIO_ACCESS_TOKEN: {'Set' if PUTIO_ACCESS_TOKEN else 'Not Set'}")
     print(f"PUTIO_SAVE_PARENT_ID: {PUTIO_SAVE_PARENT_ID}")
 
@@ -202,14 +220,82 @@ CLIENT_LABELS = {
 @app.context_processor
 def inject_app_config():
     client = DOWNLOAD_CLIENT or ''
+    is_putio = client == 'putio'
+    putio_authenticated = is_putio and bool(get_putio_token())
+    # OAuth login is offered when an OAuth app is configured.
+    putio_oauth_available = is_putio and bool(PUTIO_CLIENT_ID and PUTIO_CLIENT_SECRET)
+    # The user logged in via the OAuth flow (vs. using a static env token).
+    putio_session_login = is_putio and 'putio_access_token' in session
     return {
         'nav_link_name': os.getenv('NAV_LINK_NAME'),
         'nav_link_url': os.getenv('NAV_LINK_URL'),
         'download_client': client,
         'download_client_label': CLIENT_LABELS.get(client, 'Download Client'),
-        'show_putio_banner': client == 'putio' and not PUTIO_ACCESS_TOKEN,
+        # Prompt for auth only when put.io is selected but we have no usable token.
+        'show_putio_banner': is_putio and not putio_authenticated,
+        'putio_authenticated': putio_authenticated,
+        'putio_oauth_available': putio_oauth_available,
+        'putio_session_login': putio_session_login,
         'page_title_suffix': 'AudiobookBay',
     }
+
+# --- put.io OAuth routes -----------------------------------------------------
+@app.route('/putio/auth')
+def putio_auth():
+    if DOWNLOAD_CLIENT != 'putio':
+        return jsonify({'message': 'put.io is not configured as the download client'}), 400
+
+    if not PUTIO_CLIENT_ID:
+        return jsonify({'message': 'put.io client ID not configured'}), 400
+
+    # Build the redirect URI from the current request so it works no matter what
+    # host/port the app is reached on, and stash it for the callback.
+    dynamic_redirect_uri = f"{request.host_url.rstrip('/')}/putio/callback"
+    session['dynamic_redirect_uri'] = dynamic_redirect_uri
+
+    auth_url = (
+        "https://api.put.io/v2/oauth2/authenticate"
+        f"?client_id={PUTIO_CLIENT_ID}&response_type=code&redirect_uri={dynamic_redirect_uri}"
+    )
+    print(f"[PUTIO] Starting OAuth with redirect URI: {dynamic_redirect_uri}")
+    return redirect(auth_url)
+
+
+@app.route('/putio/callback')
+def putio_callback():
+    if DOWNLOAD_CLIENT != 'putio':
+        return jsonify({'message': 'put.io is not configured as the download client'}), 400
+
+    code = request.args.get('code')
+    if not code:
+        return jsonify({'message': 'Authorization code not received'}), 400
+
+    # Reuse the redirect URI from /putio/auth; fall back to the configured one.
+    dynamic_redirect_uri = session.get('dynamic_redirect_uri') or PUTIO_REDIRECT_URI
+
+    token_url = "https://api.put.io/v2/oauth2/access_token"
+    data = {
+        'client_id': PUTIO_CLIENT_ID,
+        'client_secret': PUTIO_CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'redirect_uri': dynamic_redirect_uri,
+        'code': code,
+    }
+
+    response = requests.post(token_url, data=data, timeout=REQUEST_TIMEOUT)
+    if response.status_code != 200:
+        return jsonify({'message': f'Failed to get access token: {response.text}'}), 400
+
+    session['putio_access_token'] = response.json().get('access_token')
+    return redirect(url_for('search'))
+
+
+@app.route('/putio/logout')
+def putio_logout():
+    session.pop('putio_access_token', None)
+    session.pop('dynamic_redirect_uri', None)
+    return redirect(url_for('search'))
+
 
 def search_audiobookbay(query, max_pages=5):
     headers = {
@@ -361,13 +447,14 @@ def send_to_putio(magnet_link, title=None):
     """
     Sends a magnet link to put.io using their API
     """
-    if not PUTIO_ACCESS_TOKEN:
+    token = get_putio_token()
+    if not token:
         raise Exception("Put.io access token not configured")
-    
+
     api_url = "https://api.put.io/v2/transfers/add"
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {PUTIO_ACCESS_TOKEN}"
+        "Authorization": f"Bearer {token}"
     }
     
     data = {
@@ -390,13 +477,14 @@ def get_putio_transfers():
     """
     Gets the list of transfers from put.io
     """
-    if not PUTIO_ACCESS_TOKEN:
+    token = get_putio_token()
+    if not token:
         raise Exception("Put.io access token not configured")
-    
+
     api_url = "https://api.put.io/v2/transfers/list"
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {PUTIO_ACCESS_TOKEN}"
+        "Authorization": f"Bearer {token}"
     }
     
     response = requests.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
@@ -450,8 +538,8 @@ def send():
             delugeweb.login()
             delugeweb.add_torrent_magnet(magnet_link, save_directory=save_path, label=DL_CATEGORY)
         elif DOWNLOAD_CLIENT == 'putio':
-            if not PUTIO_ACCESS_TOKEN:
-                return jsonify({'message': 'Put.io access token not configured. Please set PUTIO_ACCESS_TOKEN environment variable.'}), 401
+            if not get_putio_token():
+                return jsonify({'message': 'Put.io is not connected. Log in with Put.io or set PUTIO_ACCESS_TOKEN.'}), 401
             send_to_putio(magnet_link, title)
         else:
             return jsonify({'message': 'Unsupported download client'}), 400
@@ -503,8 +591,8 @@ def get_torrent_list():
             for k, torrent in torrents.result.items()
         ]
     if DOWNLOAD_CLIENT == 'putio':
-        if not PUTIO_ACCESS_TOKEN:
-            raise ValueError('Put.io access token not configured. Please set PUTIO_ACCESS_TOKEN environment variable.')
+        if not get_putio_token():
+            raise ValueError('Put.io is not connected. Log in with Put.io or set PUTIO_ACCESS_TOKEN.')
         transfers = get_putio_transfers()
         return [
             {

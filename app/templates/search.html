@@ -17,7 +17,15 @@
 {% if show_putio_banner %}
 <div class="alert alert-warning" role="alert">
     <i data-lucide="alert-triangle" aria-hidden="true"></i>
-    <span>Put.io access token is not configured. Please set the <code>PUTIO_ACCESS_TOKEN</code> environment variable.</span>
+    {% if putio_oauth_available %}
+    <span>Connect your Put.io account to send downloads.</span>
+    <a href="{{ url_for('putio_auth') }}" class="btn btn-primary">
+        <i data-lucide="log-in" aria-hidden="true"></i>
+        Log in with Put.io
+    </a>
+    {% else %}
+    <span>Put.io is not connected. Log in with Put.io (set <code>PUTIO_CLIENT_ID</code> / <code>PUTIO_CLIENT_SECRET</code>) or set a <code>PUTIO_ACCESS_TOKEN</code>.</span>
+    {% endif %}
 </div>
 {% endif %}
 

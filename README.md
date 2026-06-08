@@ -53,18 +53,43 @@ ABB_HOSTNAME='audiobookbay.is' #Default
 ```
 
 **For Put.io:**
+
+Put.io supports two ways to authenticate — pick **one**:
+
+**Option A — Log in with Put.io (OAuth).** Register an OAuth app on Put.io and let
+users sign in from the app via the "Log in with Put.io" button. The token is kept
+in the user's session.
 ```env
 DOWNLOAD_CLIENT=putio
-PUTIO_ACCESS_TOKEN=YOUR_TOKEN  # OAuth token from put.io (see instructions below)
+PUTIO_CLIENT_ID=YOUR_CLIENT_ID          # from your Put.io OAuth app
+PUTIO_CLIENT_SECRET=YOUR_CLIENT_SECRET  # from your Put.io OAuth app
+PUTIO_SAVE_PARENT_ID=0                  # Optional: Folder ID to save downloads (0 for root)
+ABB_HOSTNAME='audiobookbay.is'          # Default
+```
+
+**Option B — Static token.** Skip the login flow and use an application-specific
+token directly.
+```env
+DOWNLOAD_CLIENT=putio
+PUTIO_ACCESS_TOKEN=YOUR_TOKEN  # application-specific token from put.io
 PUTIO_SAVE_PARENT_ID=0         # Optional: Folder ID to save downloads (0 for root)
 ABB_HOSTNAME='audiobookbay.is' #Default
 ```
 
-#### Getting Your Put.io Access Token
+If both are set, the OAuth session token (Option A) takes precedence.
+
+#### Setting up Put.io OAuth (Option A)
 1. Log in to your Put.io account
-2. Go to Settings → Applications → OAuth Apps
+2. Go to Settings → Account → API / "Your OAuth Apps"
+3. Create a new application (or use an existing one)
+4. Set its **Callback URL** to `http(s)://<your-host>/putio/callback`
+5. Copy the **Client ID** and **Client secret** into `PUTIO_CLIENT_ID` / `PUTIO_CLIENT_SECRET`
+
+#### Getting a Put.io Access Token (Option B)
+1. Log in to your Put.io account
+2. Go to Settings → Account → API / "Your OAuth Apps"
 3. Create a new application or use an existing one
-4. Copy the OAuth Token and use it as `PUTIO_ACCESS_TOKEN`
+4. Copy the **OAuth Token** and use it as `PUTIO_ACCESS_TOKEN`
 
 The following optional variables add an additional entry to the navigation bar. This is useful for linking to your audiobook player or another related service:
 
@@ -73,12 +98,27 @@ NAV_LINK_NAME=Open Audiobook Player
 NAV_LINK_URL=https://audiobooks.yourdomain.com/
 ```
 
+#### Tor
+
 Requests to AudiobookBay (search and magnet-link lookups) are routed through Tor
+by default, so the mirror only ever sees a Tor exit node rather than your
 server's real IP. The app starts and manages its own Tor process on startup —
+nothing extra needs to be running, and the Docker image bundles the `tor` binary.
+Requests to your download client and Put.io are **not** proxied.
+
+These variables are all optional:
+
+```env
 USE_TOR=true                # Set to false to send AudiobookBay requests directly
 TOR_AUTOSTART=true          # Set to false to use an already-running Tor instead
 TOR_SOCKS_PORT=9050         # SOCKS port the app starts Tor on / connects to
 TOR_BOOTSTRAP_TIMEOUT=90    # Seconds to wait for Tor to connect before failing
+```
+
+> Note: on first startup the app waits for Tor to bootstrap (usually a few
+> seconds) before serving requests. If you run outside Docker, the `tor` binary
+> must be installed and on your `PATH`.
+
 ### Using Docker
 
 1. Use `docker-compose` for quick deployment. Example `docker-compose.yml`:
