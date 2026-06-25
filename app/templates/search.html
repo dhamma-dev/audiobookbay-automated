@@ -66,13 +66,33 @@
 <div id="search-results" class="search-results" role="region" aria-live="polite" aria-label="Search results">
     {% if request.method == 'POST' %}
         {% if books %}
-        <p class="search-results-header">
-            {{ result_count }} result{{ 's' if result_count != 1 else '' }} for &ldquo;{{ query }}&rdquo;
-            {% if m4b_count %}<span class="results-m4b-note">· {{ m4b_count }} M4B {{ 'pick' if m4b_count == 1 else 'picks' }} up top</span>{% endif %}
-        </p>
+        <div class="search-results-bar">
+            <p class="search-results-header">
+                {{ result_count }} result{{ 's' if result_count != 1 else '' }} for &ldquo;{{ query }}&rdquo;
+                {% if m4b_count %}<span class="results-m4b-note">· {{ m4b_count }} M4B {{ 'pick' if m4b_count == 1 else 'picks' }} up top</span>{% endif %}
+            </p>
+            {% if smart_sort_available and result_count > 1 %}
+            <button type="button" class="btn btn-secondary btn-smart-sort" data-action="smart-sort"
+                    data-query="{{ query | e }}">
+                <i data-lucide="sparkles" aria-hidden="true"></i>
+                Smart sort
+            </button>
+            {% endif %}
+        </div>
+
+        {% if smart_sort_available and result_count > 1 %}
+        <script type="application/json" id="search-results-data">{{ rank_payload | tojson }}</script>
+        <div id="smart-sort-ambiguity" class="smart-sort-ambiguity" hidden></div>
+        {% endif %}
+
         {% for book in books %}
         {{ book_card(book, download_client_label) }}
         {% endfor %}
+
+        {% if smart_sort_available and result_count > 1 %}
+        <button type="button" id="smart-sort-show-filtered" class="btn btn-ghost smart-sort-show-filtered" hidden
+                data-action="toggle-filtered"></button>
+        {% endif %}
         {% else %}
         {{ empty_state('book-x', 'No results found', 'Try different keywords or check your spelling.') }}
         {% endif %}

@@ -164,6 +164,7 @@
       const fresh = doc.getElementById('search-results');
       if (fresh) {
         results.innerHTML = fresh.innerHTML;
+        smartSortReset(); // new result set => any cached ranking is stale
       } else {
         results.innerHTML =
           '<div class="empty-state">' +
@@ -185,6 +186,176 @@
       setSearchLoading(false);
       refreshIcons();
     }
+  }
+
+  /* ----------------------------------------------------------
+     Smart sort: Gemini re-ranking of already-loaded results
+     ---------------------------------------------------------- */
+  const smartSortCache = new Map(); // query -> ranking response
+  let smartSortState = null;        // { query, ranking, expanded, activeInterp }
+
+  function smartSortReset() {
+    smartSortCache.clear();
+    smartSortState = null;
+  }
+
+  function setSmartSortLoading(btn, loading) {
+    const results = document.getElementById('search-results');
+    if (loading) {
+      if (results) results.classList.add('is-ranking');
+      btn.disabled = true;
+      btn.dataset.originalHtml = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span> Ranking…';
+    } else {
+      if (results) results.classList.remove('is-ranking');
+      btn.disabled = false;
+      if (btn.dataset.originalHtml) {
+        btn.innerHTML = btn.dataset.originalHtml;
+        delete btn.dataset.originalHtml;
+      }
+      refreshIcons();
+    }
+  }
+
+  function renderAmbiguity(ranking) {
+    const box = document.getElementById('smart-sort-ambiguity');
+    if (!box) return;
+    const interps = (ranking && ranking.interpretations) || [];
+    if (!ranking.ambiguous || interps.length === 0) {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    let html =
+      '<span class="smart-sort-ambiguity-label">' +
+      '<i data-lucide="help-circle" aria-hidden="true"></i> This could mean a few things:</span>' +
+      '<button type="button" class="chip chip-active" data-interp="all">All results</button>';
+    interps.forEach((it, i) => {
+      const desc = it.description ? ' title="' + escapeHtml(it.description) + '"' : '';
+      html += '<button type="button" class="chip" data-interp="' + i + '"' + desc + '>' +
+              escapeHtml(it.label) + '</button>';
+    });
+    box.innerHTML = html;
+    box.hidden = false;
+    refreshIcons();
+  }
+
+  // Reorder + show/hide cards based on the current ranking + UI state. Pure
+  // DOM shuffling — no network — so interpretation chips and the filtered
+  // toggle are instant.
+  function renderSmartSort() {
+    if (!smartSortState) return;
+    const results = document.getElementById('search-results');
+    const anchor = document.getElementById('smart-sort-show-filtered');
+    if (!results || !anchor) return;
+
+    const { ranking, expanded, activeInterp } = smartSortState;
+    const ordering = (ranking.ordering || []).slice();
+    const bucketOf = {};
+    (ranking.buckets || []).forEach((b) => { bucketOf[String(b.id)] = b.bucket; });
+
+    const cards = new Map();
+    results.querySelectorAll('.book-card').forEach((c) => cards.set(c.dataset.resultId, c));
+
+    // Decide ordering + which ids are filtered away.
+    let order = ordering;
+    const hidden = new Set();
+    const interps = ranking.interpretations || [];
+    if (activeInterp != null && interps[activeInterp]) {
+      const ids = new Set((interps[activeInterp].result_ids || []).map(String));
+      const inInterp = ordering.filter((id) => ids.has(String(id)));
+      const rest = ordering.filter((id) => !ids.has(String(id)));
+      order = inInterp.concat(rest);
+      rest.forEach((id) => hidden.add(String(id)));
+    } else {
+      ordering.forEach((id) => { if (bucketOf[String(id)] === 'unlikely') hidden.add(String(id)); });
+    }
+
+    // Apply order by moving each card just before the filtered-toggle button.
+    order.forEach((id) => {
+      const card = cards.get(String(id));
+      if (card) results.insertBefore(card, anchor);
+    });
+
+    // Apply visibility / dimming.
+    cards.forEach((card, id) => {
+      const isFiltered = hidden.has(id);
+      card.classList.toggle('is-dimmed-result', isFiltered);
+      card.classList.toggle('is-hidden-result', isFiltered && !expanded);
+    });
+
+    // Filtered-results toggle.
+    const n = hidden.size;
+    if (n === 0) {
+      anchor.hidden = true;
+    } else {
+      anchor.hidden = false;
+      anchor.textContent = (expanded ? 'Hide ' : 'Show ') + n + ' filtered result' + (n === 1 ? '' : 's');
+    }
+  }
+
+  function applyRanking(query, ranking) {
+    smartSortState = { query, ranking, expanded: false, activeInterp: null };
+    renderAmbiguity(ranking);
+    renderSmartSort();
+    const header = document.querySelector('.search-results-header');
+    if (header && !header.dataset.ranked) {
+      header.dataset.ranked = '1';
+      header.insertAdjacentHTML('beforeend', ' <span class="results-ranked-note">· sorted by relevance</span>');
+    }
+  }
+
+  async function handleSmartSort(btn) {
+    const query = btn.dataset.query || '';
+    const dataEl = document.getElementById('search-results-data');
+    if (!dataEl) return;
+    let results;
+    try {
+      results = JSON.parse(dataEl.textContent);
+    } catch (e) {
+      return;
+    }
+    if (!Array.isArray(results) || results.length === 0) return;
+
+    if (smartSortCache.has(query)) {
+      applyRanking(query, smartSortCache.get(query));
+      return;
+    }
+
+    setSmartSortLoading(btn, true);
+    try {
+      const res = await fetch('/api/rank', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, results }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Smart sort failed');
+      smartSortCache.set(query, data);
+      applyRanking(query, data);
+      showToast('Sorted by relevance.', 'success');
+    } catch (err) {
+      showToast(err.message || 'Smart sort failed', 'error');
+    } finally {
+      setSmartSortLoading(btn, false);
+    }
+  }
+
+  function handleInterpChip(chip) {
+    if (!smartSortState) return;
+    const box = chip.parentElement;
+    box.querySelectorAll('.chip').forEach((c) => c.classList.remove('chip-active'));
+    chip.classList.add('chip-active');
+    const val = chip.dataset.interp;
+    smartSortState.activeInterp = val === 'all' ? null : Number(val);
+    smartSortState.expanded = false;
+    renderSmartSort();
+  }
+
+  function handleToggleFiltered() {
+    if (!smartSortState) return;
+    smartSortState.expanded = !smartSortState.expanded;
+    renderSmartSort();
   }
 
   /* ----------------------------------------------------------
@@ -282,7 +453,16 @@
     if (dl) { handleDownload(dl); return; }
 
     const refresh = e.target.closest('[data-action="refresh-downloads"]');
-    if (refresh) refreshDownloads({ manual: true });
+    if (refresh) { refreshDownloads({ manual: true }); return; }
+
+    const smartSort = e.target.closest('[data-action="smart-sort"]');
+    if (smartSort) { handleSmartSort(smartSort); return; }
+
+    const toggleFiltered = e.target.closest('[data-action="toggle-filtered"]');
+    if (toggleFiltered) { handleToggleFiltered(); return; }
+
+    const interpChip = e.target.closest('#smart-sort-ambiguity .chip');
+    if (interpChip) { handleInterpChip(interpChip); return; }
   });
 
   document.addEventListener('submit', (e) => {
