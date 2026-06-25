@@ -2,24 +2,17 @@ version: '3.8'
 
 services:
   audiobookbay-automated:
-    image: ghcr.io/jamesry96/audiobookbay-automated:latest
+    image: ghcr.io/dhamma-dev/audiobookbay-automated:latest
     ports:
       - "5078:5078"
     container_name: audiobookbay-automated
     environment:
-      - DOWNLOAD_CLIENT=${DOWNLOAD_CLIENT}
       # Put.io auth: either OAuth (CLIENT_ID/SECRET, "Log in with Put.io") or a
       # static PUTIO_ACCESS_TOKEN. See the README for setup.
       - PUTIO_CLIENT_ID=${PUTIO_CLIENT_ID}
       - PUTIO_CLIENT_SECRET=${PUTIO_CLIENT_SECRET}
       - PUTIO_ACCESS_TOKEN=${PUTIO_ACCESS_TOKEN}
       - PUTIO_SAVE_PARENT_ID=${PUTIO_SAVE_PARENT_ID}
-      - DL_HOST=${DL_HOST}
-      - DL_PORT=${DL_PORT}
-      - DL_USERNAME=${DL_USERNAME}
-      - DL_PASSWORD=${DL_PASSWORD}
-      - DL_CATEGORY=${DL_CATEGORY}
-      - SAVE_PATH_BASE=${SAVE_PATH_BASE}
       - NAV_LINK_NAME=${NAV_LINK_NAME}
       - NAV_LINK_URL=${NAV_LINK_URL}
       # AudiobookBay requests are routed through Tor by default. Set USE_TOR=false
