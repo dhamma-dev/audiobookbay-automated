@@ -1,8 +1,5 @@
 flask
 requests[socks]
 beautifulsoup4
-qbittorrent-api
 python-dotenv
-transmission-rpc
-deluge-web-client
 google-genai
