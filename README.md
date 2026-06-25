@@ -98,6 +98,27 @@ NAV_LINK_NAME=Open Audiobook Player
 NAV_LINK_URL=https://audiobooks.yourdomain.com/
 ```
 
+#### Smart sort (Gemini)
+
+AudiobookBay's own search is noisy and often floats irrelevant posts to the top.
+When a Google Gemini API key is configured, a **Smart sort** button appears above
+your results: it asks Gemini to re-rank the *already-loaded* results by how well
+they match your query (preferring M4B on ties), hides clearly-irrelevant ones
+behind a "Show N filtered results" toggle, and — when your query is ambiguous —
+offers clickable chips to narrow to the interpretation you meant. The feature is
+hidden entirely unless `GEMINI_API_KEY` is set.
+
+```env
+GEMINI_API_KEY=your-google-ai-studio-key   # Enables Smart sort when set
+RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
+```
+
+> **Privacy note:** unlike AudiobookBay scraping, the Smart sort request goes
+> **directly to Google's API and is _not_ routed through Tor**. Only the search
+> query and minimal result metadata (title, format, bitrate, language, size,
+> keywords) are sent — never links, covers, or the mirror hostname. Leave
+> `GEMINI_API_KEY` unset if you'd rather nothing leave your server.
+
 #### Tor
 
 Requests to AudiobookBay (search and magnet-link lookups) are routed through Tor

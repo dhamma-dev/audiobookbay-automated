@@ -1,4 +1,4 @@
-import os, re, requests, atexit, shutil, socket, subprocess, tempfile, threading
+import os, re, json, requests, atexit, shutil, socket, subprocess, tempfile, threading
 from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
 from qbittorrentapi import Client
@@ -190,6 +190,27 @@ def get_putio_token():
 NAV_LINK_NAME = os.getenv("NAV_LINK_NAME")
 NAV_LINK_URL = os.getenv("NAV_LINK_URL")
 
+# --- Smart sort (Gemini) -----------------------------------------------------
+# Optional LLM re-ranking of search results. The mirror's own search is noisy
+# and often floats irrelevant posts to the top, so after results load the user
+# can ask Gemini to re-sort them by how well they match the query (preferring
+# M4B on ties) and to flag when the query is ambiguous.
+#
+# This call goes straight to Google's API -- it is NOT routed through Tor (Tor
+# only shields the AudiobookBay scraping). Only the already-scraped result
+# metadata is sent: title, format, bitrate, language, size and keywords. No
+# links, covers or hostnames leave the box. The feature is hidden entirely
+# unless GEMINI_API_KEY is set.
+#
+#   GEMINI_API_KEY - Google AI Studio API key. Enables the feature when set.
+#   RANK_MODEL     - Gemini model id to use (default "gemini-3.5-flash").
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+RANK_MODEL = os.getenv("RANK_MODEL", "gemini-3.5-flash")
+
+# Fields we are willing to forward to Gemini. Everything else (link, cover,
+# is_m4b, etc.) is dropped before the request is built.
+RANK_FIELDS = ("title", "format", "bitrate", "language", "size", "keywords")
+
 #Print configuration
 print(f"ABB_HOSTNAME: {ABB_HOSTNAME}")
 print(f"USE_TOR: {USE_TOR}" + (f" (SOCKS 127.0.0.1:{TOR_SOCKS_PORT})" if USE_TOR else ""))
@@ -202,6 +223,7 @@ print(f"DL_CATEGORY: {DL_CATEGORY}")
 print(f"SAVE_PATH_BASE: {SAVE_PATH_BASE}")
 print(f"NAV_LINK_NAME: {NAV_LINK_NAME}")
 print(f"NAV_LINK_URL: {NAV_LINK_URL}")
+print(f"SMART_SORT (Gemini): {'Enabled (' + RANK_MODEL + ')' if GEMINI_API_KEY else 'Disabled'}")
 if DOWNLOAD_CLIENT == 'putio':
     print(f"PUTIO_CLIENT_ID: {'Set' if PUTIO_CLIENT_ID else 'Not Set'}")
     print(f"PUTIO_CLIENT_SECRET: {'Set' if PUTIO_CLIENT_SECRET else 'Not Set'}")
@@ -236,6 +258,7 @@ def inject_app_config():
         'putio_authenticated': putio_authenticated,
         'putio_oauth_available': putio_oauth_available,
         'putio_session_login': putio_session_login,
+        'smart_sort_available': bool(GEMINI_API_KEY),
         'page_title_suffix': 'AudiobookBay',
     }
 
@@ -505,6 +528,144 @@ def get_putio_transfers():
 def sanitize_title(title):
     return re.sub(r'[<>:"/\\|?*]', '', title).strip()
 
+
+# --- Smart sort (Gemini re-ranking) ------------------------------------------
+def rank_payload(books):
+    """Build the slim, privacy-conscious payload sent to Gemini for re-ranking.
+
+    Only the fields that actually help judge relevance are forwarded (see
+    RANK_FIELDS) plus the stable id. Links, covers and the mirror hostname are
+    deliberately excluded -- they tell the model nothing about the book and we
+    have no reason to ship them off the box."""
+    payload = []
+    for book in books:
+        item = {'id': book['id']}
+        for field in RANK_FIELDS:
+            value = book.get(field)
+            if value:
+                item[field] = value
+        payload.append(item)
+    return payload
+
+
+RANK_SYSTEM_INSTRUCTION = (
+    "You help a user sort noisy audiobook search results. You are given the "
+    "user's search query and a list of candidate audiobooks (each with an id "
+    "and metadata). The source site's search is unreliable and often returns "
+    "irrelevant items, so your job is to rank the candidates by how well they "
+    "match what the user is most likely looking for.\n"
+    "Rules:\n"
+    "- Rank strictly by relevance to the query (title/author/series match).\n"
+    "- Break genuine ties by preferring M4B format, then higher bitrate.\n"
+    "- Bucket each item: 'strong' (clearly matches), 'possible' (might match), "
+    "or 'unlikely' (almost certainly not what they want).\n"
+    "- If the query could plausibly refer to several distinct works or topics, "
+    "set ambiguous=true and list the interpretations, each with the ids it "
+    "covers. Otherwise set ambiguous=false and return an empty interpretations "
+    "list.\n"
+    "Return every input id exactly once in 'ordering', best match first."
+)
+
+# JSON shape we ask Gemini to return. Kept flat and id-based so a chatty or
+# truncated response still maps cleanly back onto the rendered cards.
+RANK_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ordering": {"type": "array", "items": {"type": "integer"}},
+        "buckets": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "bucket": {"type": "string",
+                               "enum": ["strong", "possible", "unlikely"]},
+                },
+                "required": ["id", "bucket"],
+            },
+        },
+        "ambiguous": {"type": "boolean"},
+        "interpretations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "description": {"type": "string"},
+                    "result_ids": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["label", "result_ids"],
+            },
+        },
+    },
+    "required": ["ordering", "buckets", "ambiguous", "interpretations"],
+}
+
+
+def rank_results(query, results):
+    """Ask Gemini to re-rank already-scraped results. Returns the parsed JSON
+    dict (ordering / buckets / ambiguous / interpretations). Raises on any
+    transport or parsing failure so the caller can fall back to the existing
+    order."""
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = (
+        f"User search query: {query}\n\n"
+        f"Candidates (JSON):\n{json.dumps(results, ensure_ascii=False)}"
+    )
+    response = client.models.generate_content(
+        model=RANK_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=RANK_SYSTEM_INSTRUCTION,
+            response_mime_type="application/json",
+            response_schema=RANK_RESPONSE_SCHEMA,
+            temperature=0,
+        ),
+    )
+    return json.loads(response.text)
+
+
+@app.route('/api/rank', methods=['POST'])
+def api_rank():
+    """Re-rank a set of already-loaded results with Gemini. The client posts the
+    query and the slim per-result metadata it was given; we never re-scrape the
+    mirror here."""
+    if not GEMINI_API_KEY:
+        return jsonify({'message': 'Smart sort is not configured.'}), 503
+
+    data = request.get_json(silent=True) or {}
+    query = (data.get('query') or '').strip()
+    incoming = data.get('results') or []
+    if not query or not incoming:
+        return jsonify({'message': 'Missing query or results.'}), 400
+
+    # Re-sanitize on the server too: only ids and the allowed fields are ever
+    # forwarded to Gemini, regardless of what the client sent.
+    results = []
+    for item in incoming:
+        if not isinstance(item, dict) or 'id' not in item:
+            continue
+        slim = {'id': item['id']}
+        for field in RANK_FIELDS:
+            value = item.get(field)
+            if value:
+                slim[field] = value
+        results.append(slim)
+
+    if not results:
+        return jsonify({'message': 'No rankable results.'}), 400
+
+    try:
+        ranking = rank_results(query, results)
+        return jsonify(ranking)
+    except Exception as e:
+        print(f"[ERROR] Smart sort failed: {e}")
+        return jsonify({'message': f'Smart sort failed: {e}'}), 502
+
+
 # Endpoint for search page
 @app.route('/', methods=['GET', 'POST'])
 def search():
@@ -518,9 +679,14 @@ def search():
             # stable, so the mirror's original ordering is preserved within
             # the M4B and non-M4B groups.
             books.sort(key=lambda b: not b.get('is_m4b'))
+    # Tag each result with a stable id so the client can ask Gemini to re-rank
+    # them and then reorder the matching cards in place (see /api/rank).
+    for i, book in enumerate(books):
+        book['id'] = i
     m4b_count = sum(1 for b in books if b.get('is_m4b'))
     return render_template('search.html', books=books, query=query,
-                           result_count=len(books), m4b_count=m4b_count)
+                           result_count=len(books), m4b_count=m4b_count,
+                           rank_payload=rank_payload(books))
 
 
 # Endpoint to send magnet link to download client

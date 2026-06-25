@@ -50,18 +50,107 @@
   box-shadow: 0 0 0 4px var(--color-accent-muted);
 }
 
-.search-results-header {
-  font-family: var(--font-display);
-  font-size: var(--text-base);
-  color: var(--color-text-muted);
+.search-results-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
   margin-bottom: var(--space-5);
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-border);
 }
 
+.search-results-header {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
 .results-m4b-note {
   color: var(--color-accent);
   font-weight: 600;
+}
+
+.results-ranked-note {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+.btn-smart-sort {
+  flex-shrink: 0;
+}
+
+/* --- Smart sort: ambiguity strip + interpretation chips ------------------ */
+.smart-sort-ambiguity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.smart-sort-ambiguity-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  margin-right: var(--space-1);
+}
+
+.smart-sort-ambiguity-label i {
+  width: 16px;
+  height: 16px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 13px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  cursor: pointer;
+  transition: color var(--transition-fast), background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.chip:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+.chip-active {
+  color: var(--color-accent);
+  background-color: var(--color-accent-muted);
+  border-color: rgba(227, 164, 74, 0.4);
+  font-weight: 600;
+}
+
+/* --- Smart sort: filtered / dimmed results ------------------------------- */
+.search-results.is-ranking > .book-card {
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+
+.book-card.is-hidden-result {
+  display: none;
+}
+
+/* Shown when the filtered group is expanded: visible but clearly de-emphasized. */
+.book-card.is-dimmed-result:not(.is-hidden-result) {
+  opacity: 0.55;
+}
+
+.smart-sort-show-filtered {
+  align-self: center;
+  margin-top: var(--space-1);
 }
 
 .search-results,
