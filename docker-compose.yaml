@@ -27,5 +27,9 @@ services:
       - USE_TOR=${USE_TOR:-true}
       - TOR_SOCKS_PORT=${TOR_SOCKS_PORT:-9050}
       - TOR_BOOTSTRAP_TIMEOUT=${TOR_BOOTSTRAP_TIMEOUT:-90}
+      # Smart sort (optional): set GEMINI_API_KEY in .env to enable the button.
+      # This call goes directly to Google, not through Tor. See the README.
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - RANK_MODEL=${RANK_MODEL:-gemini-3.5-flash}
     env_file:
       - .env
