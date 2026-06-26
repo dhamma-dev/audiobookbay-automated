@@ -177,3 +177,6 @@ cython_debug/
 # Built Visual Studio Code Extensions
 *.vsix
 .vscode/settings.json
+
+# Claude Code session memory (local agent notes, not project code)
+memory/
