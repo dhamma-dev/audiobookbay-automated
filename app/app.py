@@ -211,10 +211,57 @@ RANK_MODEL = os.getenv("RANK_MODEL", "gemini-3.5-flash")
 # is_m4b, etc.) is dropped before the request is built.
 RANK_FIELDS = ("title", "format", "bitrate", "language", "size", "keywords")
 
+# --- Download client selection -----------------------------------------------
+# The app sends magnets to exactly one download client, chosen at deploy time via
+# DOWNLOAD_CLIENT. Selection is operator-level: run one instance per client.
+# DOWNLOAD_CLIENT is required -- there is no default -- so a misconfigured deploy
+# fails loudly (startup log + an in-app banner) instead of silently doing nothing.
+CLIENT_LABELS = {
+    'qbittorrent': 'qBittorrent',
+    'transmission': 'Transmission',
+    'delugeweb': 'Deluge',
+    'putio': 'Put.io',
+}
+
+# Env each client must have to be usable. put.io authenticates per request (OAuth
+# or static token), so its readiness is handled by the "Connect Put.io" banner
+# rather than a hard config check here.
+CLIENT_REQUIRED_ENV = {
+    'qbittorrent': ('DL_HOST', 'DL_PORT', 'DL_USERNAME', 'DL_PASSWORD'),
+    'transmission': ('DL_HOST', 'DL_PORT', 'DL_USERNAME', 'DL_PASSWORD'),
+    'delugeweb': ('DL_URL', 'DL_PASSWORD'),
+    'putio': (),
+}
+
+_ENV_VALUES = {
+    'DL_HOST': DL_HOST, 'DL_PORT': DL_PORT, 'DL_USERNAME': DL_USERNAME,
+    'DL_PASSWORD': DL_PASSWORD, 'DL_URL': DL_URL,
+}
+
+
+def _validate_client_config():
+    """Return (ok, error_message). DOWNLOAD_CLIENT is required, must name a
+    supported client, and that client must have the env it needs."""
+    choices = ", ".join(CLIENT_LABELS)
+    if not DOWNLOAD_CLIENT:
+        return False, f"No download client configured. Set DOWNLOAD_CLIENT to one of: {choices}."
+    if DOWNLOAD_CLIENT not in CLIENT_LABELS:
+        return False, f"Unknown DOWNLOAD_CLIENT '{DOWNLOAD_CLIENT}'. Choose one of: {choices}."
+    missing = [name for name in CLIENT_REQUIRED_ENV[DOWNLOAD_CLIENT] if not _ENV_VALUES.get(name)]
+    if missing:
+        return False, (f"{CLIENT_LABELS[DOWNLOAD_CLIENT]} is selected but these required "
+                       f"settings are missing: {', '.join(missing)}.")
+    return True, ""
+
+
+CLIENT_OK, CLIENT_CONFIG_ERROR = _validate_client_config()
+
 #Print configuration
 print(f"ABB_HOSTNAME: {ABB_HOSTNAME}")
 print(f"USE_TOR: {USE_TOR}" + (f" (SOCKS 127.0.0.1:{TOR_SOCKS_PORT})" if USE_TOR else ""))
-print(f"DOWNLOAD_CLIENT: {DOWNLOAD_CLIENT}")
+print(f"DOWNLOAD_CLIENT: {DOWNLOAD_CLIENT or '(not set)'}")
+if not CLIENT_OK:
+    print(f"[CONFIG ERROR] {CLIENT_CONFIG_ERROR}")
 print(f"DL_HOST: {DL_HOST}")
 print(f"DL_PORT: {DL_PORT}")
 print(f"DL_URL: {DL_URL}")
@@ -231,14 +278,6 @@ if DOWNLOAD_CLIENT == 'putio':
     print(f"PUTIO_SAVE_PARENT_ID: {PUTIO_SAVE_PARENT_ID}")
 
 
-CLIENT_LABELS = {
-    'qbittorrent': 'qBittorrent',
-    'transmission': 'Transmission',
-    'delugeweb': 'Deluge',
-    'putio': 'Put.io',
-}
-
-
 @app.context_processor
 def inject_app_config():
     client = DOWNLOAD_CLIENT or ''
@@ -253,6 +292,8 @@ def inject_app_config():
         'nav_link_url': os.getenv('NAV_LINK_URL'),
         'download_client': client,
         'download_client_label': CLIENT_LABELS.get(client, 'Download Client'),
+        # Shown app-wide when DOWNLOAD_CLIENT is unset/unknown or missing its env.
+        'client_config_error': None if CLIENT_OK else CLIENT_CONFIG_ERROR,
         # Prompt for auth only when put.io is selected but we have no usable token.
         'show_putio_banner': is_putio and not putio_authenticated,
         'putio_authenticated': putio_authenticated,
@@ -689,6 +730,115 @@ def search():
                            rank_payload=rank_payload(books))
 
 
+# --- Download backends -------------------------------------------------------
+# One add/list pair per client. send() and the status page dispatch through
+# DOWNLOAD_BACKENDS instead of branching inline, so adding a client is a single
+# table entry. Connection objects are built per call (cheap, and avoids holding
+# stale sessions); any transport error propagates to the caller for reporting.
+class PutioNotConnected(Exception):
+    """Raised when put.io is the client but no usable token is available."""
+    def __init__(self):
+        super().__init__('Put.io is not connected. Log in with Put.io or set PUTIO_ACCESS_TOKEN.')
+
+
+def _torrent_save_path(title):
+    """Per-book save path for the torrent clients. put.io ignores this and uses
+    PUTIO_SAVE_PARENT_ID instead. Returns None when SAVE_PATH_BASE is unset so
+    the client falls back to its own default download location."""
+    return f"{SAVE_PATH_BASE}/{sanitize_title(title)}" if SAVE_PATH_BASE else None
+
+
+def _qbittorrent_add(magnet_link, title):
+    qb = Client(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
+    qb.auth_log_in()
+    qb.torrents_add(urls=magnet_link, save_path=_torrent_save_path(title), category=DL_CATEGORY)
+
+
+def _qbittorrent_list():
+    qb = Client(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
+    qb.auth_log_in()
+    return [
+        {
+            'name': t.name,
+            'progress': round(t.progress * 100, 2),
+            'state': t.state,
+            'size': f"{t.total_size / (1024 * 1024):.2f} MB",
+        }
+        for t in qb.torrents_info(category=DL_CATEGORY)
+    ]
+
+
+def _transmission_add(magnet_link, title):
+    client = transmissionrpc(host=DL_HOST, port=DL_PORT, protocol=DL_SCHEME,
+                             username=DL_USERNAME, password=DL_PASSWORD)
+    client.add_torrent(magnet_link, download_dir=_torrent_save_path(title))
+
+
+def _transmission_list():
+    client = transmissionrpc(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
+    return [
+        {
+            'name': t.name,
+            'progress': round(t.progress, 2),
+            'state': t.status,
+            'size': f"{t.total_size / (1024 * 1024):.2f} MB",
+        }
+        for t in client.get_torrents()
+    ]
+
+
+def _deluge_add(magnet_link, title):
+    deluge = delugewebclient(url=DL_URL, password=DL_PASSWORD)
+    deluge.login()
+    deluge.add_torrent_magnet(magnet_link, save_directory=_torrent_save_path(title), label=DL_CATEGORY)
+
+
+def _deluge_list():
+    deluge = delugewebclient(url=DL_URL, password=DL_PASSWORD)
+    deluge.login()
+    torrents = deluge.get_torrents_status(
+        filter_dict={"label": DL_CATEGORY},
+        keys=["name", "state", "progress", "total_size"],
+    )
+    return [
+        {
+            'name': t["name"],
+            'progress': round(t["progress"], 2),
+            'state': t["state"],
+            'size': f"{t['total_size'] / (1024 * 1024):.2f} MB",
+        }
+        for _, t in torrents.result.items()
+    ]
+
+
+def _putio_add(magnet_link, title):
+    if not get_putio_token():
+        raise PutioNotConnected()
+    send_to_putio(magnet_link, title)
+
+
+def _putio_list():
+    if not get_putio_token():
+        raise PutioNotConnected()
+    return [
+        {
+            'name': tr.get('name', 'Unknown'),
+            'progress': tr.get('percent_done', 0),
+            'state': tr.get('status', 'Unknown'),
+            'size': f"{tr.get('size', 0) / (1024 * 1024):.2f} MB",
+        }
+        for tr in get_putio_transfers()
+    ]
+
+
+DOWNLOAD_BACKENDS = {
+    'qbittorrent': {'add': _qbittorrent_add, 'list': _qbittorrent_list},
+    'transmission': {'add': _transmission_add, 'list': _transmission_list},
+    'delugeweb': {'add': _deluge_add, 'list': _deluge_list},
+    'putio': {'add': _putio_add, 'list': _putio_list},
+}
+
+
 # Endpoint to send magnet link to download client
 @app.route('/send', methods=['POST'])
 def send():
@@ -697,92 +847,26 @@ def send():
     title = data.get('title')
     if not details_url or not title:
         return jsonify({'message': 'Invalid request'}), 400
+    if not CLIENT_OK:
+        return jsonify({'message': CLIENT_CONFIG_ERROR}), 503
 
     try:
         magnet_link = extract_magnet_link(details_url)
         if not magnet_link:
             return jsonify({'message': 'Failed to extract magnet link'}), 500
 
-        save_path = f"{SAVE_PATH_BASE}/{sanitize_title(title)}"
-        
-        if DOWNLOAD_CLIENT == 'qbittorrent':
-            qb = Client(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
-            qb.auth_log_in()
-            qb.torrents_add(urls=magnet_link, save_path=save_path, category=DL_CATEGORY)
-        elif DOWNLOAD_CLIENT == 'transmission':
-            transmission = transmissionrpc(host=DL_HOST, port=DL_PORT, protocol=DL_SCHEME, username=DL_USERNAME, password=DL_PASSWORD)
-            transmission.add_torrent(magnet_link, download_dir=save_path)
-        elif DOWNLOAD_CLIENT == "delugeweb":
-            delugeweb = delugewebclient(url=DL_URL, password=DL_PASSWORD)
-            delugeweb.login()
-            delugeweb.add_torrent_magnet(magnet_link, save_directory=save_path, label=DL_CATEGORY)
-        elif DOWNLOAD_CLIENT == 'putio':
-            if not get_putio_token():
-                return jsonify({'message': 'Put.io is not connected. Log in with Put.io or set PUTIO_ACCESS_TOKEN.'}), 401
-            send_to_putio(magnet_link, title)
-        else:
-            return jsonify({'message': 'Unsupported download client'}), 400
-
+        DOWNLOAD_BACKENDS[DOWNLOAD_CLIENT]['add'](magnet_link, title)
         return jsonify({'message': f'Download added successfully! This may take some time, the download will show in Audiobookshelf when completed.'})
+    except PutioNotConnected as e:
+        return jsonify({'message': str(e)}), 401
     except Exception as e:
         return jsonify({'message': str(e)}), 500
 
+
 def get_torrent_list():
-    if DOWNLOAD_CLIENT == 'transmission':
-        transmission = transmissionrpc(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
-        torrents = transmission.get_torrents()
-        return [
-            {
-                'name': torrent.name,
-                'progress': round(torrent.progress, 2),
-                'state': torrent.status,
-                'size': f"{torrent.total_size / (1024 * 1024):.2f} MB"
-            }
-            for torrent in torrents
-        ]
-    if DOWNLOAD_CLIENT == 'qbittorrent':
-        qb = Client(host=DL_HOST, port=DL_PORT, username=DL_USERNAME, password=DL_PASSWORD)
-        qb.auth_log_in()
-        torrents = qb.torrents_info(category=DL_CATEGORY)
-        return [
-            {
-                'name': torrent.name,
-                'progress': round(torrent.progress * 100, 2),
-                'state': torrent.state,
-                'size': f"{torrent.total_size / (1024 * 1024):.2f} MB"
-            }
-            for torrent in torrents
-        ]
-    if DOWNLOAD_CLIENT == 'delugeweb':
-        delugeweb = delugewebclient(url=DL_URL, password=DL_PASSWORD)
-        delugeweb.login()
-        torrents = delugeweb.get_torrents_status(
-            filter_dict={"label": DL_CATEGORY},
-            keys=["name", "state", "progress", "total_size"],
-        )
-        return [
-            {
-                "name": torrent["name"],
-                "progress": round(torrent["progress"], 2),
-                "state": torrent["state"],
-                "size": f"{torrent['total_size'] / (1024 * 1024):.2f} MB",
-            }
-            for k, torrent in torrents.result.items()
-        ]
-    if DOWNLOAD_CLIENT == 'putio':
-        if not get_putio_token():
-            raise ValueError('Put.io is not connected. Log in with Put.io or set PUTIO_ACCESS_TOKEN.')
-        transfers = get_putio_transfers()
-        return [
-            {
-                'name': transfer.get('name', 'Unknown'),
-                'progress': transfer.get('percent_done', 0),
-                'state': transfer.get('status', 'Unknown'),
-                'size': f"{transfer.get('size', 0) / (1024 * 1024):.2f} MB"
-            }
-            for transfer in transfers
-        ]
-    raise ValueError('Unsupported download client')
+    if not CLIENT_OK:
+        raise ValueError(CLIENT_CONFIG_ERROR)
+    return DOWNLOAD_BACKENDS[DOWNLOAD_CLIENT]['list']()
 
 
 @app.route('/status')

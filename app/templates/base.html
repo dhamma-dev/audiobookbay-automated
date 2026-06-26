@@ -48,6 +48,12 @@
     </nav>
 
     <main class="content">
+        {% if client_config_error %}
+        <div class="alert alert-error" role="alert">
+            <i data-lucide="alert-octagon" aria-hidden="true"></i>
+            <span>{{ client_config_error }}</span>
+        </div>
+        {% endif %}
         {% block content %}{% endblock %}
     </main>
 
