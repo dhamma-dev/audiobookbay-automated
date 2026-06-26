@@ -43,6 +43,45 @@
                     Log out of Put.io
                 </a>
                 {% endif %}
+
+                <div class="conn-control">
+                    <button type="button" class="conn-toggle-btn" data-action="conn-toggle"
+                            aria-haspopup="true" aria-expanded="false" aria-controls="conn-popover"
+                            title="Connection settings">
+                        <i data-lucide="shield" aria-hidden="true"></i>
+                        <span class="conn-mode-label">{{ 'Tor' if route_mode == 'tor' else 'Direct' }}</span>
+                    </button>
+                    <div class="conn-popover" id="conn-popover" hidden>
+                        <p class="conn-popover-title">AudioBook Bay routing</p>
+                        <p class="conn-popover-note">Only affects AudioBook Bay search &amp; magnet lookups. Downloads and Smart sort always go direct.</p>
+
+                        <label class="conn-switch">
+                            <input type="checkbox" id="conn-route-tor" data-action="conn-route"
+                                   {% if route_mode == 'tor' %}checked{% endif %}
+                                   {% if not tor_available %}disabled{% endif %}>
+                            <span class="conn-switch-track" aria-hidden="true"></span>
+                            <span class="conn-switch-text">Route via Tor</span>
+                        </label>
+
+                        {% if not tor_available %}
+                        <p class="conn-popover-warn">Tor isn't running on this server, so only Direct is available.</p>
+                        {% endif %}
+
+                        <p class="conn-popover-warn conn-direct-warning"{% if route_mode == 'tor' %} hidden{% endif %}>
+                            <i data-lucide="alert-triangle" aria-hidden="true"></i>
+                            Direct mode reveals your server's real IP to AudioBook Bay.
+                        </p>
+
+                        {% if tor_renewable %}
+                        <button type="button" class="btn btn-secondary conn-renew-btn" data-action="conn-renew"
+                                {% if route_mode != 'tor' %}disabled{% endif %}>
+                            <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                            New Tor circuit
+                        </button>
+                        <p class="conn-popover-note">Use if results won't load or the mirror is blocking the current exit.</p>
+                        {% endif %}
+                    </div>
+                </div>
             </div>
         </div>
     </nav>

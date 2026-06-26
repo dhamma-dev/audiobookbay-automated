@@ -20,9 +20,10 @@ Once a download finishes, the files are ready for a library manager like
 
 - **Search AudioBook Bay** by title, author, or keywords, with covers and
   metadata (format, bitrate, size, language) shown for each result.
-- **Tor by default** — all AudioBook Bay requests go through a Tor circuit, so
-  the mirror only ever sees a Tor exit node, never your server's IP. The app
-  starts and manages its own Tor process; nothing else needs to be running.
+- **Tor by default, with per-user controls** — all AudioBook Bay requests go
+  through a Tor circuit, so the mirror only ever sees a Tor exit node, never your
+  server's IP. The app starts and manages its own Tor process; a navbar menu lets
+  each visitor toggle Tor ⇄ Direct and request a fresh exit IP on demand.
 - **M4B prioritized** — M4B results (single-file audiobooks with chapters) are
   highlighted and floated to the top automatically.
 - **Smart sort (optional)** — re-rank a noisy result set with Google Gemini,
@@ -155,22 +156,35 @@ RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
 ### Tor
 
 AudioBook Bay requests (search and magnet-link lookups) are routed through Tor by
-default. The app launches and manages its own Tor process on startup — nothing
+default, so the mirror only ever sees a Tor exit node rather than your server's
+real IP. The app launches and manages its own Tor process on startup — nothing
 extra needs to be running, and the Docker image bundles the `tor` binary.
 Requests to your download client and to Google are **not** proxied.
+
+**Per-user controls.** A **Connection** menu in the navbar lets each visitor:
+
+- **Toggle Tor ⇄ Direct** for AudioBook Bay traffic. The choice is remembered in
+  your browser. (Direct mode reveals your server's real IP to the mirror.)
+- **Request a new Tor circuit** — if the current exit can't reach the mirror or
+  is being blocked, this gets a fresh exit IP without a restart.
 
 These variables are all optional:
 
 ```env
-USE_TOR=true                # Set to false to send AudioBook Bay requests directly
-TOR_AUTOSTART=true          # Set to false to use an already-running Tor instead
+USE_TOR=true                # DEFAULT route for new visitors: true = Tor, false = Direct.
+                            # Tor still runs either way so the toggle works; set
+                            # TOR_AUTOSTART=false to not run Tor at all.
+TOR_AUTOSTART=true          # Set to false to use an already-running Tor instead.
+                            # Circuit renewal requires the app-managed Tor.
 TOR_SOCKS_PORT=9050         # SOCKS port the app starts Tor on / connects to
+TOR_CONTROL_PORT=9051       # Control port (localhost) used for circuit renewal
 TOR_BOOTSTRAP_TIMEOUT=90    # Seconds to wait for Tor to connect before failing
 ```
 
-> On first startup the app waits for Tor to bootstrap (usually a few seconds)
-> before serving requests. If you run outside Docker, the `tor` binary must be
-> installed and on your `PATH`.
+> The app starts Tor in the background; if it can't (no `tor` binary, or
+> `TOR_AUTOSTART=false` with nothing already listening) it runs in Direct-only
+> mode and the toggle reflects that. If you run outside Docker, the `tor` binary
+> must be installed and on your `PATH`.
 
 ---
 

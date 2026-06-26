@@ -561,3 +561,150 @@
     min-height: 100%;
   }
 }
+
+/* --- Connection control: Tor routing toggle + circuit renew -------------- */
+.conn-control {
+  position: relative;
+}
+
+.conn-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background-color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.conn-toggle-btn:hover {
+  color: var(--color-text);
+  background-color: var(--color-surface-2);
+}
+
+.conn-toggle-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.conn-mode-label {
+  font-weight: 600;
+}
+
+.conn-popover {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: 50;
+  width: 280px;
+  padding: var(--space-4);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.conn-popover-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  color: var(--color-text);
+}
+
+.conn-popover-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  line-height: 1.5;
+}
+
+.conn-popover-warn {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--color-warning, #d8a657);
+  line-height: 1.5;
+}
+
+.conn-popover-warn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.conn-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.conn-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.conn-switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-surface-2);
+  border: 1px solid var(--color-border-strong);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.conn-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: var(--color-text-muted);
+  transition: transform var(--transition-fast), background-color var(--transition-fast);
+}
+
+.conn-switch input:checked + .conn-switch-track {
+  background-color: var(--color-accent-muted);
+  border-color: var(--color-accent);
+}
+
+.conn-switch input:checked + .conn-switch-track::after {
+  transform: translateX(16px);
+  background-color: var(--color-accent);
+}
+
+.conn-switch input:disabled + .conn-switch-track {
+  opacity: 0.5;
+}
+
+.conn-switch input:focus-visible + .conn-switch-track {
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+
+.conn-switch-text {
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.conn-renew-btn {
+  width: 100%;
+  justify-content: center;
+}
