@@ -25,16 +25,22 @@ _timeout_env = os.getenv("REQUEST_TIMEOUT")
 REQUEST_TIMEOUT = float(_timeout_env) if _timeout_env else None
 
 # --- Tor ---------------------------------------------------------------------
-# Outbound requests to AudiobookBay are routed through Tor so the mirror only
-# ever sees a Tor exit node, never the server's real IP. The app starts and
-# manages its own Tor process, so nothing extra has to be running for this to
-# work -- it all comes up with the app.
+# AudiobookBay requests can be routed through Tor so the mirror only ever sees a
+# Tor exit node, never the server's real IP. The app starts and manages its own
+# Tor process (with a localhost control port so a circuit can be renewed on
+# demand), and keeps both a Tor-proxied and a direct session around so each user
+# can toggle between them at runtime from the UI.
 #
-#   USE_TOR              - master switch (default on). Set to "false" to send
-#                          AudiobookBay requests directly instead.
+#   USE_TOR              - DEFAULT route for new visitors: "true" (default) means
+#                          route via Tor unless the user toggles to Direct; set
+#                          "false" to default to Direct. Tor still runs either way
+#                          so the toggle works -- to not run Tor at all, set
+#                          TOR_AUTOSTART=false (and don't point at an external Tor).
 #   TOR_AUTOSTART        - let the app launch its own tor process (default on).
-#                          Disable to point at an already-running Tor instead.
+#                          Disable to point at an already-running Tor instead
+#                          (circuit renewal is then unavailable).
 #   TOR_SOCKS_PORT       - SOCKS port to use / start Tor on (default 9050).
+#   TOR_CONTROL_PORT     - control port for circuit renewal (default 9051).
 #   TOR_BOOTSTRAP_TIMEOUT- seconds to wait for Tor to connect (default 90).
 def _is_truthy(value):
     return value.lower() not in ("0", "false", "no", "off", "")
@@ -42,10 +48,20 @@ def _is_truthy(value):
 USE_TOR = _is_truthy(os.getenv("USE_TOR", "true"))
 TOR_AUTOSTART = _is_truthy(os.getenv("TOR_AUTOSTART", "true"))
 TOR_SOCKS_PORT = int(os.getenv("TOR_SOCKS_PORT", "9050"))
+TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", "9051"))
 TOR_BOOTSTRAP_TIMEOUT = int(os.getenv("TOR_BOOTSTRAP_TIMEOUT", "90"))
 
 _tor_process = None
 _tor_ready = threading.Event()
+_tor_data_dir = None          # where Tor writes its control auth cookie
+_tor_available = False        # a Tor SOCKS proxy we can route requests through
+_tor_managed = False          # we launched Tor ourselves, so we can renew circuits
+_renew_lock = threading.Lock()
+
+# Built at startup by init_outbound(): a plain session and (when Tor is up) a
+# Tor-proxied one. scrape_session() picks between them per request.
+DIRECT_SESSION = None
+TOR_SESSION = None
 
 
 def _socks_port_open(port):
@@ -77,33 +93,36 @@ def _stop_tor():
 
 
 def _start_tor():
-    """Launch a Tor process and block until it has bootstrapped. No-op if Tor is
-    already listening on TOR_SOCKS_PORT."""
-    global _tor_process
+    """Bring Tor up if possible and record whether it is usable/renewable. Never
+    raises: if Tor can't be started the app simply runs in Direct-only mode and
+    the UI reflects that."""
+    global _tor_process, _tor_data_dir, _tor_available, _tor_managed
 
+    # Someone already runs Tor on the SOCKS port -- reuse it, but we can't renew
+    # a circuit we don't control.
     if _socks_port_open(TOR_SOCKS_PORT):
         print(f"[TOR] Reusing Tor already listening on 127.0.0.1:{TOR_SOCKS_PORT}")
+        _tor_available = True
+        _tor_managed = False
         return
 
     if not TOR_AUTOSTART:
-        raise RuntimeError(
-            f"USE_TOR is on but nothing is listening on 127.0.0.1:{TOR_SOCKS_PORT} "
-            "and TOR_AUTOSTART is off."
-        )
+        print("[TOR] No Tor on the SOCKS port and TOR_AUTOSTART is off; running Direct-only.")
+        return
 
     tor_bin = shutil.which("tor")
     if not tor_bin:
-        raise RuntimeError(
-            "USE_TOR is on but the 'tor' binary was not found. Install Tor (the "
-            "Docker image bundles it) or set USE_TOR=false to send requests directly."
-        )
+        print("[TOR] 'tor' binary not found; running Direct-only. Install Tor to enable it.")
+        return
 
     data_dir = tempfile.mkdtemp(prefix="abb-tor-")
-    print(f"[TOR] Starting Tor (SOCKS 127.0.0.1:{TOR_SOCKS_PORT})...")
+    print(f"[TOR] Starting Tor (SOCKS 127.0.0.1:{TOR_SOCKS_PORT}, control {TOR_CONTROL_PORT})...")
     _tor_process = subprocess.Popen(
         [
             tor_bin,
             "--SocksPort", str(TOR_SOCKS_PORT),
+            "--ControlPort", f"127.0.0.1:{TOR_CONTROL_PORT}",
+            "--CookieAuthentication", "1",
             "--DataDirectory", data_dir,
             "--ClientOnly", "1",
             "--AvoidDiskWrites", "1",
@@ -116,34 +135,81 @@ def _start_tor():
     atexit.register(_stop_tor)
     threading.Thread(target=_consume_tor_output, args=(_tor_process,), daemon=True).start()
 
-    if not _tor_ready.wait(timeout=TOR_BOOTSTRAP_TIMEOUT):
-        raise RuntimeError(f"Tor did not bootstrap within {TOR_BOOTSTRAP_TIMEOUT}s.")
-    if _tor_process.poll() is not None:
-        raise RuntimeError("Tor exited before it finished bootstrapping; see logs above.")
-    print("[TOR] Tor is ready; AudiobookBay requests will be routed through it.")
+    if not _tor_ready.wait(timeout=TOR_BOOTSTRAP_TIMEOUT) or _tor_process.poll() is not None:
+        print(f"[TOR] Tor did not bootstrap within {TOR_BOOTSTRAP_TIMEOUT}s; running Direct-only.")
+        return
+
+    _tor_data_dir = data_dir
+    _tor_available = True
+    _tor_managed = True
+    print("[TOR] Tor is ready; circuit renewal is available.")
 
 
-def _build_session():
-    """Build the requests Session used for AudiobookBay scraping. When Tor is
-    enabled it proxies through Tor's SOCKS port; socks5h keeps DNS resolution on
-    the Tor side too, so the hostname never leaks."""
+def _direct_session():
+    return requests.Session()
+
+
+def _tor_session():
+    """A session that proxies through Tor. socks5h keeps DNS resolution on the Tor
+    side too, so the hostname never leaks."""
     session = requests.Session()
-    if USE_TOR:
-        proxy = f"socks5h://127.0.0.1:{TOR_SOCKS_PORT}"
-        session.proxies = {"http": proxy, "https": proxy}
+    proxy = f"socks5h://127.0.0.1:{TOR_SOCKS_PORT}"
+    session.proxies = {"http": proxy, "https": proxy}
     return session
 
 
 def init_outbound():
-    """Bring up Tor (if enabled) and build the scraping session. Called once at
-    startup so everything is ready before the first request."""
-    global SESSION
-    if USE_TOR:
-        _start_tor()
-    SESSION = _build_session()
+    """Bring up Tor (if available) and build both scraping sessions. Called once
+    at startup so everything is ready before the first request."""
+    global DIRECT_SESSION, TOR_SESSION
+    _start_tor()
+    DIRECT_SESSION = _direct_session()
+    TOR_SESSION = _tor_session() if _tor_available else None
 
 
-SESSION = None
+def current_route_mode():
+    """'tor' or 'direct' for the current request: the user's saved choice, or the
+    USE_TOR default. Forced to 'direct' whenever Tor isn't available."""
+    if not _tor_available:
+        return 'direct'
+    mode = session.get('route_mode')
+    if mode not in ('tor', 'direct'):
+        mode = 'tor' if USE_TOR else 'direct'
+    return mode
+
+
+def scrape_session():
+    """The requests session to use for AudiobookBay, per the active route mode."""
+    if current_route_mode() == 'tor' and TOR_SESSION is not None:
+        return TOR_SESSION
+    return DIRECT_SESSION
+
+
+def renew_tor_circuit():
+    """Ask Tor for a fresh circuit (new exit) via the control port, then rebuild
+    the Tor session so pooled connections don't keep the old circuit alive.
+    Returns (ok, message)."""
+    global TOR_SESSION
+    if not (_tor_available and _tor_managed):
+        return False, "Tor isn't running under this app's control, so its circuit can't be renewed."
+
+    with _renew_lock:
+        try:
+            with open(os.path.join(_tor_data_dir, "control_auth_cookie"), "rb") as f:
+                cookie_hex = f.read().hex()
+            with socket.create_connection(("127.0.0.1", TOR_CONTROL_PORT), timeout=10) as ctrl:
+                ctrl.settimeout(10)
+                ctrl.sendall(f"AUTHENTICATE {cookie_hex}\r\n".encode())
+                if not ctrl.recv(1024).decode(errors="replace").startswith("250"):
+                    return False, "Tor control authentication failed."
+                ctrl.sendall(b"SIGNAL NEWNYM\r\n")
+                if not ctrl.recv(1024).decode(errors="replace").startswith("250"):
+                    return False, "Tor did not accept the new-circuit request."
+            # Drop pooled connections so the next request opens a fresh circuit.
+            TOR_SESSION = _tor_session()
+            return True, "Requested a new Tor circuit."
+        except Exception as e:
+            return False, f"Could not renew Tor circuit: {e}"
 
 DOWNLOAD_CLIENT = os.getenv("DOWNLOAD_CLIENT")
 DL_URL = os.getenv("DL_URL")
@@ -258,7 +324,7 @@ CLIENT_OK, CLIENT_CONFIG_ERROR = _validate_client_config()
 
 #Print configuration
 print(f"ABB_HOSTNAME: {ABB_HOSTNAME}")
-print(f"USE_TOR: {USE_TOR}" + (f" (SOCKS 127.0.0.1:{TOR_SOCKS_PORT})" if USE_TOR else ""))
+print(f"USE_TOR (default route): {'Tor' if USE_TOR else 'Direct'}" + (f", SOCKS 127.0.0.1:{TOR_SOCKS_PORT}" if TOR_AUTOSTART else ""))
 print(f"DOWNLOAD_CLIENT: {DOWNLOAD_CLIENT or '(not set)'}")
 if not CLIENT_OK:
     print(f"[CONFIG ERROR] {CLIENT_CONFIG_ERROR}")
@@ -300,8 +366,34 @@ def inject_app_config():
         'putio_oauth_available': putio_oauth_available,
         'putio_session_login': putio_session_login,
         'smart_sort_available': bool(GEMINI_API_KEY),
+        # Connection controls (Tor routing toggle + circuit renewal).
+        'tor_available': _tor_available,
+        'tor_renewable': _tor_available and _tor_managed,
+        'route_mode': current_route_mode(),
         'page_title_suffix': 'AudiobookBay',
     }
+
+
+# --- Connection controls (Tor routing) ---------------------------------------
+@app.route('/settings/route', methods=['POST'])
+def set_route():
+    """Persist this browser's AudiobookBay routing choice (tor|direct)."""
+    data = request.get_json(silent=True) or {}
+    mode = data.get('mode')
+    if mode not in ('tor', 'direct'):
+        return jsonify({'message': 'Invalid route mode.'}), 400
+    if mode == 'tor' and not _tor_available:
+        return jsonify({'message': 'Tor is not available on this server.'}), 409
+    session['route_mode'] = mode
+    session.permanent = True  # remember the choice across browser restarts
+    return jsonify({'mode': mode})
+
+
+@app.route('/tor/renew', methods=['POST'])
+def tor_renew():
+    """Request a fresh Tor circuit (new exit IP) for everyone on this instance."""
+    ok, message = renew_tor_circuit()
+    return jsonify({'message': message}), (200 if ok else 409)
 
 # --- put.io OAuth routes -----------------------------------------------------
 @app.route('/putio/auth')
@@ -365,11 +457,12 @@ def search_audiobookbay(query, max_pages=5):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
     }
+    sess = scrape_session()
     results = []
     for page in range(1, max_pages + 1):
         url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}"
         try:
-            response = SESSION.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            response = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if response.status_code != 200:
                 print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
                 break
@@ -473,7 +566,7 @@ def extract_magnet_link(details_url):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
     }
     try:
-        response = SESSION.get(details_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        response = scrape_session().get(details_url, headers=headers, timeout=REQUEST_TIMEOUT)
         if response.status_code != 200:
             print(f"[ERROR] Failed to fetch details page. Status Code: {response.status_code}")
             return None

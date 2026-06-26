@@ -446,6 +446,75 @@
   }
 
   /* ----------------------------------------------------------
+     Connection controls: Tor routing toggle + circuit renew
+     ---------------------------------------------------------- */
+  function closeConnPopover() {
+    const pop = document.getElementById('conn-popover');
+    const btn = document.querySelector('[data-action="conn-toggle"]');
+    if (pop) pop.hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleConnPopover(btn) {
+    const pop = document.getElementById('conn-popover');
+    if (!pop) return;
+    const opening = pop.hidden;
+    pop.hidden = !opening;
+    btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+    if (opening) refreshIcons();
+  }
+
+  async function handleRouteToggle(checkbox) {
+    const mode = checkbox.checked ? 'tor' : 'direct';
+    try {
+      const res = await fetch('/settings/route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Could not change routing');
+
+      const label = document.querySelector('.conn-mode-label');
+      if (label) label.textContent = mode === 'tor' ? 'Tor' : 'Direct';
+      const warning = document.querySelector('.conn-direct-warning');
+      if (warning) warning.hidden = mode === 'tor';
+      const renew = document.querySelector('.conn-renew-btn');
+      if (renew) renew.disabled = mode !== 'tor';
+      showToast(mode === 'tor' ? 'Routing AudioBook Bay via Tor.' : 'Routing AudioBook Bay directly.', 'success');
+    } catch (err) {
+      checkbox.checked = !checkbox.checked; // revert the visual toggle
+      showToast(err.message || 'Could not change routing', 'error');
+    }
+  }
+
+  let renewCooldown = false;
+  async function handleRenew(btn) {
+    if (renewCooldown) return;
+    renewCooldown = true;
+    btn.disabled = true;
+    const original = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span> Renewing…';
+    try {
+      const res = await fetch('/tor/renew', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Could not renew circuit');
+      showToast(data.message || 'Requested a new Tor circuit.', 'success');
+    } catch (err) {
+      showToast(err.message || 'Could not renew circuit', 'error');
+    } finally {
+      btn.innerHTML = original;
+      refreshIcons();
+      // Tor rate-limits NEWNYM (~10s) -- keep the button disabled until then.
+      setTimeout(() => {
+        renewCooldown = false;
+        const checkbox = document.getElementById('conn-route-tor');
+        btn.disabled = !(checkbox && checkbox.checked);
+      }, 10000);
+    }
+  }
+
+  /* ----------------------------------------------------------
      Wiring
      ---------------------------------------------------------- */
   document.addEventListener('click', (e) => {
@@ -463,6 +532,24 @@
 
     const interpChip = e.target.closest('#smart-sort-ambiguity .chip');
     if (interpChip) { handleInterpChip(interpChip); return; }
+
+    const connToggle = e.target.closest('[data-action="conn-toggle"]');
+    if (connToggle) { toggleConnPopover(connToggle); return; }
+
+    const connRenew = e.target.closest('[data-action="conn-renew"]');
+    if (connRenew) { handleRenew(connRenew); return; }
+
+    // A click anywhere outside the connection control closes its popover.
+    if (!e.target.closest('.conn-control')) closeConnPopover();
+  });
+
+  document.addEventListener('change', (e) => {
+    const route = e.target.closest('[data-action="conn-route"]');
+    if (route) handleRouteToggle(route);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeConnPopover();
   });
 
   document.addEventListener('submit', (e) => {
