@@ -980,6 +980,43 @@ def api_status():
         return jsonify({'message': f"Failed to fetch torrent status: {e}"}), 500
 
 
+def current_user_label():
+    """Best-effort identity for the download log: prefer Authentik's forwarded
+    username, fall back through other common forward-auth headers, then the
+    client IP. Reused by /whoami now and by the log when we build it."""
+    h = request.headers
+    return (h.get('X-authentik-username')
+            or h.get('X-authentik-email')
+            or h.get('Remote-User')                    # Authelia / generic forward-auth
+            or h.get('X-Forwarded-Preferred-Username')
+            or h.get('X-Forwarded-User')
+            or request.remote_addr
+            or 'unknown')
+
+
+# --- Identity probe (TEMPORARY) ----------------------------------------------
+# Confirms what the reverse proxy actually forwards before we build the log.
+# Visit /whoami while logged in: if `auth_headers` shows X-authentik-* values,
+# Authentik is forwarding identity and we can log real usernames. Remove once
+# verified.
+@app.route('/whoami')
+def whoami():
+    auth_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower().startswith('x-authentik')
+        or k.lower() in (
+            'remote-user', 'remote-email', 'remote-name', 'remote-groups',
+            'x-forwarded-user', 'x-forwarded-email',
+            'x-forwarded-preferred-username',
+        )
+    }
+    return jsonify({
+        'detected_user': current_user_label(),
+        'auth_headers': auth_headers,
+        'remote_addr': request.remote_addr,
+        'all_headers': dict(request.headers),
+    })
+
 
 # Bring up Tor and the scraping session before serving any requests. Done at
 # import time so it also covers WSGI servers, not just `python app.py`.
