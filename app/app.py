@@ -1,4 +1,5 @@
-import os, re, json, requests, atexit, shutil, socket, subprocess, tempfile, threading
+import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading
+from datetime import datetime, timezone
 from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
 from qbittorrentapi import Client
@@ -273,6 +274,101 @@ NAV_LINK_URL = os.getenv("NAV_LINK_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RANK_MODEL = os.getenv("RANK_MODEL", "gemini-3.5-flash")
 
+# --- Download log ------------------------------------------------------------
+# Records every send (who added what, when) so the operator can audit a shared
+# instance. Identity comes from the reverse proxy's forwarded auth headers (see
+# current_user_label) -- with Authentik that's the username. Stored in a small
+# SQLite file; mount LOG_DB_PATH on a volume to keep history across restarts.
+#
+#   LOG_DB_PATH     - SQLite file path (default "/data/downloads.db"). Set empty
+#                     to disable logging entirely.
+#   LOG_ADMIN_USERS - comma-separated usernames allowed to see everyone's
+#                     entries on /log. If unset, the page is open to all. Anyone
+#                     not listed only ever sees their own additions.
+LOG_DB_PATH = os.getenv("LOG_DB_PATH", "/data/downloads.db")
+LOG_ADMIN_USERS = {u.strip() for u in os.getenv("LOG_ADMIN_USERS", "").split(",") if u.strip()}
+LOG_ENABLED = bool(LOG_DB_PATH)
+_log_lock = threading.Lock()
+
+
+def _log_connect():
+    conn = sqlite3.connect(LOG_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_download_log():
+    """Create the log table if logging is enabled. Non-fatal on failure -- the
+    app keeps working, it just won't record."""
+    if not LOG_ENABLED:
+        print("Download log: disabled (LOG_DB_PATH empty)")
+        return
+    try:
+        os.makedirs(os.path.dirname(LOG_DB_PATH) or ".", exist_ok=True)
+        with _log_lock, _log_connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    user TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    link TEXT,
+                    infohash TEXT,
+                    client TEXT,
+                    route TEXT,
+                    status TEXT NOT NULL,
+                    detail TEXT
+                )
+            """)
+        admins = ', '.join(sorted(LOG_ADMIN_USERS)) if LOG_ADMIN_USERS else None
+        print(f"Download log: {LOG_DB_PATH}" + (f" (admins: {admins})" if admins else " (viewable by everyone)"))
+    except Exception as e:
+        print(f"[WARNING] Download log unavailable ({LOG_DB_PATH}): {e}")
+
+
+def record_download(user, title, link, infohash, status, detail=""):
+    """Append one log row. Swallows storage errors so a logging hiccup can never
+    fail an otherwise-successful download."""
+    if not LOG_ENABLED:
+        return
+    try:
+        with _log_lock, _log_connect() as conn:
+            conn.execute(
+                "INSERT INTO downloads (ts, user, title, link, infohash, client, route, status, detail)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (datetime.now(timezone.utc).isoformat(timespec="seconds"), user, title, link,
+                 infohash, DOWNLOAD_CLIENT, current_route_mode(), status, detail or ""),
+            )
+    except Exception as e:
+        print(f"[WARNING] Failed to write download log entry: {e}")
+
+
+def fetch_download_log(user_filter=None, limit=500):
+    if not LOG_ENABLED:
+        return []
+    try:
+        with _log_connect() as conn:
+            if user_filter:
+                rows = conn.execute("SELECT * FROM downloads WHERE user = ? ORDER BY id DESC LIMIT ?",
+                                    (user_filter, limit)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM downloads ORDER BY id DESC LIMIT ?",
+                                    (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[WARNING] Failed to read download log: {e}")
+        return []
+
+
+def is_log_admin(user):
+    """Admins (or everyone, if no allowlist is set) can see all entries."""
+    return (not LOG_ADMIN_USERS) or (user in LOG_ADMIN_USERS)
+
+
+def _infohash_from_magnet(magnet_link):
+    m = re.search(r'btih:([0-9a-zA-Z]+)', magnet_link or '')
+    return m.group(1).lower() if m else None
+
 # Fields we are willing to forward to Gemini. Everything else (link, cover,
 # is_m4b, etc.) is dropped before the request is built.
 RANK_FIELDS = ("title", "format", "bitrate", "language", "size", "keywords")
@@ -366,6 +462,7 @@ def inject_app_config():
         'putio_oauth_available': putio_oauth_available,
         'putio_session_login': putio_session_login,
         'smart_sort_available': bool(GEMINI_API_KEY),
+        'log_enabled': LOG_ENABLED,
         # Connection controls (Tor routing toggle + circuit renewal).
         'tor_available': _tor_available,
         'tor_renewable': _tor_available and _tor_managed,
@@ -938,6 +1035,7 @@ def send():
     data = request.json
     details_url = data.get('link')
     title = data.get('title')
+    user = current_user_label()
     if not details_url or not title:
         return jsonify({'message': 'Invalid request'}), 400
     if not CLIENT_OK:
@@ -946,13 +1044,17 @@ def send():
     try:
         magnet_link = extract_magnet_link(details_url)
         if not magnet_link:
+            record_download(user, title, details_url, None, 'error', 'Failed to extract magnet link')
             return jsonify({'message': 'Failed to extract magnet link'}), 500
 
         DOWNLOAD_BACKENDS[DOWNLOAD_CLIENT]['add'](magnet_link, title)
+        record_download(user, title, details_url, _infohash_from_magnet(magnet_link), 'ok')
         return jsonify({'message': f'Download added successfully! This may take some time, the download will show in Audiobookshelf when completed.'})
     except PutioNotConnected as e:
+        record_download(user, title, details_url, None, 'error', str(e))
         return jsonify({'message': str(e)}), 401
     except Exception as e:
+        record_download(user, title, details_url, None, 'error', str(e))
         return jsonify({'message': str(e)}), 500
 
 
@@ -994,32 +1096,22 @@ def current_user_label():
             or 'unknown')
 
 
-# --- Identity probe (TEMPORARY) ----------------------------------------------
-# Confirms what the reverse proxy actually forwards before we build the log.
-# Visit /whoami while logged in: if `auth_headers` shows X-authentik-* values,
-# Authentik is forwarding identity and we can log real usernames. Remove once
-# verified.
-@app.route('/whoami')
-def whoami():
-    auth_headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower().startswith('x-authentik')
-        or k.lower() in (
-            'remote-user', 'remote-email', 'remote-name', 'remote-groups',
-            'x-forwarded-user', 'x-forwarded-email',
-            'x-forwarded-preferred-username',
-        )
-    }
-    return jsonify({
-        'detected_user': current_user_label(),
-        'auth_headers': auth_headers,
-        'remote_addr': request.remote_addr,
-        'all_headers': dict(request.headers),
-    })
+@app.route('/log')
+def download_log():
+    """Audit log of who sent what. Admins (or everyone, if no allowlist is set)
+    see all entries and can filter by user; anyone else sees only their own."""
+    user = current_user_label()
+    admin = is_log_admin(user)
+    # Non-admins are locked to their own rows regardless of any ?user= param.
+    user_filter = (request.args.get('user') or None) if admin else user
+    entries = fetch_download_log(user_filter=user_filter)
+    return render_template('log.html', entries=entries, is_admin=admin,
+                           user_filter=user_filter, log_enabled=LOG_ENABLED)
 
 
 # Bring up Tor and the scraping session before serving any requests. Done at
 # import time so it also covers WSGI servers, not just `python app.py`.
+init_download_log()
 init_outbound()
 
 

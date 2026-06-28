@@ -32,6 +32,9 @@ Once a download finishes, the files are ready for a library manager like
 - **Send in one click** to qBittorrent, Transmission, Deluge, or Put.io.
 - **Download status page** — monitor active transfers and their progress from
   within the app.
+- **Download log (for shared instances)** — records who added which book and
+  when, reading the username from your reverse proxy's auth headers (e.g.
+  Authentik). See [Download log](#download-log).
 - **No AudioBook Bay account needed** — magnet links are built from the public
   infohashes on each listing.
 
@@ -153,6 +156,35 @@ RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
 > keywords) are sent — never links, covers, or the mirror hostname. Leave
 > `GEMINI_API_KEY` unset if you'd rather nothing leaves your server.
 
+### Download log
+
+When you share an instance with others, the **Log** page records every send —
+who added which book, when, over which route, and whether it succeeded. It's
+backed by a small SQLite file on the `./data` volume, so history survives
+restarts.
+
+```env
+LOG_DB_PATH=/data/downloads.db   # SQLite path; set empty to disable logging
+LOG_ADMIN_USERS=alice,bob        # usernames who can see everyone's entries
+```
+
+`LOG_ADMIN_USERS` (comma-separated) may view all entries and filter by user;
+anyone not listed sees only their own additions. Leave it unset to let every
+user see the full log.
+
+**Identity comes from your reverse proxy.** The log reads the username from
+forwarded auth headers — `X-authentik-username` (Authentik), or `Remote-User` /
+`X-Forwarded-User` from other forward-auth setups — falling back to the client
+IP when none are present. For this to work your proxy must *forward* those
+headers to the app (e.g. Authentik's `proxy_set_header X-authentik-username …`),
+not just gate access.
+
+> **Trust note:** the username is only as trustworthy as your proxy. If the app
+> is reachable directly (its port published to the LAN), a client can bypass the
+> proxy and forge the header. Put the app behind your proxy only — e.g. don't
+> publish the container port and have the proxy reach it over a shared Docker
+> network.
+
 ### Tor
 
 AudioBook Bay requests (search and magnet-link lookups) are routed through Tor by
@@ -202,6 +234,8 @@ services:
     ports:
       - "5078:5078"
     container_name: audiobookbay-automated
+    volumes:
+      - ./data:/data                             # persists the download log
     environment:
       - DOWNLOAD_CLIENT=qbittorrent
       - DL_SCHEME=http
@@ -216,6 +250,7 @@ services:
       - GEMINI_API_KEY=YOUR_GEMINI_KEY            # enables Smart sort
       - NAV_LINK_NAME=Open Audiobook Player
       - NAV_LINK_URL=https://audiobooks.yourdomain.com/
+      - LOG_ADMIN_USERS=alice,bob                 # who can see the full download log
 ```
 
 For **Put.io**, replace the `DL_*` / `SAVE_PATH_BASE` lines with:

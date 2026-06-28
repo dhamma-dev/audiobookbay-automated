@@ -31,6 +31,12 @@
                     <i data-lucide="download" aria-hidden="true"></i>
                     Downloads
                 </a>
+                {% if log_enabled %}
+                <a href="{{ url_for('download_log') }}" class="{% if request.endpoint == 'download_log' %}active{% endif %}">
+                    <i data-lucide="history" aria-hidden="true"></i>
+                    Log
+                </a>
+                {% endif %}
                 {% if nav_link_name and nav_link_url %}
                 <a href="{{ nav_link_url }}" target="_blank" rel="noopener noreferrer">
                     <i data-lucide="external-link" aria-hidden="true"></i>

@@ -180,3 +180,6 @@ cython_debug/
 
 # Claude Code session memory (local agent notes, not project code)
 memory/
+
+# Download log SQLite DB (runtime data, mounted via docker-compose ./data)
+data/

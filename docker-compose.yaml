@@ -6,6 +6,10 @@ services:
     ports:
       - "5078:5078"
     container_name: audiobookbay-automated
+    # Persists the download log (who added what) across restarts. Maps to
+    # LOG_DB_PATH's directory below.
+    volumes:
+      - ./data:/data
     environment:
       - DOWNLOAD_CLIENT=${DOWNLOAD_CLIENT}
       # Put.io auth: either OAuth (CLIENT_ID/SECRET, "Log in with Put.io") or a
@@ -34,5 +38,12 @@ services:
       # This call goes directly to Google, not through Tor. See the README.
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - RANK_MODEL=${RANK_MODEL:-gemini-3.5-flash}
+      # Download log: records who added what (identity from the reverse proxy's
+      # forwarded auth headers, e.g. Authentik's X-authentik-username).
+      # LOG_DB_PATH lives on the ./data volume above; set it empty to disable.
+      # LOG_ADMIN_USERS (comma-separated) may see everyone's entries on /log;
+      # anyone else sees only their own. Leave unset to let all users see all.
+      - LOG_DB_PATH=${LOG_DB_PATH:-/data/downloads.db}
+      - LOG_ADMIN_USERS=${LOG_ADMIN_USERS}
     env_file:
       - .env

@@ -26,3 +26,72 @@
   font-variant-numeric: tabular-nums;
   transition: opacity var(--transition-fast);
 }
+
+/* ============================================================
+   Download log table
+   ============================================================ */
+.log-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.log-table th {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-subtle);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.log-table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  vertical-align: middle;
+}
+
+.log-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.log-table tbody tr:hover {
+  background: var(--color-surface-2);
+}
+
+.log-when {
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-user {
+  color: var(--color-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.log-user:hover {
+  text-decoration: underline;
+}
+
+.log-book a {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.log-book a:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}

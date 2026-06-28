@@ -112,6 +112,11 @@
   border: 1px solid transparent;
 }
 
+.badge svg {
+  width: 13px;
+  height: 13px;
+}
+
 .badge-accent {
   background-color: var(--color-accent-muted);
   color: var(--color-accent);
