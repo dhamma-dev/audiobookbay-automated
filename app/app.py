@@ -825,8 +825,17 @@ RANK_SYSTEM_INSTRUCTION = (
     "it differs on (e.g. 'format', 'bitrate', 'abridged', 'language').\n"
     "- An abridged edition or a different narrator is its OWN entry, never an "
     "alternative of the unabridged one.\n"
-    "- Leave omnibus/collection uploads that span several books as normal ranked "
-    "results; do not turn them into a series entry.\n"
+    "- Number entries by their position in the series (seq). Include an entry for "
+    "every book from book 1 up to the highest-numbered book present, in reading "
+    "order. If a book in that run has no matching candidate, still include its "
+    "entry (seq + title) but omit best_id -- that marks a gap. Never invent books "
+    "beyond the highest one present.\n"
+    "- If you confidently know the series' full length, set 'total' to it (so the "
+    "UI can say 'X of Y'). Omit 'total' if unsure.\n"
+    "- An omnibus/box-set/collection upload (one file spanning several books) "
+    "goes in the 'collections' array, not in 'entries': give its id, a title, and "
+    "'covers' = the list of book numbers (seq) it contains. Do not also use that "
+    "id as an entry's best_id.\n"
     "- If nothing forms a series, return an empty 'series' list.\n"
     "Return every input id exactly once in 'ordering', best match first."
 )
@@ -868,6 +877,7 @@ RANK_RESPONSE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "label": {"type": "string"},
+                    "total": {"type": "integer"},
                     "entries": {
                         "type": "array",
                         "items": {
@@ -879,7 +889,19 @@ RANK_RESPONSE_SCHEMA = {
                                 "alt_ids": {"type": "array", "items": {"type": "integer"}},
                                 "alt_note": {"type": "string"},
                             },
-                            "required": ["seq", "title", "best_id", "alt_ids"],
+                            "required": ["seq", "title"],
+                        },
+                    },
+                    "collections": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "title": {"type": "string"},
+                                "covers": {"type": "array", "items": {"type": "integer"}},
+                            },
+                            "required": ["id", "title", "covers"],
                         },
                     },
                 },

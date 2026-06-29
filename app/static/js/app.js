@@ -286,8 +286,29 @@
       card.classList.toggle('is-hidden-result', isFiltered && !expanded);
     });
 
+    // Series shelves respond to the active interpretation too: a whole shelf
+    // whose books aren't part of the chosen interpretation is filtered away,
+    // just like a loose card. (Buckets never hide curated series picks.)
+    let hiddenSeries = 0;
+    results.querySelectorAll('.series-group').forEach((group) => {
+      let belongs = true;
+      if (activeInterp != null && interps[activeInterp]) {
+        const ids = new Set((interps[activeInterp].result_ids || []).map(String));
+        belongs = Array.prototype.some.call(
+          group.querySelectorAll('.book-card'),
+          (c) => ids.has(c.dataset.resultId)
+        );
+      }
+      const isFiltered = !belongs;
+      group.classList.toggle('is-dimmed-result', isFiltered);
+      group.classList.toggle('is-hidden-result', isFiltered && !expanded);
+      if (isFiltered) {
+        hiddenSeries += group.querySelectorAll('.series-entry:not(.is-gap):not(.is-collection)').length;
+      }
+    });
+
     // Filtered-results toggle.
-    const n = hidden.size;
+    const n = hidden.size + hiddenSeries;
     if (n === 0) {
       anchor.hidden = true;
     } else {
@@ -368,9 +389,27 @@
      server-rendered cards into group containers — no re-render.
      ---------------------------------------------------------- */
   function buildSeriesEntry(e, cards, consumed) {
-    const bestKey = String(e.best_id);
-    const bestCard = cards.get(bestKey);
-    if (!bestCard || consumed.has(bestKey)) return null;
+    const bestKey = e.best_id != null ? String(e.best_id) : null;
+    const bestCard = bestKey && !consumed.has(bestKey) ? cards.get(bestKey) : null;
+
+    // No real candidate for this slot — render a subtle gap marker so a missing
+    // book in the middle of a run is visible without the user hunting for it.
+    if (!bestCard) {
+      const gap = document.createElement('div');
+      gap.className = 'series-entry is-gap';
+      if (e.seq != null) gap.dataset.seq = String(e.seq);
+      gap.innerHTML =
+        '<div class="series-entry-check series-entry-check--empty" aria-hidden="true"></div>' +
+        '<div class="series-entry-body"><div class="series-gap-row">' +
+        '<i data-lucide="circle-dashed" aria-hidden="true"></i>' +
+        '<span class="series-gap-label">' +
+        (e.seq != null ? 'Book ' + escapeHtml(String(e.seq)) : 'This book') +
+        (e.title ? ' · ' + escapeHtml(e.title) : '') + '</span>' +
+        '<span class="series-gap-note">not in these results</span>' +
+        '</div></div>';
+      return { el: gap, available: false };
+    }
+
     consumed.add(bestKey);
     const altCards = (e.alt_ids || [])
       .map((id) => String(id))
@@ -379,6 +418,7 @@
 
     const entry = document.createElement('div');
     entry.className = 'series-entry';
+    if (e.seq != null) entry.dataset.seq = String(e.seq);
 
     const gutter = document.createElement('label');
     gutter.className = 'series-entry-check';
@@ -417,6 +457,50 @@
       body.appendChild(altsWrap);
     }
 
+    entry.appendChild(gutter);
+    entry.appendChild(body);
+    return { el: entry, available: true };
+  }
+
+  // An omnibus / box set: one file covering several books. Rendered at the top
+  // of the shelf, unchecked by default (individual books are the default), and
+  // when ticked it suppresses the books it covers so nothing is grabbed twice.
+  function buildSeriesCollection(c, cards, consumed) {
+    const key = c.id != null ? String(c.id) : null;
+    const card = key && !consumed.has(key) ? cards.get(key) : null;
+    if (!card) return null;
+    consumed.add(key);
+
+    const covers = (c.covers || []).map((n) => String(n));
+    const entry = document.createElement('div');
+    entry.className = 'series-entry is-collection';
+    if (covers.length) entry.dataset.covers = covers.join(',');
+
+    const gutter = document.createElement('label');
+    gutter.className = 'series-entry-check';
+    gutter.innerHTML =
+      '<input type="checkbox" class="entry-include" aria-label="Include the ' +
+      escapeHtml(c.title || 'collection') + ' in the batch">';
+
+    const body = document.createElement('div');
+    body.className = 'series-entry-body';
+
+    const caption = document.createElement('div');
+    caption.className = 'series-entry-caption';
+    const range = covers.length
+      ? 'Covers books ' + (covers.length > 1 ? covers[0] + '–' + covers[covers.length - 1] : covers[0])
+      : 'Collection';
+    caption.innerHTML =
+      '<span class="series-seq series-seq--set"><i data-lucide="package" aria-hidden="true"></i> Complete set</span>' +
+      '<span class="series-entry-title">' + escapeHtml(range) + '</span>';
+
+    const main = document.createElement('div');
+    main.className = 'series-entry-main';
+    card.classList.add('in-series', 'is-collection-card');
+    main.appendChild(card);
+
+    body.appendChild(caption);
+    body.appendChild(main);
     entry.appendChild(gutter);
     entry.appendChild(body);
     return entry;
@@ -465,20 +549,54 @@
 
   function updateSeriesCount(group) {
     if (!group) return;
-    const checks = group.querySelectorAll('.entry-include');
+    // The batch is every ticked, enabled box — a checked omnibus counts as one
+    // send; books it covers are disabled so they don't double up.
     let n = 0;
-    checks.forEach((c) => { if (c.checked) n++; });
+    group.querySelectorAll('.entry-include').forEach((c) => { if (c.checked && !c.disabled) n++; });
     const btn = group.querySelector('[data-action="series-send"]');
     if (btn) {
       btn.disabled = n === 0;
       const lbl = btn.querySelector('.series-send-count');
       if (lbl) lbl.textContent = n;
     }
+    // Select-all reflects the individual book entries only (not collections).
+    const bookChecks = group.querySelectorAll('.series-entry:not(.is-collection):not(.is-gap) .entry-include');
     const all = group.querySelector('.series-select-all');
     if (all) {
-      all.checked = n > 0 && n === checks.length;
-      all.indeterminate = n > 0 && n < checks.length;
+      let checked = 0, total = 0;
+      bookChecks.forEach((c) => { total++; if (c.checked) checked++; });
+      all.checked = total > 0 && checked === total;
+      all.indeterminate = checked > 0 && checked < total;
     }
+  }
+
+  // Reconcile book selection with any ticked collections: a book covered by a
+  // selected omnibus is unticked + disabled; when no longer covered it is
+  // re-enabled (and restored to ticked, since books default on).
+  function syncCollections(group) {
+    if (!group) return;
+    const covered = new Set();
+    group.querySelectorAll('.series-entry.is-collection').forEach((col) => {
+      const inc = col.querySelector('.entry-include');
+      if (inc && inc.checked) {
+        (col.dataset.covers || '').split(',').filter(Boolean).forEach((s) => covered.add(s));
+      }
+    });
+    group.querySelectorAll('.series-entry:not(.is-collection):not(.is-gap)').forEach((entry) => {
+      const seq = entry.dataset.seq;
+      const inc = entry.querySelector('.entry-include');
+      const isCovered = seq != null && covered.has(seq);
+      entry.classList.toggle('is-covered', isCovered);
+      if (inc) {
+        if (isCovered) { inc.checked = false; inc.disabled = true; }
+        else {
+          inc.disabled = false;
+          if (entry.dataset.wasCovered === '1') inc.checked = true;
+        }
+      }
+      entry.dataset.wasCovered = isCovered ? '1' : '';
+    });
+    updateSeriesCount(group);
   }
 
   function renderSeries(ranking) {
@@ -505,16 +623,17 @@
       group.className = 'series-group';
       group.dataset.label = s.label || '';
 
-      const entryEls = [];
+      const built = [];
       (s.entries || []).forEach((e) => {
-        const el = buildSeriesEntry(e, cards, consumed);
-        if (el) entryEls.push(el);
+        const r = buildSeriesEntry(e, cards, consumed);
+        if (r) built.push(r);
       });
-      if (entryEls.length < 2) {
-        // Not enough real cards to be worth a shelf — return every card this
-        // entry pulled in (best *and* alternatives) to the loose flow.
-        entryEls.forEach((el) => {
-          el.querySelectorAll('.book-card').forEach((card) => {
+      const availableCount = built.filter((b) => b.available).length;
+      if (availableCount < 2) {
+        // Not enough real books to be worth a shelf — return every card these
+        // entries pulled in (best *and* alternatives) to the loose flow.
+        built.forEach((b) => {
+          b.el.querySelectorAll('.book-card').forEach((card) => {
             card.classList.remove('in-series', 'is-alt', 'is-chosen');
             results.insertBefore(card, sentinel);
           });
@@ -522,7 +641,18 @@
         return;
       }
 
-      const count = entryEls.length;
+      const collectionEls = [];
+      (s.collections || []).forEach((c) => {
+        const el = buildSeriesCollection(c, cards, consumed);
+        if (el) collectionEls.push(el);
+      });
+
+      // "X of Y" only when we trust a larger canonical total; otherwise "N books".
+      const total = (typeof s.total === 'number' && s.total > availableCount) ? s.total : null;
+      const countText = total
+        ? availableCount + ' of ' + total + ' available'
+        : availableCount + ' book' + (availableCount === 1 ? '' : 's');
+
       const header = document.createElement('div');
       header.className = 'series-group-header';
       header.innerHTML =
@@ -530,20 +660,21 @@
         'aria-label="Select all books in ' + escapeHtml(s.label || 'this series') + '"></label>' +
         '<div class="series-group-heading"><i data-lucide="library" aria-hidden="true"></i>' +
         '<span class="series-group-title">' + escapeHtml(s.label || 'Series') + '</span>' +
-        '<span class="series-group-count">' + count + ' book' + (count === 1 ? '' : 's') + '</span></div>' +
+        '<span class="series-group-count">' + countText + '</span></div>' +
         '<button type="button" class="btn btn-primary series-send-btn" data-action="series-send">' +
         '<i data-lucide="download" aria-hidden="true"></i> Send <span class="series-send-count">' +
-        count + '</span> selected</button>';
+        availableCount + '</span> selected</button>';
 
       const list = document.createElement('div');
       list.className = 'series-entries';
-      entryEls.forEach((el) => list.appendChild(el));
+      collectionEls.forEach((el) => list.appendChild(el));
+      built.forEach((b) => list.appendChild(b.el));
 
       group.appendChild(header);
       group.appendChild(list);
       results.insertBefore(group, sentinel);
 
-      entryEls.forEach(decorateEntry);
+      built.forEach((b) => { if (b.available) decorateEntry(b.el); });
       updateSeriesCount(group);
     });
 
@@ -847,14 +978,20 @@
     if (selectAll) {
       const group = selectAll.closest('.series-group');
       if (group) {
-        group.querySelectorAll('.entry-include').forEach((c) => { c.checked = selectAll.checked; });
+        group.querySelectorAll('.series-entry:not(.is-collection):not(.is-gap) .entry-include')
+          .forEach((c) => { if (!c.disabled) c.checked = selectAll.checked; });
         updateSeriesCount(group);
       }
       return;
     }
 
     const include = e.target.closest('.entry-include');
-    if (include) { updateSeriesCount(include.closest('.series-group')); return; }
+    if (include) {
+      const group = include.closest('.series-group');
+      if (include.closest('.series-entry.is-collection')) syncCollections(group);
+      else updateSeriesCount(group);
+      return;
+    }
   });
 
   document.addEventListener('keydown', (e) => {
