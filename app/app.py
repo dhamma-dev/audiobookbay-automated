@@ -1,4 +1,4 @@
-import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading
+import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading, uuid
 from datetime import datetime, timezone
 from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
@@ -320,24 +320,38 @@ def init_download_log():
                     detail TEXT
                 )
             """)
+            _ensure_log_columns(conn)
         admins = ', '.join(sorted(LOG_ADMIN_USERS)) if LOG_ADMIN_USERS else None
         print(f"Download log: {LOG_DB_PATH}" + (f" (admins: {admins})" if admins else " (viewable by everyone)"))
     except Exception as e:
         print(f"[WARNING] Download log unavailable ({LOG_DB_PATH}): {e}")
 
 
-def record_download(user, title, link, infohash, status, detail=""):
+def _ensure_log_columns(conn):
+    """Add columns introduced after the table's first release. SQLite's
+    ADD COLUMN is cheap and additive, so existing rows just get NULLs and old
+    databases migrate themselves on the next boot."""
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(downloads)")}
+    for col in ("batch_id", "batch_label"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE downloads ADD COLUMN {col} TEXT")
+
+
+def record_download(user, title, link, infohash, status, detail="",
+                    batch_id=None, batch_label=None):
     """Append one log row. Swallows storage errors so a logging hiccup can never
-    fail an otherwise-successful download."""
+    fail an otherwise-successful download. batch_id/batch_label are set only for
+    series "send selected" batches; single sends leave them NULL."""
     if not LOG_ENABLED:
         return
     try:
         with _log_lock, _log_connect() as conn:
             conn.execute(
-                "INSERT INTO downloads (ts, user, title, link, infohash, client, route, status, detail)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO downloads (ts, user, title, link, infohash, client, route, status, detail, batch_id, batch_label)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (datetime.now(timezone.utc).isoformat(timespec="seconds"), user, title, link,
-                 infohash, DOWNLOAD_CLIENT, current_route_mode(), status, detail or ""),
+                 infohash, DOWNLOAD_CLIENT, current_route_mode(), status, detail or "",
+                 batch_id, batch_label),
             )
     except Exception as e:
         print(f"[WARNING] Failed to write download log entry: {e}")
@@ -794,6 +808,35 @@ RANK_SYSTEM_INSTRUCTION = (
     "set ambiguous=true and list the interpretations, each with the ids it "
     "covers. Otherwise set ambiguous=false and return an empty interpretations "
     "list.\n"
+    "Series grouping:\n"
+    "- If several candidates are entries in the same series, add a 'series' "
+    "block: the series label, and an ordered list of entries (one per distinct "
+    "book, in reading order). Use your own knowledge of the series to name and "
+    "order the books and to give each a canonical title -- but every id you emit "
+    "MUST be a real candidate id. Never invent a book that has no matching "
+    "candidate, and only add a series block when two or more distinct books are "
+    "genuinely present.\n"
+    "- For each entry choose the single best edition as best_id and list the rest "
+    "as alt_ids (best first). Selection rules, in order: prefer M4B; then a "
+    "healthy bitrate; demote suspiciously low bitrate (<=64 kbps) and files whose "
+    "size looks too small to be a complete book; never silently prefer an "
+    "abridged, TTS/AI-narrated, or wrong-language upload over a clean full one.\n"
+    "- When you demote an edition keep it in alt_ids and set alt_note to the axis "
+    "it differs on (e.g. 'format', 'bitrate', 'abridged', 'language').\n"
+    "- An abridged edition or a different narrator is its OWN entry, never an "
+    "alternative of the unabridged one.\n"
+    "- Number entries by their position in the series (seq). Include an entry for "
+    "every book from book 1 up to the highest-numbered book present, in reading "
+    "order. If a book in that run has no matching candidate, still include its "
+    "entry (seq + title) but omit best_id -- that marks a gap. Never invent books "
+    "beyond the highest one present.\n"
+    "- If you confidently know the series' full length, set 'total' to it (so the "
+    "UI can say 'X of Y'). Omit 'total' if unsure.\n"
+    "- An omnibus/box-set/collection upload (one file spanning several books) "
+    "goes in the 'collections' array, not in 'entries': give its id, a title, and "
+    "'covers' = the list of book numbers (seq) it contains. Do not also use that "
+    "id as an entry's best_id.\n"
+    "- If nothing forms a series, return an empty 'series' list.\n"
     "Return every input id exactly once in 'ordering', best match first."
 )
 
@@ -828,8 +871,45 @@ RANK_RESPONSE_SCHEMA = {
                 "required": ["label", "result_ids"],
             },
         },
+        "series": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "total": {"type": "integer"},
+                    "entries": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "seq": {"type": "integer"},
+                                "title": {"type": "string"},
+                                "best_id": {"type": "integer"},
+                                "alt_ids": {"type": "array", "items": {"type": "integer"}},
+                                "alt_note": {"type": "string"},
+                            },
+                            "required": ["seq", "title"],
+                        },
+                    },
+                    "collections": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "title": {"type": "string"},
+                                "covers": {"type": "array", "items": {"type": "integer"}},
+                            },
+                            "required": ["id", "title", "covers"],
+                        },
+                    },
+                },
+                "required": ["label", "entries"],
+            },
+        },
     },
-    "required": ["ordering", "buckets", "ambiguous", "interpretations"],
+    "required": ["ordering", "buckets", "ambiguous", "interpretations", "series"],
 }
 
 
@@ -1056,6 +1136,48 @@ def send():
     except Exception as e:
         record_download(user, title, details_url, None, 'error', str(e))
         return jsonify({'message': str(e)}), 500
+
+
+# Endpoint to send a whole set of magnets at once (series "send selected"). Each
+# item is processed exactly like /send, but they share one batch_id in the log so
+# the operator can see they were added together, and the response reports per-item
+# so the UI can show partial success (a dead torrent shouldn't sink the rest).
+@app.route('/send/batch', methods=['POST'])
+def send_batch():
+    data = request.json or {}
+    items = data.get('items') or []                       # [{link, title}, ...]
+    batch_label = (data.get('batch_label') or '').strip() or None
+    user = current_user_label()
+    if not items:
+        return jsonify({'message': 'No items to send'}), 400
+    if not CLIENT_OK:
+        return jsonify({'message': CLIENT_CONFIG_ERROR}), 503
+
+    batch_id = uuid.uuid4().hex[:12]
+    results, sent = [], 0
+    for item in items:
+        link = (item.get('link') or '').strip()
+        title = (item.get('title') or '').strip()
+        if not link or not title:
+            results.append({'link': link, 'title': title, 'ok': False, 'error': 'Missing link or title'})
+            continue
+        try:
+            magnet_link = extract_magnet_link(link)
+            if not magnet_link:
+                record_download(user, title, link, None, 'error',
+                                'Failed to extract magnet link', batch_id, batch_label)
+                results.append({'link': link, 'title': title, 'ok': False, 'error': 'No magnet found'})
+                continue
+            DOWNLOAD_BACKENDS[DOWNLOAD_CLIENT]['add'](magnet_link, title)
+            record_download(user, title, link, _infohash_from_magnet(magnet_link),
+                            'ok', '', batch_id, batch_label)
+            results.append({'link': link, 'title': title, 'ok': True})
+            sent += 1
+        except Exception as e:
+            record_download(user, title, link, None, 'error', str(e), batch_id, batch_label)
+            results.append({'link': link, 'title': title, 'ok': False, 'error': str(e)})
+
+    return jsonify({'batch_id': batch_id, 'sent': sent, 'total': len(items), 'results': results})
 
 
 def get_torrent_list():

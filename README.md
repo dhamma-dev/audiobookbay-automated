@@ -26,8 +26,9 @@ Once a download finishes, the files are ready for a library manager like
   each visitor toggle Tor ⇄ Direct and request a fresh exit IP on demand.
 - **M4B prioritized** — M4B results (single-file audiobooks with chapters) are
   highlighted and floated to the top automatically.
-- **Smart sort (optional)** — re-rank a noisy result set with Google Gemini,
-  filtering out clearly-irrelevant hits and disambiguating vague queries. See
+- **Smart sort (optional)** — re-rank a noisy result set with Google Gemini:
+  filter out clearly-irrelevant hits, disambiguate vague queries, and group a
+  detected series into an ordered shelf you can send in one batch. See
   [Smart sort](#smart-sort-gemini).
 - **Send in one click** to qBittorrent, Transmission, Deluge, or Put.io.
 - **Download status page** — monitor active transfers and their progress from
@@ -145,6 +146,23 @@ ambiguous — offers clickable chips to narrow to the interpretation you meant.
 The feature is hidden entirely unless `GEMINI_API_KEY` is set, and works with any
 download client.
 
+**Series grouping.** When the results contain several books from one series,
+Smart sort lays them out as an ordered shelf, with the best edition chosen per
+book (preferring M4B and a healthy bitrate, and demoting low-bitrate, abridged,
+or AI-narrated rips into a two-click *alternatives* tray you can swap from). Tick
+the books you want and **send the whole set in one batch**, with each book logged
+individually. A few niceties for big series:
+
+- **Omnibus / box sets** are pinned to the top of the shelf; selecting one
+  suppresses the individual books it covers so nothing is grabbed twice.
+- **Gaps are obvious** — a book missing from the middle of a run shows as a
+  subtle placeholder at its spot in reading order, and the shelf header reads
+  e.g. "11 of 12 available" so you notice before sending.
+
+Series grouping leans on Gemini's own knowledge of reading order and series
+length; it only ever offers real listings to download, and gap markers are
+informational, never something you can click.
+
 ```env
 GEMINI_API_KEY=your-google-ai-studio-key   # Enables Smart sort when set
 RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
@@ -159,9 +177,9 @@ RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
 ### Download log
 
 When you share an instance with others, the **Log** page records every send —
-who added which book, when, over which route, and whether it succeeded. It's
-backed by a small SQLite file on the `./data` volume, so history survives
-restarts.
+who added which book, when, over which route, and whether it succeeded. Books
+sent together as a series batch are tagged as a set. It's backed by a small
+SQLite file on the `./data` volume, so history survives restarts.
 
 ```env
 LOG_DB_PATH=/data/downloads.db   # SQLite path; set empty to disable logging
@@ -303,8 +321,16 @@ issues or submit pull requests.
 
 ## Screenshots
 
-### Search Results
-![screenshot-2025-01-13-19-59-03](https://github.com/user-attachments/assets/8a30fd4e-a289-49d0-83ab-67a3bcfc9745)
+### Search results with series grouping
+Smart sort lays a detected series out as an ordered shelf — best edition per
+book, complete-set bundles pinned on top, and interpretation chips to narrow a
+vague query.
+![Search results with a Cradle series shelf and interpretation chips](https://github.com/user-attachments/assets/5a360066-1538-49cc-bac2-2e0b79c6721f)
 
-### Download Status
-![screenshot-2025-01-13-19-59-25](https://github.com/user-attachments/assets/19cc74de-51fc-422f-9cab-fe69e30c74b9)
+### Download log
+Who added which book, when, and over which route — for shared instances.
+![Download log table](https://github.com/user-attachments/assets/d8b5ce15-1c3e-4482-b98b-3ed8a8a2cf0c)
+
+### Per-user Tor routing
+Toggle AudioBook Bay traffic between Tor and Direct, or request a fresh exit IP.
+![Connection routing popover with a Tor toggle and new-circuit button](https://github.com/user-attachments/assets/e638324f-29b1-4766-814b-ddf0f93b07dd)

@@ -254,8 +254,10 @@
     const bucketOf = {};
     (ranking.buckets || []).forEach((b) => { bucketOf[String(b.id)] = b.bucket; });
 
+    // Only the loose, top-level cards are reordered here. Cards that were moved
+    // into a series group are managed by the series UI, not this flat sort.
     const cards = new Map();
-    results.querySelectorAll('.book-card').forEach((c) => cards.set(c.dataset.resultId, c));
+    results.querySelectorAll(':scope > .book-card').forEach((c) => cards.set(c.dataset.resultId, c));
 
     // Decide ordering + which ids are filtered away.
     let order = ordering;
@@ -284,8 +286,29 @@
       card.classList.toggle('is-hidden-result', isFiltered && !expanded);
     });
 
+    // Series shelves respond to the active interpretation too: a whole shelf
+    // whose books aren't part of the chosen interpretation is filtered away,
+    // just like a loose card. (Buckets never hide curated series picks.)
+    let hiddenSeries = 0;
+    results.querySelectorAll('.series-group').forEach((group) => {
+      let belongs = true;
+      if (activeInterp != null && interps[activeInterp]) {
+        const ids = new Set((interps[activeInterp].result_ids || []).map(String));
+        belongs = Array.prototype.some.call(
+          group.querySelectorAll('.book-card'),
+          (c) => ids.has(c.dataset.resultId)
+        );
+      }
+      const isFiltered = !belongs;
+      group.classList.toggle('is-dimmed-result', isFiltered);
+      group.classList.toggle('is-hidden-result', isFiltered && !expanded);
+      if (isFiltered) {
+        hiddenSeries += group.querySelectorAll('.series-entry:not(.is-gap):not(.is-collection)').length;
+      }
+    });
+
     // Filtered-results toggle.
-    const n = hidden.size;
+    const n = hidden.size + hiddenSeries;
     if (n === 0) {
       anchor.hidden = true;
     } else {
@@ -297,6 +320,7 @@
   function applyRanking(query, ranking) {
     smartSortState = { query, ranking, expanded: false, activeInterp: null };
     renderAmbiguity(ranking);
+    renderSeries(ranking);
     renderSmartSort();
     const header = document.querySelector('.search-results-header');
     if (header && !header.dataset.ranked) {
@@ -356,6 +380,400 @@
     if (!smartSortState) return;
     smartSortState.expanded = !smartSortState.expanded;
     renderSmartSort();
+  }
+
+  /* ----------------------------------------------------------
+     Series grouping: lay a detected series out as an ordered set
+     of (compacted) cards with per-book selection, an alternatives
+     tray, and a "send selected" batch. Built by moving the existing
+     server-rendered cards into group containers — no re-render.
+     ---------------------------------------------------------- */
+  function buildSeriesEntry(e, cards, consumed) {
+    const bestKey = e.best_id != null ? String(e.best_id) : null;
+    const bestCard = bestKey && !consumed.has(bestKey) ? cards.get(bestKey) : null;
+
+    // No real candidate for this slot — render a subtle gap marker so a missing
+    // book in the middle of a run is visible without the user hunting for it.
+    if (!bestCard) {
+      const gap = document.createElement('div');
+      gap.className = 'series-entry is-gap';
+      if (e.seq != null) gap.dataset.seq = String(e.seq);
+      gap.innerHTML =
+        '<div class="series-entry-check series-entry-check--empty" aria-hidden="true"></div>' +
+        '<div class="series-entry-body"><div class="series-gap-row">' +
+        '<i data-lucide="circle-dashed" aria-hidden="true"></i>' +
+        '<span class="series-gap-label">' +
+        (e.seq != null ? 'Book ' + escapeHtml(String(e.seq)) : 'This book') +
+        (e.title ? ' · ' + escapeHtml(e.title) : '') + '</span>' +
+        '<span class="series-gap-note">not in these results</span>' +
+        '</div></div>';
+      return { el: gap, available: false };
+    }
+
+    consumed.add(bestKey);
+    const altCards = (e.alt_ids || [])
+      .map((id) => String(id))
+      .filter((id) => cards.has(id) && !consumed.has(id))
+      .map((id) => { consumed.add(id); return cards.get(id); });
+
+    const entry = document.createElement('div');
+    entry.className = 'series-entry';
+    if (e.seq != null) entry.dataset.seq = String(e.seq);
+
+    const gutter = document.createElement('label');
+    gutter.className = 'series-entry-check';
+    gutter.innerHTML =
+      '<input type="checkbox" class="entry-include" checked aria-label="Include ' +
+      escapeHtml(e.title || 'this book') + ' in the batch">';
+
+    const body = document.createElement('div');
+    body.className = 'series-entry-body';
+
+    const caption = document.createElement('div');
+    caption.className = 'series-entry-caption';
+    caption.innerHTML =
+      (e.seq != null ? '<span class="series-seq">Book ' + escapeHtml(String(e.seq)) + '</span>' : '') +
+      (e.title ? '<span class="series-entry-title">' + escapeHtml(e.title) + '</span>' : '');
+
+    const main = document.createElement('div');
+    main.className = 'series-entry-main';
+    bestCard.classList.add('in-series');
+    main.appendChild(bestCard);
+
+    body.appendChild(caption);
+    body.appendChild(main);
+
+    if (altCards.length) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'btn btn-ghost series-alts-toggle';
+      toggle.dataset.action = 'series-alts-toggle';
+      if (e.alt_note) toggle.dataset.note = e.alt_note;
+      const altsWrap = document.createElement('div');
+      altsWrap.className = 'series-alts';
+      altsWrap.hidden = true;
+      altCards.forEach((c) => { c.classList.add('in-series', 'is-alt'); altsWrap.appendChild(c); });
+      body.appendChild(toggle);
+      body.appendChild(altsWrap);
+    }
+
+    entry.appendChild(gutter);
+    entry.appendChild(body);
+    return { el: entry, available: true };
+  }
+
+  // An omnibus / box set: one file covering several books. Rendered at the top
+  // of the shelf, unchecked by default (individual books are the default), and
+  // when ticked it suppresses the books it covers so nothing is grabbed twice.
+  function buildSeriesCollection(c, cards, consumed) {
+    const key = c.id != null ? String(c.id) : null;
+    const card = key && !consumed.has(key) ? cards.get(key) : null;
+    if (!card) return null;
+    consumed.add(key);
+
+    const covers = (c.covers || []).map((n) => String(n));
+    const entry = document.createElement('div');
+    entry.className = 'series-entry is-collection';
+    if (covers.length) entry.dataset.covers = covers.join(',');
+
+    const gutter = document.createElement('label');
+    gutter.className = 'series-entry-check';
+    gutter.innerHTML =
+      '<input type="checkbox" class="entry-include" aria-label="Include the ' +
+      escapeHtml(c.title || 'collection') + ' in the batch">';
+
+    const body = document.createElement('div');
+    body.className = 'series-entry-body';
+
+    const caption = document.createElement('div');
+    caption.className = 'series-entry-caption';
+    const range = covers.length
+      ? 'Covers books ' + (covers.length > 1 ? covers[0] + '–' + covers[covers.length - 1] : covers[0])
+      : 'Collection';
+    caption.innerHTML =
+      '<span class="series-seq series-seq--set"><i data-lucide="package" aria-hidden="true"></i> Complete set</span>' +
+      '<span class="series-entry-title">' + escapeHtml(range) + '</span>';
+
+    const main = document.createElement('div');
+    main.className = 'series-entry-main';
+    card.classList.add('in-series', 'is-collection-card');
+    main.appendChild(card);
+
+    body.appendChild(caption);
+    body.appendChild(main);
+    entry.appendChild(gutter);
+    entry.appendChild(body);
+    return entry;
+  }
+
+  // Keep an entry's "chosen" card (the one in the main slot) free of the
+  // edition-picker button, ensure every alternative has one, and refresh the
+  // alternatives toggle label.
+  function decorateEntry(entry) {
+    const main = entry.querySelector('.series-entry-main');
+    const altsWrap = entry.querySelector('.series-alts');
+    const mainCard = main && main.querySelector('.book-card');
+    if (mainCard) {
+      mainCard.classList.add('is-chosen');
+      const existing = mainCard.querySelector('.series-use-btn');
+      if (existing) existing.remove();
+    }
+    let n = 0;
+    if (altsWrap) {
+      altsWrap.querySelectorAll('.book-card').forEach((c) => {
+        c.classList.remove('is-chosen');
+        if (!c.querySelector('.series-use-btn')) {
+          const actions = c.querySelector('.book-actions');
+          if (actions) {
+            const useBtn = document.createElement('button');
+            useBtn.type = 'button';
+            useBtn.className = 'btn btn-secondary series-use-btn';
+            useBtn.dataset.action = 'series-use-edition';
+            useBtn.innerHTML = '<i data-lucide="check" aria-hidden="true"></i> Use this edition';
+            actions.insertBefore(useBtn, actions.firstChild);
+          }
+        }
+        n++;
+      });
+    }
+    const toggle = entry.querySelector('.series-alts-toggle');
+    if (toggle) {
+      toggle.hidden = n === 0;
+      const open = entry.classList.contains('alts-open');
+      const note = toggle.dataset.note ? ' · ' + toggle.dataset.note : '';
+      toggle.innerHTML =
+        (open ? 'Hide ' : 'Show ') + n + ' alternative' + (n === 1 ? '' : 's') + note +
+        ' <i data-lucide="chevron-' + (open ? 'up' : 'down') + '" aria-hidden="true"></i>';
+    }
+  }
+
+  function updateSeriesCount(group) {
+    if (!group) return;
+    // The batch is every ticked, enabled box — a checked omnibus counts as one
+    // send; books it covers are disabled so they don't double up.
+    let n = 0;
+    group.querySelectorAll('.entry-include').forEach((c) => { if (c.checked && !c.disabled) n++; });
+    const btn = group.querySelector('[data-action="series-send"]');
+    if (btn) {
+      btn.disabled = n === 0;
+      const lbl = btn.querySelector('.series-send-count');
+      if (lbl) lbl.textContent = n;
+    }
+    // Select-all reflects the individual book entries only (not collections).
+    const bookChecks = group.querySelectorAll('.series-entry:not(.is-collection):not(.is-gap) .entry-include');
+    const all = group.querySelector('.series-select-all');
+    if (all) {
+      let checked = 0, total = 0;
+      bookChecks.forEach((c) => { total++; if (c.checked) checked++; });
+      all.checked = total > 0 && checked === total;
+      all.indeterminate = checked > 0 && checked < total;
+    }
+  }
+
+  // Reconcile book selection with any ticked collections: a book covered by a
+  // selected omnibus is unticked + disabled; when no longer covered it is
+  // re-enabled (and restored to ticked, since books default on).
+  function syncCollections(group) {
+    if (!group) return;
+    const covered = new Set();
+    group.querySelectorAll('.series-entry.is-collection').forEach((col) => {
+      const inc = col.querySelector('.entry-include');
+      if (inc && inc.checked) {
+        (col.dataset.covers || '').split(',').filter(Boolean).forEach((s) => covered.add(s));
+      }
+    });
+    group.querySelectorAll('.series-entry:not(.is-collection):not(.is-gap)').forEach((entry) => {
+      const seq = entry.dataset.seq;
+      const inc = entry.querySelector('.entry-include');
+      const isCovered = seq != null && covered.has(seq);
+      entry.classList.toggle('is-covered', isCovered);
+      if (inc) {
+        if (isCovered) { inc.checked = false; inc.disabled = true; }
+        else {
+          inc.disabled = false;
+          if (entry.dataset.wasCovered === '1') inc.checked = true;
+        }
+      }
+      entry.dataset.wasCovered = isCovered ? '1' : '';
+    });
+    updateSeriesCount(group);
+  }
+
+  function renderSeries(ranking) {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    const series = (ranking && ranking.series) || [];
+    if (series.length === 0) return;
+    if (results.querySelector('.series-group')) return; // already built
+
+    const cards = new Map();
+    results.querySelectorAll('.book-card').forEach((c) => cards.set(c.dataset.resultId, c));
+    const consumed = new Set(); // ids already claimed by an entry, across all series
+
+    // Drop a hidden marker where groups should land: just after the results bar
+    // / ambiguity strip, above the loose cards.
+    const anchorAfter =
+      document.getElementById('smart-sort-ambiguity') || results.querySelector('.search-results-bar');
+    const sentinel = document.createElement('div');
+    sentinel.style.display = 'none';
+    results.insertBefore(sentinel, anchorAfter ? anchorAfter.nextSibling : results.firstChild);
+
+    series.forEach((s) => {
+      const group = document.createElement('section');
+      group.className = 'series-group';
+      group.dataset.label = s.label || '';
+
+      const built = [];
+      (s.entries || []).forEach((e) => {
+        const r = buildSeriesEntry(e, cards, consumed);
+        if (r) built.push(r);
+      });
+      const availableCount = built.filter((b) => b.available).length;
+      if (availableCount < 2) {
+        // Not enough real books to be worth a shelf — return every card these
+        // entries pulled in (best *and* alternatives) to the loose flow.
+        built.forEach((b) => {
+          b.el.querySelectorAll('.book-card').forEach((card) => {
+            card.classList.remove('in-series', 'is-alt', 'is-chosen');
+            results.insertBefore(card, sentinel);
+          });
+        });
+        return;
+      }
+
+      const collectionEls = [];
+      (s.collections || []).forEach((c) => {
+        const el = buildSeriesCollection(c, cards, consumed);
+        if (el) collectionEls.push(el);
+      });
+
+      // "X of Y" only when we trust a larger canonical total; otherwise "N books".
+      const total = (typeof s.total === 'number' && s.total > availableCount) ? s.total : null;
+      const countText = total
+        ? availableCount + ' of ' + total + ' available'
+        : availableCount + ' book' + (availableCount === 1 ? '' : 's');
+
+      const header = document.createElement('div');
+      header.className = 'series-group-header';
+      header.innerHTML =
+        '<label class="series-select-all-wrap"><input type="checkbox" class="series-select-all" checked ' +
+        'aria-label="Select all books in ' + escapeHtml(s.label || 'this series') + '"></label>' +
+        '<div class="series-group-heading"><i data-lucide="library" aria-hidden="true"></i>' +
+        '<span class="series-group-title">' + escapeHtml(s.label || 'Series') + '</span>' +
+        '<span class="series-group-count">' + countText + '</span></div>' +
+        '<button type="button" class="btn btn-primary series-send-btn" data-action="series-send">' +
+        '<i data-lucide="download" aria-hidden="true"></i> Send <span class="series-send-count">' +
+        availableCount + '</span> selected</button>';
+
+      const list = document.createElement('div');
+      list.className = 'series-entries';
+      collectionEls.forEach((el) => list.appendChild(el));
+      built.forEach((b) => list.appendChild(b.el));
+
+      group.appendChild(header);
+      group.appendChild(list);
+      results.insertBefore(group, sentinel);
+
+      built.forEach((b) => { if (b.available) decorateEntry(b.el); });
+      updateSeriesCount(group);
+    });
+
+    sentinel.remove();
+    refreshIcons();
+  }
+
+  function handleAltsToggle(toggle) {
+    const entry = toggle.closest('.series-entry');
+    if (!entry) return;
+    const altsWrap = entry.querySelector('.series-alts');
+    const open = entry.classList.toggle('alts-open');
+    if (altsWrap) altsWrap.hidden = !open;
+    decorateEntry(entry);
+    refreshIcons();
+  }
+
+  function handleUseEdition(btn) {
+    const altCard = btn.closest('.book-card');
+    const entry = btn.closest('.series-entry');
+    if (!altCard || !entry) return;
+    const main = entry.querySelector('.series-entry-main');
+    const altsWrap = entry.querySelector('.series-alts');
+    const current = main.querySelector('.book-card');
+    if (current && altsWrap) altsWrap.insertBefore(current, altsWrap.firstChild);
+    main.appendChild(altCard);
+    decorateEntry(entry);
+    // Actively picking an edition implies you want this book in the batch.
+    const inc = entry.querySelector('.entry-include');
+    if (inc && !inc.checked) { inc.checked = true; updateSeriesCount(entry.closest('.series-group')); }
+    refreshIcons();
+  }
+
+  function setSeriesSending(btn, sending) {
+    if (sending) {
+      btn.disabled = true;
+      btn.dataset.originalHtml = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span> Sending…';
+    } else if (btn.dataset.originalHtml) {
+      btn.innerHTML = btn.dataset.originalHtml;
+      delete btn.dataset.originalHtml;
+      refreshIcons();
+    }
+  }
+
+  async function handleSeriesSend(btn) {
+    const group = btn.closest('.series-group');
+    if (!group) return;
+    const label = group.dataset.label || '';
+
+    const items = [];
+    const cardByKey = new Map();
+    group.querySelectorAll('.series-entry').forEach((entry) => {
+      const inc = entry.querySelector('.entry-include');
+      if (!inc || !inc.checked) return;
+      const card = entry.querySelector('.series-entry-main .book-card');
+      const dl = card && card.querySelector('[data-action="download"]');
+      if (!dl || !dl.dataset.link || !dl.dataset.title) return;
+      items.push({ link: dl.dataset.link, title: dl.dataset.title });
+      cardByKey.set(dl.dataset.link + '\n' + dl.dataset.title, card);
+    });
+    if (items.length === 0) return;
+
+    setSeriesSending(btn, true);
+    try {
+      const res = await fetch('/send/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, batch_label: label }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Batch send failed');
+
+      (data.results || []).forEach((r) => {
+        const card = cardByKey.get((r.link || '') + '\n' + (r.title || ''));
+        if (!card) return;
+        if (r.ok) {
+          const dl = card.querySelector('[data-action="download"]');
+          if (dl) {
+            if (!dl.dataset.originalHtml) dl.dataset.originalHtml = dl.innerHTML;
+            setButtonSuccess(dl);
+          }
+        } else {
+          card.classList.add('series-send-failed');
+        }
+      });
+
+      const sent = data.sent || 0;
+      const total = data.total || items.length;
+      if (sent === total) {
+        showToast('Sent ' + sent + ' book' + (sent === 1 ? '' : 's') + ' to your server.', 'success');
+      } else {
+        showToast('Sent ' + sent + ' of ' + total + ' — ' + (total - sent) + ' failed.', sent ? 'info' : 'error');
+      }
+    } catch (err) {
+      showToast(err.message || 'Batch send failed', 'error');
+    } finally {
+      setSeriesSending(btn, false);
+    }
   }
 
   /* ----------------------------------------------------------
@@ -530,6 +948,15 @@
     const toggleFiltered = e.target.closest('[data-action="toggle-filtered"]');
     if (toggleFiltered) { handleToggleFiltered(); return; }
 
+    const seriesSend = e.target.closest('[data-action="series-send"]');
+    if (seriesSend) { handleSeriesSend(seriesSend); return; }
+
+    const useEdition = e.target.closest('[data-action="series-use-edition"]');
+    if (useEdition) { handleUseEdition(useEdition); return; }
+
+    const altsToggle = e.target.closest('[data-action="series-alts-toggle"]');
+    if (altsToggle) { handleAltsToggle(altsToggle); return; }
+
     const interpChip = e.target.closest('#smart-sort-ambiguity .chip');
     if (interpChip) { handleInterpChip(interpChip); return; }
 
@@ -545,7 +972,26 @@
 
   document.addEventListener('change', (e) => {
     const route = e.target.closest('[data-action="conn-route"]');
-    if (route) handleRouteToggle(route);
+    if (route) { handleRouteToggle(route); return; }
+
+    const selectAll = e.target.closest('.series-select-all');
+    if (selectAll) {
+      const group = selectAll.closest('.series-group');
+      if (group) {
+        group.querySelectorAll('.series-entry:not(.is-collection):not(.is-gap) .entry-include')
+          .forEach((c) => { if (!c.disabled) c.checked = selectAll.checked; });
+        updateSeriesCount(group);
+      }
+      return;
+    }
+
+    const include = e.target.closest('.entry-include');
+    if (include) {
+      const group = include.closest('.series-group');
+      if (include.closest('.series-entry.is-collection')) syncCollections(group);
+      else updateSeriesCount(group);
+      return;
+    }
   });
 
   document.addEventListener('keydown', (e) => {
