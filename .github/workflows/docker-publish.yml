@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - dev
   pull_request:
     branches:
       - main
+      - dev
   workflow_dispatch: {}
 
 # Allow the built-in GITHUB_TOKEN to push packages to this repo's GHCR namespace.
