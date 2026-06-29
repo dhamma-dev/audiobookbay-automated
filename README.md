@@ -321,8 +321,16 @@ issues or submit pull requests.
 
 ## Screenshots
 
-### Search Results
-![screenshot-2025-01-13-19-59-03](https://github.com/user-attachments/assets/8a30fd4e-a289-49d0-83ab-67a3bcfc9745)
+### Search results with series grouping
+Smart sort lays a detected series out as an ordered shelf — best edition per
+book, complete-set bundles pinned on top, and interpretation chips to narrow a
+vague query.
+![Search results with a Cradle series shelf and interpretation chips](https://github.com/user-attachments/assets/5a360066-1538-49cc-bac2-2e0b79c6721f)
 
-### Download Status
-![screenshot-2025-01-13-19-59-25](https://github.com/user-attachments/assets/19cc74de-51fc-422f-9cab-fe69e30c74b9)
+### Download log
+Who added which book, when, and over which route — for shared instances.
+![Download log table](https://github.com/user-attachments/assets/d8b5ce15-1c3e-4482-b98b-3ed8a8a2cf0c)
+
+### Per-user Tor routing
+Toggle AudioBook Bay traffic between Tor and Direct, or request a fresh exit IP.
+![Connection routing popover with a Tor toggle and new-circuit button](https://github.com/user-attachments/assets/e638324f-29b1-4766-814b-ddf0f93b07dd)
