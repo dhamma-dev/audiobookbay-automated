@@ -218,3 +218,199 @@
     width: 132px;
   }
 }
+
+/* --- Smart sort: series shelf ------------------------------------------- */
+.series-group {
+  border: 1px solid var(--color-accent-soft);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, var(--color-accent-muted), transparent 140px),
+    var(--color-surface);
+  padding: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.series-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.series-select-all-wrap,
+.series-entry-check {
+  display: inline-flex;
+  align-items: center;
+}
+
+.series-select-all-wrap input,
+.series-entry-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.series-group-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: auto;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  color: var(--color-text);
+}
+
+.series-group-heading svg {
+  width: 18px;
+  height: 18px;
+  color: var(--color-accent);
+}
+
+.series-group-count {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.series-send-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.series-entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.series-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.series-entry-check {
+  padding-top: var(--space-4);
+}
+
+.series-entry-body {
+  flex: 1;
+  min-width: 0;
+  transition: opacity var(--transition-fast);
+}
+
+/* An unchecked book is dimmed but still legible. */
+.series-entry:has(.entry-include:not(:checked)) .series-entry-body {
+  opacity: 0.45;
+}
+
+.series-entry-caption {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.series-seq {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.series-entry-title {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.series-alts-toggle {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.series-alts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border-strong);
+}
+
+/* Compact card variant used inside a series shelf. */
+.book-card.in-series {
+  flex-direction: row;
+  border-radius: var(--radius-md);
+}
+
+.book-card.in-series .book-cover-container {
+  width: 84px;
+  height: auto;
+  min-height: 100%;
+}
+
+.book-card.in-series .book-details {
+  padding: var(--space-3) var(--space-4);
+  gap: var(--space-2);
+}
+
+.book-card.in-series .book-title {
+  font-size: var(--text-base);
+  -webkit-line-clamp: 1;
+}
+
+.book-card.in-series .keywords-container {
+  display: none;
+}
+
+.book-card.in-series .metadata-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.book-card.in-series .meta-chip {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px var(--space-2);
+}
+
+.book-card.in-series .meta-chip-label {
+  font-size: 0.6rem;
+}
+
+/* Keep the M4B marker as a compact badge in the tight layout, regardless of
+   viewport (the full-width banner would stretch down the row). */
+.book-card.in-series .m4b-ribbon {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 1;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 0.62rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.book-card.in-series .m4b-ribbon-prefix {
+  display: none;
+}
+
+.book-card.in-series.is-chosen {
+  border-color: var(--color-accent);
+}
+
+.book-card.in-series.is-alt {
+  opacity: 0.9;
+}
+
+.book-card.series-send-failed {
+  border-color: var(--color-error);
+  box-shadow: 0 0 0 1px var(--color-error-muted);
+}

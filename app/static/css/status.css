@@ -95,3 +95,8 @@
   color: var(--color-accent);
   text-decoration: underline;
 }
+
+.log-batch-badge {
+  margin-left: var(--space-2);
+  vertical-align: middle;
+}
