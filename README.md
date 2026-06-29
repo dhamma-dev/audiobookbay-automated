@@ -26,8 +26,9 @@ Once a download finishes, the files are ready for a library manager like
   each visitor toggle Tor ⇄ Direct and request a fresh exit IP on demand.
 - **M4B prioritized** — M4B results (single-file audiobooks with chapters) are
   highlighted and floated to the top automatically.
-- **Smart sort (optional)** — re-rank a noisy result set with Google Gemini,
-  filtering out clearly-irrelevant hits and disambiguating vague queries. See
+- **Smart sort (optional)** — re-rank a noisy result set with Google Gemini:
+  filter out clearly-irrelevant hits, disambiguate vague queries, and group a
+  detected series into an ordered shelf you can send in one batch. See
   [Smart sort](#smart-sort-gemini).
 - **Send in one click** to qBittorrent, Transmission, Deluge, or Put.io.
 - **Download status page** — monitor active transfers and their progress from
@@ -145,6 +146,23 @@ ambiguous — offers clickable chips to narrow to the interpretation you meant.
 The feature is hidden entirely unless `GEMINI_API_KEY` is set, and works with any
 download client.
 
+**Series grouping.** When the results contain several books from one series,
+Smart sort lays them out as an ordered shelf, with the best edition chosen per
+book (preferring M4B and a healthy bitrate, and demoting low-bitrate, abridged,
+or AI-narrated rips into a two-click *alternatives* tray you can swap from). Tick
+the books you want and **send the whole set in one batch**, with each book logged
+individually. A few niceties for big series:
+
+- **Omnibus / box sets** are pinned to the top of the shelf; selecting one
+  suppresses the individual books it covers so nothing is grabbed twice.
+- **Gaps are obvious** — a book missing from the middle of a run shows as a
+  subtle placeholder at its spot in reading order, and the shelf header reads
+  e.g. "11 of 12 available" so you notice before sending.
+
+Series grouping leans on Gemini's own knowledge of reading order and series
+length; it only ever offers real listings to download, and gap markers are
+informational, never something you can click.
+
 ```env
 GEMINI_API_KEY=your-google-ai-studio-key   # Enables Smart sort when set
 RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
@@ -159,9 +177,9 @@ RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
 ### Download log
 
 When you share an instance with others, the **Log** page records every send —
-who added which book, when, over which route, and whether it succeeded. It's
-backed by a small SQLite file on the `./data` volume, so history survives
-restarts.
+who added which book, when, over which route, and whether it succeeded. Books
+sent together as a series batch are tagged as a set. It's backed by a small
+SQLite file on the `./data` volume, so history survives restarts.
 
 ```env
 LOG_DB_PATH=/data/downloads.db   # SQLite path; set empty to disable logging
