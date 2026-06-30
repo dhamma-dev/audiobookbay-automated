@@ -129,11 +129,18 @@ All of the following are optional.
 ```env
 ABB_HOSTNAME=audiobookbay.lu   # AudioBook Bay mirror to use (default shown)
 REQUEST_TIMEOUT=45             # Hard cap (seconds) on outbound requests; unset = no cap
+PREFERRED_LANGUAGE=English     # Float this language's results up; unset = no preference
 
 # Add an extra link to the navigation bar (e.g. your audiobook player)
 NAV_LINK_NAME=Open Audiobook Player
 NAV_LINK_URL=https://audiobooks.yourdomain.com/
 ```
+
+> `PREFERRED_LANGUAGE` floats matching-language results above others in the
+> normal result order, and (when Smart sort is enabled) tells Gemini to rank
+> other-language editions far lower. Leave it unset to treat all languages
+> equally. It's a plain-text match against each listing's language field, so use
+> the word as the mirror shows it (e.g. `English`).
 
 ### Smart sort (Gemini)
 
@@ -210,6 +217,12 @@ default, so the mirror only ever sees a Tor exit node rather than your server's
 real IP. The app launches and manages its own Tor process on startup — nothing
 extra needs to be running, and the Docker image bundles the `tor` binary.
 Requests to your download client and to Google are **not** proxied.
+
+Tor bootstraps **in the background**, so the app is reachable the instant it
+starts rather than waiting for the circuit. If you open the page while Tor is
+still connecting and your default route is Tor, search waits and enables itself
+the moment Tor is ready — or you can switch to Direct and search immediately.
+Defaulting to Direct (`USE_TOR=false`) lets you search right away regardless.
 
 **Per-user controls.** A **Connection** menu in the navbar lets each visitor:
 

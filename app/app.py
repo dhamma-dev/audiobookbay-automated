@@ -57,6 +57,7 @@ _tor_ready = threading.Event()
 _tor_data_dir = None          # where Tor writes its control auth cookie
 _tor_available = False        # a Tor SOCKS proxy we can route requests through
 _tor_managed = False          # we launched Tor ourselves, so we can renew circuits
+_tor_starting = False         # our Tor is launched but not bootstrapped yet
 _renew_lock = threading.Lock()
 
 # Built at startup by init_outbound(): a plain session and (when Tor is up) a
@@ -93,11 +94,29 @@ def _stop_tor():
             _tor_process.kill()
 
 
+def _await_tor_bootstrap(data_dir):
+    """Wait (off the request path) for Tor to finish bootstrapping, then flip it
+    to available and build the Tor session. On timeout/exit we stay Direct-only.
+    Runs in a background thread so the web server is serving the whole time."""
+    global _tor_data_dir, _tor_available, _tor_managed, _tor_starting, TOR_SESSION
+    ok = _tor_ready.wait(timeout=TOR_BOOTSTRAP_TIMEOUT)
+    if ok and _tor_process is not None and _tor_process.poll() is None:
+        _tor_data_dir = data_dir
+        _tor_managed = True
+        TOR_SESSION = _tor_session()
+        _tor_available = True
+        print("[TOR] Tor is ready; circuit renewal is available.")
+    else:
+        print(f"[TOR] Tor did not bootstrap within {TOR_BOOTSTRAP_TIMEOUT}s; running Direct-only.")
+    _tor_starting = False
+
+
 def _start_tor():
     """Bring Tor up if possible and record whether it is usable/renewable. Never
-    raises: if Tor can't be started the app simply runs in Direct-only mode and
-    the UI reflects that."""
-    global _tor_process, _tor_data_dir, _tor_available, _tor_managed
+    raises and never blocks: if we launch our own Tor, bootstrapping is awaited
+    in a background thread so the app serves immediately (Direct works at once;
+    Tor flips on when ready). The UI reflects 'starting' vs 'ready' meanwhile."""
+    global _tor_process, _tor_available, _tor_managed, _tor_starting
 
     # Someone already runs Tor on the SOCKS port -- reuse it, but we can't renew
     # a circuit we don't control.
@@ -134,16 +153,19 @@ def _start_tor():
         text=True,
     )
     atexit.register(_stop_tor)
+    _tor_starting = True
     threading.Thread(target=_consume_tor_output, args=(_tor_process,), daemon=True).start()
+    threading.Thread(target=_await_tor_bootstrap, args=(data_dir,), daemon=True).start()
 
-    if not _tor_ready.wait(timeout=TOR_BOOTSTRAP_TIMEOUT) or _tor_process.poll() is not None:
-        print(f"[TOR] Tor did not bootstrap within {TOR_BOOTSTRAP_TIMEOUT}s; running Direct-only.")
-        return
 
-    _tor_data_dir = data_dir
-    _tor_available = True
-    _tor_managed = True
-    print("[TOR] Tor is ready; circuit renewal is available.")
+def tor_status():
+    """'ready' (route via Tor now), 'starting' (our Tor is still bootstrapping),
+    or 'unavailable' (no Tor at all -> Direct-only)."""
+    if _tor_available:
+        return 'ready'
+    if _tor_starting:
+        return 'starting'
+    return 'unavailable'
 
 
 def _direct_session():
@@ -160,18 +182,24 @@ def _tor_session():
 
 
 def init_outbound():
-    """Bring up Tor (if available) and build both scraping sessions. Called once
-    at startup so everything is ready before the first request."""
+    """Build the Direct session and kick off Tor. Returns immediately: Direct is
+    usable at once, and (when we manage Tor) the Tor session is built in the
+    background as it finishes bootstrapping."""
     global DIRECT_SESSION, TOR_SESSION
-    _start_tor()
     DIRECT_SESSION = _direct_session()
-    TOR_SESSION = _tor_session() if _tor_available else None
+    _start_tor()
+    # Reused external Tor is available synchronously; our own is built by
+    # _await_tor_bootstrap once it's ready.
+    if _tor_available and TOR_SESSION is None:
+        TOR_SESSION = _tor_session()
 
 
 def current_route_mode():
     """'tor' or 'direct' for the current request: the user's saved choice, or the
-    USE_TOR default. Forced to 'direct' whenever Tor isn't available."""
-    if not _tor_available:
+    USE_TOR default. Forced to 'direct' only when Tor is truly unavailable; while
+    Tor is still 'starting' the intended mode is kept (search is gated until it's
+    ready, or the user can switch to Direct)."""
+    if tor_status() == 'unavailable':
         return 'direct'
     mode = session.get('route_mode')
     if mode not in ('tor', 'direct'):
@@ -273,6 +301,24 @@ NAV_LINK_URL = os.getenv("NAV_LINK_URL")
 #   RANK_MODEL     - Gemini model id to use (default "gemini-3.5-flash").
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RANK_MODEL = os.getenv("RANK_MODEL", "gemini-3.5-flash")
+
+# Preferred listening language (e.g. "English"). When set, wrong-language
+# editions are floated below matching ones in the default result order, and
+# Smart sort is told to rank other languages far lower. Unset = no preference.
+PREFERRED_LANGUAGE = (os.getenv("PREFERRED_LANGUAGE") or "").strip()
+
+
+def _language_matches(book):
+    """True when a result's language looks like the preferred one (or when no
+    preference is configured). Substring + case-insensitive, since the mirror's
+    language field is free text ("English", "english", "Eng")."""
+    if not PREFERRED_LANGUAGE:
+        return True
+    lang = (book.get('language') or '').strip().lower()
+    if not lang:
+        return True  # unknown language -> don't penalize; let other signals decide
+    pref = PREFERRED_LANGUAGE.lower()
+    return pref in lang or lang in pref
 
 # --- Download log ------------------------------------------------------------
 # Records every send (who added what, when) so the operator can audit a shared
@@ -480,6 +526,7 @@ def inject_app_config():
         # Connection controls (Tor routing toggle + circuit renewal).
         'tor_available': _tor_available,
         'tor_renewable': _tor_available and _tor_managed,
+        'tor_status': tor_status(),
         'route_mode': current_route_mode(),
         'page_title_suffix': 'AudiobookBay',
     }
@@ -493,11 +540,23 @@ def set_route():
     mode = data.get('mode')
     if mode not in ('tor', 'direct'):
         return jsonify({'message': 'Invalid route mode.'}), 400
-    if mode == 'tor' and not _tor_available:
+    if mode == 'tor' and tor_status() == 'unavailable':
         return jsonify({'message': 'Tor is not available on this server.'}), 409
     session['route_mode'] = mode
     session.permanent = True  # remember the choice across browser restarts
     return jsonify({'mode': mode})
+
+
+@app.route('/api/connection')
+def api_connection():
+    """Lightweight poll target so the search page can wait for Tor to finish
+    bootstrapping and enable itself the moment routing is usable."""
+    return jsonify({
+        'tor_status': tor_status(),
+        'route_mode': current_route_mode(),
+        'tor_available': _tor_available,
+        'tor_renewable': _tor_available and _tor_managed,
+    })
 
 
 @app.route('/tor/renew', methods=['POST'])
@@ -837,6 +896,14 @@ RANK_SYSTEM_INSTRUCTION = (
     "'covers' = the list of book numbers (seq) it contains. Do not also use that "
     "id as an entry's best_id.\n"
     "- If nothing forms a series, return an empty 'series' list.\n"
+    "Editions (standalone books):\n"
+    "- When several candidates are the same standalone work (not part of a "
+    "series block) -- different uploads of one book -- group them in 'editions': "
+    "pick the best edition as best_id and list the rest as alt_ids, using the "
+    "same quality rules as above and an alt_note for what each differs on. "
+    "Different works stay separate, and a book with only one upload needs no "
+    "edition entry. Never put a book that is already in a series block here.\n"
+    "- If nothing needs grouping, return an empty 'editions' list.\n"
     "Return every input id exactly once in 'ordering', best match first."
 )
 
@@ -908,8 +975,21 @@ RANK_RESPONSE_SCHEMA = {
                 "required": ["label", "entries"],
             },
         },
+        "editions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "best_id": {"type": "integer"},
+                    "alt_ids": {"type": "array", "items": {"type": "integer"}},
+                    "alt_note": {"type": "string"},
+                },
+                "required": ["best_id", "alt_ids"],
+            },
+        },
     },
-    "required": ["ordering", "buckets", "ambiguous", "interpretations", "series"],
+    "required": ["ordering", "buckets", "ambiguous", "interpretations", "series", "editions"],
 }
 
 
@@ -922,6 +1002,15 @@ def rank_results(query, results):
     from google.genai import types
 
     client = genai.Client(api_key=GEMINI_API_KEY)
+    system_instruction = RANK_SYSTEM_INSTRUCTION
+    if PREFERRED_LANGUAGE:
+        system_instruction += (
+            f"\nLanguage: the user listens in {PREFERRED_LANGUAGE}. Rank editions "
+            f"in other languages far below {PREFERRED_LANGUAGE} ones, bucket "
+            "clearly wrong-language items as 'unlikely', and never pick a "
+            "wrong-language upload as a series/edition best_id when a "
+            f"{PREFERRED_LANGUAGE} one exists."
+        )
     prompt = (
         f"User search query: {query}\n\n"
         f"Candidates (JSON):\n{json.dumps(results, ensure_ascii=False)}"
@@ -930,7 +1019,7 @@ def rank_results(query, results):
         model=RANK_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=RANK_SYSTEM_INSTRUCTION,
+            system_instruction=system_instruction,
             response_mime_type="application/json",
             response_schema=RANK_RESPONSE_SCHEMA,
             temperature=0,
@@ -983,13 +1072,19 @@ def search():
     books = []
     query = ''
     if request.method == 'POST':
+        # If this browser is set to Tor but Tor is still bootstrapping, don't
+        # silently scrape over Direct -- tell the client to wait (it polls and
+        # re-enables) or switch to Direct.
+        if current_route_mode() == 'tor' and tor_status() != 'ready':
+            return jsonify({'message': 'Tor is still starting. Please wait a moment or switch to Direct.',
+                            'tor_status': tor_status()}), 503
         query = request.form.get('query', '').strip().lower()
         if query:
             books = search_audiobookbay(query)
-            # Float the preferred M4B results to the top. Python's sort is
-            # stable, so the mirror's original ordering is preserved within
-            # the M4B and non-M4B groups.
-            books.sort(key=lambda b: not b.get('is_m4b'))
+            # Float preferred results to the top: matching-language first (when a
+            # PREFERRED_LANGUAGE is set), then M4B. Python's stable sort keeps the
+            # mirror's original ordering within each group.
+            books.sort(key=lambda b: (not _language_matches(b), not b.get('is_m4b')))
     # Tag each result with a stable id so the client can ask Gemini to re-rank
     # them and then reorder the matching cards in place (see /api/rank).
     for i, book in enumerate(books):

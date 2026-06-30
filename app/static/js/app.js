@@ -157,7 +157,12 @@
         body: new FormData(form),
         headers: { 'X-Requested-With': 'fetch' },
       });
-      if (!res.ok) throw new Error('Search request failed (' + res.status + ')');
+      if (!res.ok) {
+        // Tor-still-starting (503) and other errors come back as JSON.
+        let msg = 'Search request failed (' + res.status + ')';
+        try { const j = await res.json(); if (j && j.message) msg = j.message; } catch (e) { /* not JSON */ }
+        throw new Error(msg);
+      }
 
       const html = await res.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -254,10 +259,12 @@
     const bucketOf = {};
     (ranking.buckets || []).forEach((b) => { bucketOf[String(b.id)] = b.bucket; });
 
-    // Only the loose, top-level cards are reordered here. Cards that were moved
-    // into a series group are managed by the series UI, not this flat sort.
+    // Only the loose, top-level units are reordered here — bare cards plus
+    // edition-group wrappers (keyed by their best card's id). Cards moved into a
+    // series shelf or an edition tray are managed by that UI, not this flat sort.
     const cards = new Map();
-    results.querySelectorAll(':scope > .book-card').forEach((c) => cards.set(c.dataset.resultId, c));
+    results.querySelectorAll(':scope > .book-card, :scope > .edition-group')
+      .forEach((el) => cards.set(el.dataset.resultId, el));
 
     // Decide ordering + which ids are filtered away.
     let order = ordering;
@@ -321,6 +328,7 @@
     smartSortState = { query, ranking, expanded: false, activeInterp: null };
     renderAmbiguity(ranking);
     renderSeries(ranking);
+    renderEditions(ranking);
     renderSmartSort();
     const header = document.querySelector('.search-results-header');
     if (header && !header.dataset.ranked) {
@@ -682,8 +690,66 @@
     refreshIcons();
   }
 
+  // Standalone books that appear as several uploads: fold the duplicates into a
+  // single card (the best edition) with an alternatives tray, so one specific
+  // book is one entry instead of a wall of near-identical results.
+  function renderEditions(ranking) {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    const editions = (ranking && ranking.editions) || [];
+    if (editions.length === 0) return;
+    if (results.querySelector('.edition-group')) return; // already built
+
+    const cards = new Map();
+    results.querySelectorAll(':scope > .book-card').forEach((c) => cards.set(c.dataset.resultId, c));
+    const consumed = new Set();
+
+    editions.forEach((e) => {
+      const bestKey = e.best_id != null ? String(e.best_id) : null;
+      const bestCard = bestKey && !consumed.has(bestKey) ? cards.get(bestKey) : null;
+      if (!bestCard) return;
+      const altCards = (e.alt_ids || [])
+        .map((id) => String(id))
+        .filter((id) => id !== bestKey && cards.has(id) && !consumed.has(id))
+        .map((id) => { consumed.add(id); return cards.get(id); });
+      if (altCards.length === 0) return; // nothing to fold — leave it a plain card
+      consumed.add(bestKey);
+
+      const group = document.createElement('div');
+      group.className = 'edition-group';
+      group.dataset.resultId = bestKey;
+
+      const main = document.createElement('div');
+      main.className = 'series-entry-main';
+      results.insertBefore(group, bestCard); // wrapper takes the card's place...
+      main.appendChild(bestCard);            // ...then the card moves inside it
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'btn btn-ghost series-alts-toggle';
+      toggle.dataset.action = 'series-alts-toggle';
+      if (e.alt_note) toggle.dataset.note = e.alt_note;
+
+      const altsWrap = document.createElement('div');
+      altsWrap.className = 'series-alts';
+      altsWrap.hidden = true;
+      altCards.forEach((c) => {
+        c.classList.add('in-series', 'is-alt');
+        c.classList.remove('is-hidden-result', 'is-dimmed-result');
+        altsWrap.appendChild(c);
+      });
+
+      group.appendChild(main);
+      group.appendChild(toggle);
+      group.appendChild(altsWrap);
+      decorateEntry(group);
+    });
+
+    refreshIcons();
+  }
+
   function handleAltsToggle(toggle) {
-    const entry = toggle.closest('.series-entry');
+    const entry = toggle.closest('.series-entry, .edition-group');
     if (!entry) return;
     const altsWrap = entry.querySelector('.series-alts');
     const open = entry.classList.toggle('alts-open');
@@ -694,7 +760,7 @@
 
   function handleUseEdition(btn) {
     const altCard = btn.closest('.book-card');
-    const entry = btn.closest('.series-entry');
+    const entry = btn.closest('.series-entry, .edition-group');
     if (!altCard || !entry) return;
     const main = entry.querySelector('.series-entry-main');
     const altsWrap = entry.querySelector('.series-alts');
@@ -899,6 +965,8 @@
       if (warning) warning.hidden = mode === 'tor';
       const renew = document.querySelector('.conn-renew-btn');
       if (renew) renew.disabled = mode !== 'tor';
+      // Switching to Direct unblocks a search that was waiting on Tor.
+      if (mode === 'direct') clearTorBooting();
       showToast(mode === 'tor' ? 'Routing AudioBook Bay via Tor.' : 'Routing AudioBook Bay directly.', 'success');
     } catch (err) {
       checkbox.checked = !checkbox.checked; // revert the visual toggle
@@ -929,6 +997,60 @@
         const checkbox = document.getElementById('conn-route-tor');
         btn.disabled = !(checkbox && checkbox.checked);
       }, 10000);
+    }
+  }
+
+  /* ----------------------------------------------------------
+     Tor boot gating: when this browser defaults to Tor and Tor is
+     still bootstrapping, the search page waits (polling) and offers
+     a one-click switch to Direct, then enables itself when ready.
+     ---------------------------------------------------------- */
+  function clearTorBooting() {
+    if (torPollTimer) { clearTimeout(torPollTimer); torPollTimer = null; }
+    const notice = document.getElementById('tor-booting');
+    if (notice) notice.remove();
+    const submit = document.getElementById('search-submit');
+    if (submit) submit.disabled = false;
+    const label = document.querySelector('.conn-mode-label');
+    if (label && /starting/i.test(label.textContent)) label.textContent = 'Tor';
+  }
+
+  let torPollTimer = null;
+  function pollConnection() {
+    fetch('/api/connection')
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.tor_status === 'ready' || d.route_mode === 'direct') {
+          clearTorBooting();
+          if (d.tor_status === 'ready') showToast('Tor is ready — search away.', 'success');
+        } else {
+          torPollTimer = setTimeout(pollConnection, 2500);
+        }
+      })
+      .catch(() => { torPollTimer = setTimeout(pollConnection, 4000); });
+  }
+
+  async function handleSearchDirect(btn) {
+    btn.disabled = true;
+    try {
+      const res = await fetch('/settings/route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'direct' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Could not switch to Direct');
+      const sw = document.getElementById('conn-route-tor');
+      if (sw) sw.checked = false;
+      const warning = document.querySelector('.conn-direct-warning');
+      if (warning) warning.hidden = false;
+      const renew = document.querySelector('.conn-renew-btn');
+      if (renew) renew.disabled = true;
+      clearTorBooting();
+      showToast('Searching directly. Your server IP is visible to AudioBook Bay.', 'info');
+    } catch (err) {
+      btn.disabled = false;
+      showToast(err.message || 'Could not switch to Direct', 'error');
     }
   }
 
@@ -965,6 +1087,9 @@
 
     const connRenew = e.target.closest('[data-action="conn-renew"]');
     if (connRenew) { handleRenew(connRenew); return; }
+
+    const searchDirect = e.target.closest('[data-action="search-direct"]');
+    if (searchDirect) { handleSearchDirect(searchDirect); return; }
 
     // A click anywhere outside the connection control closes its popover.
     if (!e.target.closest('.conn-control')) closeConnPopover();
@@ -1013,6 +1138,14 @@
     if (downloadsList) {
       refreshDownloads();
       setInterval(refreshDownloads, 10000);
+    }
+
+    // If the page rendered with Tor still bootstrapping, keep search gated and
+    // poll until routing is usable (or the user switches to Direct).
+    if (document.getElementById('tor-booting')) {
+      const submit = document.getElementById('search-submit');
+      if (submit) submit.disabled = true;
+      pollConnection();
     }
   }
 

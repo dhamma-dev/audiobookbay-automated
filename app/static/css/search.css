@@ -480,3 +480,46 @@
 .series-entry.is-covered .series-entry-body {
   opacity: 0.4;
 }
+
+/* Edition group: a standalone book folded to its best edition + alternatives.
+   It's an orderable unit in the flat sort, so it honors the filter classes. */
+.edition-group.is-hidden-result {
+  display: none;
+}
+
+.edition-group.is-dimmed-result:not(.is-hidden-result) {
+  opacity: 0.55;
+}
+
+.edition-group .series-alts-toggle {
+  margin-left: var(--space-1);
+}
+
+/* "Starting Tor…" gate shown on the search page until routing is usable. */
+.tor-booting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-accent-muted);
+  border: 1px solid var(--color-accent-soft);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.tor-booting .spinner-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-accent-soft);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.tor-booting-text {
+  margin-right: auto;
+}

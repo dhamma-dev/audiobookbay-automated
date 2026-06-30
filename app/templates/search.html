@@ -44,11 +44,23 @@
             value="{{ query }}"
         >
     </div>
-    <button type="submit" id="search-submit" class="btn btn-primary">
+    <button type="submit" id="search-submit" class="btn btn-primary"
+            {% if route_mode == 'tor' and tor_status == 'starting' %}disabled{% endif %}>
         <i data-lucide="search" aria-hidden="true"></i>
         Search
     </button>
 </form>
+
+{% if route_mode == 'tor' and tor_status == 'starting' %}
+<div id="tor-booting" class="tor-booting" role="status">
+    <span class="spinner-icon" aria-hidden="true"></span>
+    <span class="tor-booting-text">Starting Tor — search will be ready in a moment.</span>
+    <button type="button" class="btn btn-secondary" data-action="search-direct">
+        <i data-lucide="zap" aria-hidden="true"></i>
+        Search directly instead
+    </button>
+</div>
+{% endif %}
 
 <div id="search-skeletons" class="search-skeletons" hidden aria-hidden="true">
     {% for _ in range(3) %}
