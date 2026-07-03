@@ -307,6 +307,14 @@ RANK_MODEL = os.getenv("RANK_MODEL", "gemini-3.5-flash")
 # background as soon as results load so it's ready instantly. Each visitor can
 # override this in the in-app settings.
 SMART_PREFETCH_DEFAULT = "on" if _is_truthy(os.getenv("SMART_PREFETCH_DEFAULT", "off")) else "off"
+# Optional reasoning budget for the ranking model. Gemini "flash" models do
+# hidden thinking that adds latency; since ranking is largely structured
+# extraction, a small or zero budget is usually much faster with little quality
+# loss. Unset -> model default (unchanged). 0 -> disable thinking (fastest, on
+# models that support it). N -> cap thinking to N tokens. If the model rejects a
+# budget, rank_results retries once without it, so this can't hard-break sort.
+_rank_think = os.getenv("RANK_THINKING_BUDGET")
+RANK_THINKING_BUDGET = int(_rank_think) if _rank_think not in (None, "") else None
 
 # Preferred listening language (e.g. "English"). When set, wrong-language
 # editions are floated below matching ones in the default result order, and
@@ -685,7 +693,8 @@ print(f"DL_CATEGORY: {DL_CATEGORY}")
 print(f"SAVE_PATH_BASE: {SAVE_PATH_BASE}")
 print(f"NAV_LINK_NAME: {NAV_LINK_NAME}")
 print(f"NAV_LINK_URL: {NAV_LINK_URL}")
-print(f"SMART_SORT (Gemini): {'Enabled (' + RANK_MODEL + ')' if GEMINI_API_KEY else 'Disabled'}")
+print(f"SMART_SORT (Gemini): {'Enabled (' + RANK_MODEL + ')' if GEMINI_API_KEY else 'Disabled'}"
+      + (f", thinking_budget={RANK_THINKING_BUDGET}" if GEMINI_API_KEY and RANK_THINKING_BUDGET is not None else ""))
 if DOWNLOAD_CLIENT == 'putio':
     print(f"PUTIO_CLIENT_ID: {'Set' if PUTIO_CLIENT_ID else 'Not Set'}")
     print(f"PUTIO_CLIENT_SECRET: {'Set' if PUTIO_CLIENT_SECRET else 'Not Set'}")
@@ -1266,16 +1275,34 @@ def rank_results(query, results, want_ownership=False):
         f"User search query: {query}\n\n"
         f"Candidates (JSON):\n{json.dumps(results, ensure_ascii=False)}"
     )
-    response = client.models.generate_content(
-        model=RANK_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            response_mime_type="application/json",
-            response_schema=schema,
-            temperature=0,
-        ),
+    config_kwargs = dict(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",
+        response_schema=schema,
+        temperature=0,
     )
+    if RANK_THINKING_BUDGET is not None:
+        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=RANK_THINKING_BUDGET)
+
+    def _generate(cfg):
+        return client.models.generate_content(
+            model=RANK_MODEL, contents=prompt,
+            config=types.GenerateContentConfig(**cfg),
+        )
+
+    started = time.monotonic()
+    try:
+        response = _generate(config_kwargs)
+    except Exception as e:
+        # A thinking budget the model doesn't support shouldn't break sort --
+        # retry once without it.
+        if "thinking_config" not in config_kwargs:
+            raise
+        print(f"[WARNING] Ranking with thinking_budget={RANK_THINKING_BUDGET} failed ({e}); retrying without it.")
+        config_kwargs.pop("thinking_config")
+        response = _generate(config_kwargs)
+    print(f"[SMART SORT] {RANK_MODEL} thinking={RANK_THINKING_BUDGET} "
+          f"{len(results)} results in {time.monotonic() - started:.1f}s")
     return json.loads(response.text)
 
 

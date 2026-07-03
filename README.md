@@ -185,7 +185,15 @@ default for new visitors).
 GEMINI_API_KEY=your-google-ai-studio-key   # Enables Smart sort when set
 RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
 SMART_PREFETCH_DEFAULT=off                  # Optional; "on" prefetches by default
+RANK_THINKING_BUDGET=                       # Optional; 0 = fastest (disable model "thinking")
 ```
+
+> **Speed tip:** flash models spend time "thinking" before answering. Ranking is
+> mostly structured extraction, so setting `RANK_THINKING_BUDGET=0` typically
+> makes Smart sort noticeably faster with little quality loss (the server logs
+> `[SMART SORT] … in Xs` so you can compare). If a model rejects the budget, the
+> app automatically retries without it. Raise the number if you notice worse
+> series/ownership matching.
 
 > **Privacy note:** unlike AudioBook Bay scraping, the Smart sort request goes
 > **directly to Google's API and is _not_ routed through Tor**. Only your search

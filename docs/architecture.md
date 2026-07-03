@@ -74,7 +74,9 @@ Client posts `{query, results}` (the slim payload). Server re-sanitizes to
 `id + RANK_FIELDS`, calls `rank_results`, returns a JSON verdict the client
 applies **without re-rendering** — it reorders/wraps the existing cards.
 
-`rank_results` asks Gemini (temperature 0, structured `RANK_RESPONSE_SCHEMA`) for:
+`rank_results` (temperature 0, structured `RANK_RESPONSE_SCHEMA`; optional
+`RANK_THINKING_BUDGET` reasoning cap with a retry-without-it fallback; logs
+`[SMART SORT] … in Xs`) asks Gemini for:
 - `ordering` + `buckets` (strong/possible/unlikely) — relevance sort + filtering.
 - `ambiguous` + `interpretations` — clickable "did you mean" chips.
 - `series` — ordered entries (seq/title/best_id/alt_ids), `collections`
