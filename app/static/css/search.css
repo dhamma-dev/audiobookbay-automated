@@ -115,10 +115,17 @@
   cursor: pointer;
 }
 
-/* When engaged, drop any card we've tagged as already owned -- even once Smart
-   sort has nested it inside a series/edition group. */
-.search-results.hide-owned .book-card[data-in-library] {
+/* When engaged, drop cards we've tagged as fully owned -- even once Smart sort
+   has nested them inside a series/edition group. Partly-owned bundles stay
+   visible (you don't have all of it yet). */
+.search-results.hide-owned .book-card[data-in-library="owned"],
+.search-results.hide-owned .book-card[data-in-library="edition"] {
   display: none;
+}
+
+.series-owned-note {
+  color: var(--color-success);
+  font-weight: 600;
 }
 
 .btn-smart-sort {

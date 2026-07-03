@@ -375,6 +375,13 @@
   height: 13px;
 }
 
+/* Bundle/omnibus you only partly own ("Own 3 of 10") — amber, not green. */
+.library-flag-partial {
+  background-color: var(--color-warning-muted);
+  color: var(--color-warning);
+  border-color: rgba(224, 139, 60, 0.3);
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

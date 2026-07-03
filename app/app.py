@@ -536,6 +536,77 @@ def annotate_library_matches(books):
         print(f"[WARNING] Library match annotation failed: {e}")
 
 
+def _norm_seq(seq):
+    s = str(seq).strip()
+    return s[:-2] if s.endswith(".0") else s
+
+
+def _owned_series_index(index):
+    """Map normalized series name -> set of owned normalized sequence numbers."""
+    m = {}
+    for item in index:
+        for sname, seq in item.get("series") or []:
+            if sname and seq is not None:
+                m.setdefault(abs_match.normalize(sname), set()).add(_norm_seq(seq))
+    return m
+
+
+def _owned_seqs_for(series_name, owned_series):
+    """Fuzzy-match a canonical series name to the owned index; union its seqs."""
+    target = abs_match.normalize(series_name or "")
+    if not target:
+        return set()
+    seqs = set()
+    for name, owned in owned_series.items():
+        if name == target or abs_match.token_set_ratio(target, name) >= 0.8:
+            seqs |= owned
+    return seqs
+
+
+def resolve_ownership(ranking, index):
+    """Compute ownership LOCALLY, joining the LLM's canonicalized *public* results
+    (ranking['canonical']) to the ABS index. Adds ranking['ownership'] =
+    [{id, status, detail}]. Nothing about the library is ever sent out -- the LLM
+    only supplied clean titles. Best-effort; never raises into the request.
+
+    - Series books: exact join on (fuzzy series name, seq).
+    - Standalones: the local author-gated matcher (abs_match).
+    - Omnibus/box-set collections: covers intersected with owned seqs -> partial.
+    """
+    if not isinstance(ranking, dict) or not index:
+        return
+    try:
+        owned_series = _owned_series_index(index)
+        ownership = {}
+        for c in ranking.get("canonical") or []:
+            rid = c.get("id")
+            if rid is None:
+                continue
+            series, seq = c.get("series"), c.get("seq")
+            if series and seq is not None and _norm_seq(seq) in _owned_seqs_for(series, owned_series):
+                ownership[rid] = {"status": "owned"}
+                continue
+            abb = {"raw": c.get("title", ""), "title": c.get("title", ""),
+                   "author": c.get("author", ""), "language": ""}
+            tier, _s, _item, _r = abs_match.best_match(abb, index)
+            if tier == abs_match.STRONG:
+                ownership[rid] = {"status": "owned"}
+        for block in ranking.get("series") or []:
+            seqs = _owned_seqs_for(block.get("label", ""), owned_series)
+            for col in block.get("collections") or []:
+                cid, covers = col.get("id"), col.get("covers") or []
+                if cid is None or not covers:
+                    continue
+                owned_n = sum(1 for cv in covers if _norm_seq(cv) in seqs)
+                if owned_n == len(covers):
+                    ownership[cid] = {"status": "owned"}
+                elif owned_n:
+                    ownership[cid] = {"status": "partial", "detail": f"{owned_n} of {len(covers)}"}
+        ranking["ownership"] = [dict(id=rid, **info) for rid, info in ownership.items()]
+    except Exception as e:
+        print(f"[WARNING] Ownership resolution failed: {e}")
+
+
 print(f"ABS match: {'Enabled (' + ABS_URL + ')' if ABS_MATCH_ENABLED else 'Disabled'}")
 
 # Fields we are willing to forward to Gemini. Everything else (link, cover,
@@ -1103,11 +1174,51 @@ RANK_RESPONSE_SCHEMA = {
 }
 
 
-def rank_results(query, results):
+# Asked for only when ABS matching is on, so the model canonicalizes each public
+# result into a clean identity the app can join to the library LOCALLY. No
+# library data is ever put in the prompt.
+RANK_CANONICALIZE_INSTRUCTION = (
+    "\nCanonicalize (for local library matching):\n"
+    "- Also return a 'canonical' array with one object per candidate id: the "
+    "work's canonical book title, its primary author, and -- when the book is "
+    "part of a series -- the series name and the book's number (seq). Use your "
+    "own knowledge to resolve variant, bare, or non-obvious titles to the right "
+    "series and number (e.g. a book titled only 'Waybound' is Cradle #12; "
+    "'Dreadgod' is Cradle #11). Include every candidate id exactly once. This is "
+    "matched against the user's library on our server -- you are NOT given the "
+    "user's library and must not guess what they own."
+)
+
+
+def _rank_schema_with_canonical():
+    """A deep copy of the base schema with the per-result 'canonical' block added
+    and required, used only when ABS matching is on."""
+    schema = json.loads(json.dumps(RANK_RESPONSE_SCHEMA))
+    schema["properties"]["canonical"] = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "title": {"type": "string"},
+                "author": {"type": "string"},
+                "series": {"type": "string"},
+                "seq": {"type": "number"},
+            },
+            "required": ["id"],
+        },
+    }
+    schema["required"] = schema["required"] + ["canonical"]
+    return schema
+
+
+def rank_results(query, results, want_ownership=False):
     """Ask Gemini to re-rank already-scraped results. Returns the parsed JSON
     dict (ordering / buckets / ambiguous / interpretations). Raises on any
     transport or parsing failure so the caller can fall back to the existing
-    order."""
+    order. When want_ownership is set, also asks for a per-result 'canonical'
+    identity (for local library matching); the base behaviour is untouched
+    otherwise."""
     from google import genai
     from google.genai import types
 
@@ -1121,6 +1232,10 @@ def rank_results(query, results):
             "wrong-language upload as a series/edition best_id when a "
             f"{PREFERRED_LANGUAGE} one exists."
         )
+    schema = RANK_RESPONSE_SCHEMA
+    if want_ownership:
+        system_instruction += RANK_CANONICALIZE_INSTRUCTION
+        schema = _rank_schema_with_canonical()
     prompt = (
         f"User search query: {query}\n\n"
         f"Candidates (JSON):\n{json.dumps(results, ensure_ascii=False)}"
@@ -1131,7 +1246,7 @@ def rank_results(query, results):
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
             response_mime_type="application/json",
-            response_schema=RANK_RESPONSE_SCHEMA,
+            response_schema=schema,
             temperature=0,
         ),
     )
@@ -1169,7 +1284,9 @@ def api_rank():
         return jsonify({'message': 'No rankable results.'}), 400
 
     try:
-        ranking = rank_results(query, results)
+        ranking = rank_results(query, results, want_ownership=ABS_MATCH_ENABLED)
+        if ABS_MATCH_ENABLED:
+            resolve_ownership(ranking, get_abs_index())
         return jsonify(ranking)
     except Exception as e:
         print(f"[ERROR] Smart sort failed: {e}")

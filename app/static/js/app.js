@@ -324,12 +324,66 @@
     }
   }
 
+  // Paint (or upgrade) the "In your library" flag on a card. Ownership is
+  // computed server-side against the local ABS index; here we just render it,
+  // creating the flag for matches the initial deterministic pass didn't catch.
+  function setLibraryFlag(card, status, detail) {
+    if (!card) return;
+    const state = status === 'partial' ? 'partial'
+      : status === 'owned_other_edition' ? 'edition' : 'owned';
+    card.setAttribute('data-in-library', state);
+    const details = card.querySelector('.book-details');
+    if (!details) return;
+    let flag = card.querySelector('[data-library-flag]');
+    if (!flag) {
+      flag = document.createElement('div');
+      flag.className = 'library-flag';
+      flag.setAttribute('data-library-flag', '');
+      flag.innerHTML =
+        '<i data-lucide="library-big" aria-hidden="true"></i><span class="library-flag-text"></span>';
+      const title = details.querySelector('.book-title');
+      if (title) title.insertAdjacentElement('afterend', flag);
+      else details.prepend(flag);
+    }
+    flag.classList.toggle('library-flag-partial', state === 'partial');
+    const txt = flag.querySelector('.library-flag-text');
+    if (txt) {
+      txt.textContent = state === 'partial' ? 'Own ' + (detail || 'some')
+        : state === 'edition' ? 'In library · other edition'
+        : 'In your library';
+    }
+  }
+
+  function applyOwnership(ranking) {
+    const own = ranking && ranking.ownership;
+    const results = document.getElementById('search-results');
+    if (!Array.isArray(own) || !results) return;
+    own.forEach((o) => {
+      const card = results.querySelector('.book-card[data-result-id="' + o.id + '"]');
+      if (card) setLibraryFlag(card, o.status, o.detail);
+    });
+    // Note how many books of each series shelf you already own.
+    results.querySelectorAll('.series-group').forEach((group) => {
+      let owned = 0;
+      group.querySelectorAll('.series-entry:not(.is-gap):not(.is-collection)')
+        .forEach((entry) => { if (entry.querySelector('.book-card[data-in-library]')) owned++; });
+      const count = group.querySelector('.series-group-count');
+      if (owned && count && !count.dataset.ownNoted) {
+        count.dataset.ownNoted = '1';
+        count.insertAdjacentHTML('beforeend',
+          ' <span class="series-owned-note">· own ' + owned + '</span>');
+      }
+    });
+    refreshIcons();
+  }
+
   function applyRanking(query, ranking) {
     smartSortState = { query, ranking, expanded: false, activeInterp: null };
     renderAmbiguity(ranking);
     renderSeries(ranking);
     renderEditions(ranking);
     renderSmartSort();
+    applyOwnership(ranking);
     const header = document.querySelector('.search-results-header');
     if (header && !header.dataset.ranked) {
       header.dataset.ranked = '1';

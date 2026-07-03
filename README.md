@@ -237,10 +237,14 @@ _don't_ own something** — so a slight title variation can never mislead you. T
 badge is informational and never blocks the Send button (you may still want a
 different edition or narrator).
 
-This deterministic pass is also the foundation for a future Smart-sort tier: it
-exposes candidate matches (`abs_match.candidates`) that an LLM can later verify
-for the harder cases (translations, omnibus vs. owned volumes, series-aware "own
-N of M") without ever shipping your whole library out.
+**With Smart sort, matching gets smarter — still without sending your library
+anywhere.** When you run Smart sort, Gemini *canonicalizes the public search
+results* (resolving variant or bare titles to their series and number — e.g. a
+bare `Waybound` is Cradle #12), and the app joins those clean identities to your
+library **locally, on the server**. That catches books the plain matcher misses,
+adds a per-series **"own N of 12"** count, and flags bundles you only partly own
+(**"Own 4 of 10"**). Only the public result metadata Smart sort already sends
+leaves the box — never anything about what you own.
 
 #### Evaluating / tuning the matcher
 
