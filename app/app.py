@@ -1,7 +1,8 @@
-import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading, uuid
+import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading, time, uuid
 from datetime import datetime, timezone
 from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
+import abs_match
 from qbittorrentapi import Client
 from transmission_rpc import Client as transmissionrpc
 from deluge_web_client import DelugeWebClient as delugewebclient
@@ -57,6 +58,7 @@ _tor_ready = threading.Event()
 _tor_data_dir = None          # where Tor writes its control auth cookie
 _tor_available = False        # a Tor SOCKS proxy we can route requests through
 _tor_managed = False          # we launched Tor ourselves, so we can renew circuits
+_tor_starting = False         # our Tor is launched but not bootstrapped yet
 _renew_lock = threading.Lock()
 
 # Built at startup by init_outbound(): a plain session and (when Tor is up) a
@@ -93,11 +95,29 @@ def _stop_tor():
             _tor_process.kill()
 
 
+def _await_tor_bootstrap(data_dir):
+    """Wait (off the request path) for Tor to finish bootstrapping, then flip it
+    to available and build the Tor session. On timeout/exit we stay Direct-only.
+    Runs in a background thread so the web server is serving the whole time."""
+    global _tor_data_dir, _tor_available, _tor_managed, _tor_starting, TOR_SESSION
+    ok = _tor_ready.wait(timeout=TOR_BOOTSTRAP_TIMEOUT)
+    if ok and _tor_process is not None and _tor_process.poll() is None:
+        _tor_data_dir = data_dir
+        _tor_managed = True
+        TOR_SESSION = _tor_session()
+        _tor_available = True
+        print("[TOR] Tor is ready; circuit renewal is available.")
+    else:
+        print(f"[TOR] Tor did not bootstrap within {TOR_BOOTSTRAP_TIMEOUT}s; running Direct-only.")
+    _tor_starting = False
+
+
 def _start_tor():
     """Bring Tor up if possible and record whether it is usable/renewable. Never
-    raises: if Tor can't be started the app simply runs in Direct-only mode and
-    the UI reflects that."""
-    global _tor_process, _tor_data_dir, _tor_available, _tor_managed
+    raises and never blocks: if we launch our own Tor, bootstrapping is awaited
+    in a background thread so the app serves immediately (Direct works at once;
+    Tor flips on when ready). The UI reflects 'starting' vs 'ready' meanwhile."""
+    global _tor_process, _tor_available, _tor_managed, _tor_starting
 
     # Someone already runs Tor on the SOCKS port -- reuse it, but we can't renew
     # a circuit we don't control.
@@ -134,16 +154,19 @@ def _start_tor():
         text=True,
     )
     atexit.register(_stop_tor)
+    _tor_starting = True
     threading.Thread(target=_consume_tor_output, args=(_tor_process,), daemon=True).start()
+    threading.Thread(target=_await_tor_bootstrap, args=(data_dir,), daemon=True).start()
 
-    if not _tor_ready.wait(timeout=TOR_BOOTSTRAP_TIMEOUT) or _tor_process.poll() is not None:
-        print(f"[TOR] Tor did not bootstrap within {TOR_BOOTSTRAP_TIMEOUT}s; running Direct-only.")
-        return
 
-    _tor_data_dir = data_dir
-    _tor_available = True
-    _tor_managed = True
-    print("[TOR] Tor is ready; circuit renewal is available.")
+def tor_status():
+    """'ready' (route via Tor now), 'starting' (our Tor is still bootstrapping),
+    or 'unavailable' (no Tor at all -> Direct-only)."""
+    if _tor_available:
+        return 'ready'
+    if _tor_starting:
+        return 'starting'
+    return 'unavailable'
 
 
 def _direct_session():
@@ -160,18 +183,24 @@ def _tor_session():
 
 
 def init_outbound():
-    """Bring up Tor (if available) and build both scraping sessions. Called once
-    at startup so everything is ready before the first request."""
+    """Build the Direct session and kick off Tor. Returns immediately: Direct is
+    usable at once, and (when we manage Tor) the Tor session is built in the
+    background as it finishes bootstrapping."""
     global DIRECT_SESSION, TOR_SESSION
-    _start_tor()
     DIRECT_SESSION = _direct_session()
-    TOR_SESSION = _tor_session() if _tor_available else None
+    _start_tor()
+    # Reused external Tor is available synchronously; our own is built by
+    # _await_tor_bootstrap once it's ready.
+    if _tor_available and TOR_SESSION is None:
+        TOR_SESSION = _tor_session()
 
 
 def current_route_mode():
     """'tor' or 'direct' for the current request: the user's saved choice, or the
-    USE_TOR default. Forced to 'direct' whenever Tor isn't available."""
-    if not _tor_available:
+    USE_TOR default. Forced to 'direct' only when Tor is truly unavailable; while
+    Tor is still 'starting' the intended mode is kept (search is gated until it's
+    ready, or the user can switch to Direct)."""
+    if tor_status() == 'unavailable':
         return 'direct'
     mode = session.get('route_mode')
     if mode not in ('tor', 'direct'):
@@ -273,6 +302,24 @@ NAV_LINK_URL = os.getenv("NAV_LINK_URL")
 #   RANK_MODEL     - Gemini model id to use (default "gemini-3.5-flash").
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RANK_MODEL = os.getenv("RANK_MODEL", "gemini-3.5-flash")
+
+# Preferred listening language (e.g. "English"). When set, wrong-language
+# editions are floated below matching ones in the default result order, and
+# Smart sort is told to rank other languages far lower. Unset = no preference.
+PREFERRED_LANGUAGE = (os.getenv("PREFERRED_LANGUAGE") or "").strip()
+
+
+def _language_matches(book):
+    """True when a result's language looks like the preferred one (or when no
+    preference is configured). Substring + case-insensitive, since the mirror's
+    language field is free text ("English", "english", "Eng")."""
+    if not PREFERRED_LANGUAGE:
+        return True
+    lang = (book.get('language') or '').strip().lower()
+    if not lang:
+        return True  # unknown language -> don't penalize; let other signals decide
+    pref = PREFERRED_LANGUAGE.lower()
+    return pref in lang or lang in pref
 
 # --- Download log ------------------------------------------------------------
 # Records every send (who added what, when) so the operator can audit a shared
@@ -383,6 +430,193 @@ def _infohash_from_magnet(magnet_link):
     m = re.search(r'btih:([0-9a-zA-Z]+)', magnet_link or '')
     return m.group(1).lower() if m else None
 
+
+# --- Audiobookshelf "in your library" matching -------------------------------
+# Optional. When ABS_URL + ABS_TOKEN are set, each result we can confidently tie
+# to something already in your Audiobookshelf library gets a discreet "In your
+# library" badge. This is the deterministic *foundation*: precision-first (see
+# abs_match.py), always-on, free, and private -- nothing leaves the box. It also
+# serves as the cheap "blocker" (abs_match.candidates) that a future Smart-sort
+# pass can hand to Gemini to resolve the harder cases. A missing badge is never
+# a claim you DON'T own something.
+#
+#   ABS_URL         - Audiobookshelf base URL (e.g. https://audiobooks.example.com)
+#   ABS_TOKEN       - ABS API token (Settings -> Users -> your user)
+#   ABS_LIBRARY_ID  - optional; defaults to the first "book" library
+#   ABS_CACHE_TTL   - seconds to cache the library index in memory (default 900)
+ABS_URL = (os.getenv("ABS_URL") or "").strip().rstrip("/")
+ABS_TOKEN = (os.getenv("ABS_TOKEN") or "").strip()
+ABS_LIBRARY_ID = (os.getenv("ABS_LIBRARY_ID") or "").strip()
+ABS_CACHE_TTL = int(os.getenv("ABS_CACHE_TTL", "900"))
+ABS_MATCH_ENABLED = bool(ABS_URL and ABS_TOKEN)
+_abs_cache = {"items": [], "fetched_at": 0.0}
+_abs_lock = threading.Lock()
+
+
+def _abs_get(path, **params):
+    r = requests.get(f"{ABS_URL}{path}", headers={"Authorization": f"Bearer {ABS_TOKEN}"},
+                     params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _abs_pick_library():
+    if ABS_LIBRARY_ID:
+        return ABS_LIBRARY_ID
+    libs = _abs_get("/api/libraries").get("libraries", [])
+    for lib in libs:
+        if lib.get("mediaType") == "book":
+            return lib["id"]
+    return libs[0]["id"] if libs else None
+
+
+def _abs_load_items(library_id):
+    items, page, limit = [], 0, 500
+    while True:
+        data = _abs_get(f"/api/libraries/{library_id}/items", limit=limit, page=page)
+        results = data.get("results", [])
+        for it in results:
+            md = (it.get("media") or {}).get("metadata") or {}
+            authors = md.get("authors") or []
+            author = md.get("authorName") or ", ".join(a.get("name", "") for a in authors)
+            series = [(s.get("name"), s.get("sequence")) for s in (md.get("series") or [])]
+            items.append({
+                "title": md.get("title") or "",
+                "author": author,
+                "series": series,
+                "asin": md.get("asin") or "",
+                "isbn": md.get("isbn") or "",
+                "language": md.get("language") or "",
+            })
+        if len(results) < limit or (data.get("total") and len(items) >= data["total"]):
+            break
+        page += 1
+    return items
+
+
+def get_abs_index(max_age=None):
+    """Cached Audiobookshelf library items, refreshed once older than the cache
+    TTL. `max_age` (seconds) lets a caller demand a fresher snapshot -- the
+    ownership poll uses a short value so a just-finished download shows up
+    quickly, while still fetching ABS at most once per that window regardless of
+    how many polls arrive. Keeps the last good snapshot on error; returns []
+    when disabled or not yet loaded."""
+    if not ABS_MATCH_ENABLED:
+        return []
+    ttl = ABS_CACHE_TTL if max_age is None else min(ABS_CACHE_TTL, max_age)
+    now = time.monotonic()
+    with _abs_lock:
+        if _abs_cache["items"] and now - _abs_cache["fetched_at"] < ttl:
+            return _abs_cache["items"]
+        try:
+            lib = _abs_pick_library()
+            items = _abs_load_items(lib) if lib else []
+            _abs_cache.update(items=items, fetched_at=now)
+            print(f"ABS match: indexed {len(items)} Audiobookshelf items")
+        except Exception as e:
+            print(f"[WARNING] Audiobookshelf library fetch failed: {e}")
+            _abs_cache["fetched_at"] = now  # back off before retrying
+        return _abs_cache["items"]
+
+
+def annotate_library_matches(books):
+    """Tag each result we confidently own with book['library_match']. Best-effort:
+    any failure just leaves results unbadged, never breaks a search."""
+    if not ABS_MATCH_ENABLED:
+        return
+    try:
+        index = get_abs_index()
+        if not index:
+            return
+        for book in books:
+            raw = book.get("title", "")
+            title, author = abs_match.split_title_author(raw)
+            abb = {"raw": raw, "title": title, "author": author,
+                   "language": book.get("language", "")}
+            tier, score, item, _ = abs_match.best_match(abb, index)
+            if tier == abs_match.STRONG and item:
+                book["library_match"] = {"title": item["title"], "author": item["author"]}
+    except Exception as e:
+        print(f"[WARNING] Library match annotation failed: {e}")
+
+
+def _norm_seq(seq):
+    s = str(seq).strip()
+    return s[:-2] if s.endswith(".0") else s
+
+
+def _owned_series_index(index):
+    """Map normalized series name -> set of owned normalized sequence numbers."""
+    m = {}
+    for item in index:
+        for sname, seq in item.get("series") or []:
+            if sname and seq is not None:
+                m.setdefault(abs_match.normalize(sname), set()).add(_norm_seq(seq))
+    return m
+
+
+def _owned_seqs_for(series_name, owned_series):
+    """Fuzzy-match a canonical series name to the owned index; union its seqs."""
+    target = abs_match.normalize(series_name or "")
+    if not target:
+        return set()
+    seqs = set()
+    for name, owned in owned_series.items():
+        if name == target or abs_match.token_set_ratio(target, name) >= 0.8:
+            seqs |= owned
+    return seqs
+
+
+def _canonical_owned(c, index, owned_series):
+    """Is one canonical identity {title, author, series?, seq?} owned? Series
+    books join exactly on (fuzzy series name, seq); everything else falls back to
+    the local author-gated matcher. Shared by smart sort and the ownership poll."""
+    series, seq = c.get("series"), c.get("seq")
+    if series and seq is not None and _norm_seq(seq) in _owned_seqs_for(series, owned_series):
+        return True
+    abb = {"raw": c.get("title", ""), "title": c.get("title", ""),
+           "author": c.get("author", ""), "language": c.get("language", "")}
+    tier, _s, _item, _r = abs_match.best_match(abb, index)
+    return tier == abs_match.STRONG
+
+
+def resolve_ownership(ranking, index):
+    """Compute ownership LOCALLY, joining the LLM's canonicalized *public* results
+    (ranking['canonical']) to the ABS index. Adds ranking['ownership'] =
+    [{id, status, detail}]. Nothing about the library is ever sent out -- the LLM
+    only supplied clean titles. Best-effort; never raises into the request.
+
+    - Series books: exact join on (fuzzy series name, seq).
+    - Standalones: the local author-gated matcher (abs_match).
+    - Omnibus/box-set collections: covers intersected with owned seqs -> partial.
+    """
+    if not isinstance(ranking, dict) or not index:
+        return
+    try:
+        owned_series = _owned_series_index(index)
+        ownership = {}
+        for c in ranking.get("canonical") or []:
+            rid = c.get("id")
+            if rid is not None and _canonical_owned(c, index, owned_series):
+                ownership[rid] = {"status": "owned"}
+        for block in ranking.get("series") or []:
+            seqs = _owned_seqs_for(block.get("label", ""), owned_series)
+            for col in block.get("collections") or []:
+                cid, covers = col.get("id"), col.get("covers") or []
+                if cid is None or not covers:
+                    continue
+                owned_n = sum(1 for cv in covers if _norm_seq(cv) in seqs)
+                if owned_n == len(covers):
+                    ownership[cid] = {"status": "owned"}
+                elif owned_n:
+                    ownership[cid] = {"status": "partial", "detail": f"{owned_n} of {len(covers)}"}
+        ranking["ownership"] = [dict(id=rid, **info) for rid, info in ownership.items()]
+    except Exception as e:
+        print(f"[WARNING] Ownership resolution failed: {e}")
+
+
+print(f"ABS match: {'Enabled (' + ABS_URL + ')' if ABS_MATCH_ENABLED else 'Disabled'}")
+
 # Fields we are willing to forward to Gemini. Everything else (link, cover,
 # is_m4b, etc.) is dropped before the request is built.
 RANK_FIELDS = ("title", "format", "bitrate", "language", "size", "keywords")
@@ -476,10 +710,12 @@ def inject_app_config():
         'putio_oauth_available': putio_oauth_available,
         'putio_session_login': putio_session_login,
         'smart_sort_available': bool(GEMINI_API_KEY),
+        'abs_match_enabled': ABS_MATCH_ENABLED,
         'log_enabled': LOG_ENABLED,
         # Connection controls (Tor routing toggle + circuit renewal).
         'tor_available': _tor_available,
         'tor_renewable': _tor_available and _tor_managed,
+        'tor_status': tor_status(),
         'route_mode': current_route_mode(),
         'page_title_suffix': 'AudiobookBay',
     }
@@ -493,11 +729,23 @@ def set_route():
     mode = data.get('mode')
     if mode not in ('tor', 'direct'):
         return jsonify({'message': 'Invalid route mode.'}), 400
-    if mode == 'tor' and not _tor_available:
+    if mode == 'tor' and tor_status() == 'unavailable':
         return jsonify({'message': 'Tor is not available on this server.'}), 409
     session['route_mode'] = mode
     session.permanent = True  # remember the choice across browser restarts
     return jsonify({'mode': mode})
+
+
+@app.route('/api/connection')
+def api_connection():
+    """Lightweight poll target so the search page can wait for Tor to finish
+    bootstrapping and enable itself the moment routing is usable."""
+    return jsonify({
+        'tor_status': tor_status(),
+        'route_mode': current_route_mode(),
+        'tor_available': _tor_available,
+        'tor_renewable': _tor_available and _tor_managed,
+    })
 
 
 @app.route('/tor/renew', methods=['POST'])
@@ -837,6 +1085,14 @@ RANK_SYSTEM_INSTRUCTION = (
     "'covers' = the list of book numbers (seq) it contains. Do not also use that "
     "id as an entry's best_id.\n"
     "- If nothing forms a series, return an empty 'series' list.\n"
+    "Editions (standalone books):\n"
+    "- When several candidates are the same standalone work (not part of a "
+    "series block) -- different uploads of one book -- group them in 'editions': "
+    "pick the best edition as best_id and list the rest as alt_ids, using the "
+    "same quality rules as above and an alt_note for what each differs on. "
+    "Different works stay separate, and a book with only one upload needs no "
+    "edition entry. Never put a book that is already in a series block here.\n"
+    "- If nothing needs grouping, return an empty 'editions' list.\n"
     "Return every input id exactly once in 'ordering', best match first."
 )
 
@@ -908,20 +1164,86 @@ RANK_RESPONSE_SCHEMA = {
                 "required": ["label", "entries"],
             },
         },
+        "editions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "best_id": {"type": "integer"},
+                    "alt_ids": {"type": "array", "items": {"type": "integer"}},
+                    "alt_note": {"type": "string"},
+                },
+                "required": ["best_id", "alt_ids"],
+            },
+        },
     },
-    "required": ["ordering", "buckets", "ambiguous", "interpretations", "series"],
+    "required": ["ordering", "buckets", "ambiguous", "interpretations", "series", "editions"],
 }
 
 
-def rank_results(query, results):
+# Asked for only when ABS matching is on, so the model canonicalizes each public
+# result into a clean identity the app can join to the library LOCALLY. No
+# library data is ever put in the prompt.
+RANK_CANONICALIZE_INSTRUCTION = (
+    "\nCanonicalize (for local library matching):\n"
+    "- Also return a 'canonical' array with one object per candidate id: the "
+    "work's canonical book title, its primary author, and -- when the book is "
+    "part of a series -- the series name and the book's number (seq). Use your "
+    "own knowledge to resolve variant, bare, or non-obvious titles to the right "
+    "series and number (e.g. a book titled only 'Waybound' is Cradle #12; "
+    "'Dreadgod' is Cradle #11). Include every candidate id exactly once. This is "
+    "matched against the user's library on our server -- you are NOT given the "
+    "user's library and must not guess what they own."
+)
+
+
+def _rank_schema_with_canonical():
+    """A deep copy of the base schema with the per-result 'canonical' block added
+    and required, used only when ABS matching is on."""
+    schema = json.loads(json.dumps(RANK_RESPONSE_SCHEMA))
+    schema["properties"]["canonical"] = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "title": {"type": "string"},
+                "author": {"type": "string"},
+                "series": {"type": "string"},
+                "seq": {"type": "number"},
+            },
+            "required": ["id"],
+        },
+    }
+    schema["required"] = schema["required"] + ["canonical"]
+    return schema
+
+
+def rank_results(query, results, want_ownership=False):
     """Ask Gemini to re-rank already-scraped results. Returns the parsed JSON
     dict (ordering / buckets / ambiguous / interpretations). Raises on any
     transport or parsing failure so the caller can fall back to the existing
-    order."""
+    order. When want_ownership is set, also asks for a per-result 'canonical'
+    identity (for local library matching); the base behaviour is untouched
+    otherwise."""
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=GEMINI_API_KEY)
+    system_instruction = RANK_SYSTEM_INSTRUCTION
+    if PREFERRED_LANGUAGE:
+        system_instruction += (
+            f"\nLanguage: the user listens in {PREFERRED_LANGUAGE}. Rank editions "
+            f"in other languages far below {PREFERRED_LANGUAGE} ones, bucket "
+            "clearly wrong-language items as 'unlikely', and never pick a "
+            "wrong-language upload as a series/edition best_id when a "
+            f"{PREFERRED_LANGUAGE} one exists."
+        )
+    schema = RANK_RESPONSE_SCHEMA
+    if want_ownership:
+        system_instruction += RANK_CANONICALIZE_INSTRUCTION
+        schema = _rank_schema_with_canonical()
     prompt = (
         f"User search query: {query}\n\n"
         f"Candidates (JSON):\n{json.dumps(results, ensure_ascii=False)}"
@@ -930,9 +1252,9 @@ def rank_results(query, results):
         model=RANK_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=RANK_SYSTEM_INSTRUCTION,
+            system_instruction=system_instruction,
             response_mime_type="application/json",
-            response_schema=RANK_RESPONSE_SCHEMA,
+            response_schema=schema,
             temperature=0,
         ),
     )
@@ -970,11 +1292,43 @@ def api_rank():
         return jsonify({'message': 'No rankable results.'}), 400
 
     try:
-        ranking = rank_results(query, results)
+        ranking = rank_results(query, results, want_ownership=ABS_MATCH_ENABLED)
+        if ABS_MATCH_ENABLED:
+            resolve_ownership(ranking, get_abs_index())
         return jsonify(ranking)
     except Exception as e:
         print(f"[ERROR] Smart sort failed: {e}")
         return jsonify({'message': f'Smart sort failed: {e}'}), 502
+
+
+@app.route('/api/ownership', methods=['POST'])
+def api_ownership():
+    """Re-check ownership of results already on the page against a freshly-ish
+    ABS index, so a book that finished downloading into Audiobookshelf can flip
+    to 'in your library' in place -- no re-search, no LLM. The client sends only
+    the identities of results it currently shows as un-owned (ids + title, and,
+    when it has them from a prior smart sort, author/series/seq)."""
+    if not ABS_MATCH_ENABLED:
+        return jsonify({'ownership': []})
+    data = request.get_json(silent=True) or {}
+    items = data.get('items') or []
+    index = get_abs_index(max_age=120)  # at most one ABS fetch per ~2 min
+    if not index:
+        return jsonify({'ownership': []})
+    owned_series = _owned_series_index(index)
+    ownership = []
+    for it in items:
+        rid = it.get('id')
+        if rid is None:
+            continue
+        # Without a canonical author (page not smart-sorted), split it out of the
+        # raw ABB title so the matcher can author-gate, mirroring the initial pass.
+        if not it.get('author') and not it.get('series'):
+            title, author = abs_match.split_title_author(it.get('title', ''))
+            it = {**it, 'title': title, 'author': author}
+        if _canonical_owned(it, index, owned_series):
+            ownership.append({'id': rid, 'status': 'owned'})
+    return jsonify({'ownership': ownership})
 
 
 # Endpoint for search page
@@ -983,20 +1337,29 @@ def search():
     books = []
     query = ''
     if request.method == 'POST':
+        # If this browser is set to Tor but Tor is still bootstrapping, don't
+        # silently scrape over Direct -- tell the client to wait (it polls and
+        # re-enables) or switch to Direct.
+        if current_route_mode() == 'tor' and tor_status() != 'ready':
+            return jsonify({'message': 'Tor is still starting. Please wait a moment or switch to Direct.',
+                            'tor_status': tor_status()}), 503
         query = request.form.get('query', '').strip().lower()
         if query:
             books = search_audiobookbay(query)
-            # Float the preferred M4B results to the top. Python's sort is
-            # stable, so the mirror's original ordering is preserved within
-            # the M4B and non-M4B groups.
-            books.sort(key=lambda b: not b.get('is_m4b'))
+            # Float preferred results to the top: matching-language first (when a
+            # PREFERRED_LANGUAGE is set), then M4B. Python's stable sort keeps the
+            # mirror's original ordering within each group.
+            books.sort(key=lambda b: (not _language_matches(b), not b.get('is_m4b')))
     # Tag each result with a stable id so the client can ask Gemini to re-rank
     # them and then reorder the matching cards in place (see /api/rank).
     for i, book in enumerate(books):
         book['id'] = i
+    annotate_library_matches(books)
     m4b_count = sum(1 for b in books if b.get('is_m4b'))
+    owned_count = sum(1 for b in books if b.get('library_match'))
     return render_template('search.html', books=books, query=query,
                            result_count=len(books), m4b_count=m4b_count,
+                           owned_count=owned_count,
                            rank_payload=rank_payload(books))
 
 

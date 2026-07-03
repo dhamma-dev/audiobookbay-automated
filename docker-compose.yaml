@@ -45,5 +45,12 @@ services:
       # anyone else sees only their own. Leave unset to let all users see all.
       - LOG_DB_PATH=${LOG_DB_PATH:-/data/downloads.db}
       - LOG_ADMIN_USERS=${LOG_ADMIN_USERS}
+      # "In your library" matching (optional): flags results already in your
+      # Audiobookshelf. Set ABS_URL + ABS_TOKEN to enable. Direct to ABS, not
+      # via Tor. See the README.
+      - ABS_URL=${ABS_URL}
+      - ABS_TOKEN=${ABS_TOKEN}
+      - ABS_LIBRARY_ID=${ABS_LIBRARY_ID}
+      - ABS_CACHE_TTL=${ABS_CACHE_TTL:-900}
     env_file:
       - .env

@@ -73,7 +73,67 @@
   font-weight: 600;
 }
 
+.results-owned-note {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
 .results-ranked-note {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+.search-results-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+/* Discreet "hide the ones I already own" toggle. */
+.owned-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.owned-filter:hover {
+  color: var(--color-text);
+}
+
+.owned-filter svg {
+  width: 15px;
+  height: 15px;
+}
+
+.owned-filter input {
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+/* Owned books already in a series shelf are de-emphasised and left unticked --
+   you have them; the shelf's job is to help you fill the gaps. */
+.series-entry.is-owned .series-entry-main {
+  opacity: 0.5;
+}
+
+/* "Hide owned": drop loose/standalone owned cards entirely, and inside a series
+   shelf hide the whole owned entry row (not just its card, which would strand
+   the "Book N" label). Partly-owned bundles stay visible. */
+.search-results.hide-owned .book-card[data-in-library="owned"]:not(.in-series),
+.search-results.hide-owned .book-card[data-in-library="edition"]:not(.in-series) {
+  display: none;
+}
+
+.search-results.hide-owned .series-entry.is-owned {
+  display: none;
+}
+
+.series-owned-note {
   color: var(--color-success);
   font-weight: 600;
 }
@@ -479,4 +539,47 @@
 
 .series-entry.is-covered .series-entry-body {
   opacity: 0.4;
+}
+
+/* Edition group: a standalone book folded to its best edition + alternatives.
+   It's an orderable unit in the flat sort, so it honors the filter classes. */
+.edition-group.is-hidden-result {
+  display: none;
+}
+
+.edition-group.is-dimmed-result:not(.is-hidden-result) {
+  opacity: 0.55;
+}
+
+.edition-group .series-alts-toggle {
+  margin-left: var(--space-1);
+}
+
+/* "Starting Tor…" gate shown on the search page until routing is usable. */
+.tor-booting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-accent-muted);
+  border: 1px solid var(--color-accent-soft);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.tor-booting .spinner-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-accent-soft);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.tor-booting-text {
+  margin-right: auto;
 }

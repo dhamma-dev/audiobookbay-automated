@@ -352,6 +352,36 @@
   overflow: hidden;
 }
 
+/* Discreet "already in your Audiobookshelf library" flag, sitting just under
+   the title. Soft, low-key -- it informs, it doesn't shout, and it never blocks
+   the Send button (you may still want a different edition or narrator). */
+.library-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: calc(var(--space-2) * -1);
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-success-muted);
+  color: var(--color-success);
+  border: 1px solid rgba(141, 184, 108, 0.3);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.library-flag svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Bundle/omnibus you only partly own ("Own 3 of 10") — amber, not green. */
+.library-flag-partial {
+  background-color: var(--color-warning-muted);
+  color: var(--color-warning);
+  border-color: rgba(224, 139, 60, 0.3);
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

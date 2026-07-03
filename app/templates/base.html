@@ -55,7 +55,7 @@
                             aria-haspopup="true" aria-expanded="false" aria-controls="conn-popover"
                             title="Connection settings">
                         <i data-lucide="shield" aria-hidden="true"></i>
-                        <span class="conn-mode-label">{{ 'Tor' if route_mode == 'tor' else 'Direct' }}</span>
+                        <span class="conn-mode-label">{% if route_mode == 'tor' and tor_status == 'starting' %}Tor · starting…{% elif route_mode == 'tor' %}Tor{% else %}Direct{% endif %}</span>
                     </button>
                     <div class="conn-popover" id="conn-popover" hidden>
                         <p class="conn-popover-title">AudioBook Bay routing</p>

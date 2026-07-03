@@ -157,7 +157,12 @@
         body: new FormData(form),
         headers: { 'X-Requested-With': 'fetch' },
       });
-      if (!res.ok) throw new Error('Search request failed (' + res.status + ')');
+      if (!res.ok) {
+        // Tor-still-starting (503) and other errors come back as JSON.
+        let msg = 'Search request failed (' + res.status + ')';
+        try { const j = await res.json(); if (j && j.message) msg = j.message; } catch (e) { /* not JSON */ }
+        throw new Error(msg);
+      }
 
       const html = await res.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -254,10 +259,12 @@
     const bucketOf = {};
     (ranking.buckets || []).forEach((b) => { bucketOf[String(b.id)] = b.bucket; });
 
-    // Only the loose, top-level cards are reordered here. Cards that were moved
-    // into a series group are managed by the series UI, not this flat sort.
+    // Only the loose, top-level units are reordered here — bare cards plus
+    // edition-group wrappers (keyed by their best card's id). Cards moved into a
+    // series shelf or an edition tray are managed by that UI, not this flat sort.
     const cards = new Map();
-    results.querySelectorAll(':scope > .book-card').forEach((c) => cards.set(c.dataset.resultId, c));
+    results.querySelectorAll(':scope > .book-card, :scope > .edition-group')
+      .forEach((el) => cards.set(el.dataset.resultId, el));
 
     // Decide ordering + which ids are filtered away.
     let order = ordering;
@@ -317,11 +324,203 @@
     }
   }
 
+  // Paint (or upgrade) the "In your library" flag on a card. Ownership is
+  // computed server-side against the local ABS index; here we just render it,
+  // creating the flag for matches the initial deterministic pass didn't catch.
+  function setLibraryFlag(card, status, detail) {
+    if (!card) return;
+    const state = status === 'partial' ? 'partial'
+      : status === 'owned_other_edition' ? 'edition' : 'owned';
+    card.setAttribute('data-in-library', state);
+    const details = card.querySelector('.book-details');
+    if (!details) return;
+    let flag = card.querySelector('[data-library-flag]');
+    if (!flag) {
+      flag = document.createElement('div');
+      flag.className = 'library-flag';
+      flag.setAttribute('data-library-flag', '');
+      flag.innerHTML =
+        '<i data-lucide="library-big" aria-hidden="true"></i><span class="library-flag-text"></span>';
+      const title = details.querySelector('.book-title');
+      if (title) title.insertAdjacentElement('afterend', flag);
+      else details.prepend(flag);
+    }
+    flag.classList.toggle('library-flag-partial', state === 'partial');
+    const txt = flag.querySelector('.library-flag-text');
+    if (txt) {
+      txt.textContent = state === 'partial' ? 'Own ' + (detail || 'some')
+        : state === 'edition' ? 'In library · other edition'
+        : 'In your library';
+    }
+  }
+
+  // Apply the "owned" treatment to a single card: badge it, and if it sits in a
+  // series shelf, de-select + mark its entry (owned books aren't pre-picked, and
+  // "Hide owned" can then drop the whole row). Partly-owned bundles stay picked.
+  function markOwnedCard(card, status, detail) {
+    if (!card) return;
+    setLibraryFlag(card, status, detail);
+    if (status === 'partial') return;
+    const entry = card.closest('.series-entry');
+    if (entry && !entry.classList.contains('is-owned')) {
+      entry.classList.add('is-owned');
+      entry.dataset.owned = '1';
+      const inc = entry.querySelector('.entry-include');
+      if (inc) inc.checked = false;
+    }
+  }
+
+  function updateSeriesOwnedNote(group) {
+    const count = group.querySelector('.series-group-count');
+    if (!count) return;
+    const owned = group.querySelectorAll('.series-entry.is-owned:not(.is-collection)').length;
+    let note = count.querySelector('.series-owned-note');
+    if (owned) {
+      if (!note) {
+        note = document.createElement('span');
+        note.className = 'series-owned-note';
+        count.appendChild(document.createTextNode(' '));
+        count.appendChild(note);
+      }
+      note.textContent = '· own ' + owned;
+    } else if (note) {
+      note.remove();
+    }
+  }
+
+  // Keep the header "N in your library" note and the Hide owned toggle in sync
+  // with however many cards are currently flagged owned (they can grow after a
+  // smart sort or an ownership poll).
+  function updateOwnedSummary() {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    const n = results.querySelectorAll(
+      '.book-card[data-in-library="owned"], .book-card[data-in-library="edition"]').length;
+    const header = results.querySelector('.search-results-header');
+    if (header) {
+      let note = header.querySelector('.results-owned-note');
+      if (n > 0) {
+        if (!note) {
+          note = document.createElement('span');
+          note.className = 'results-owned-note';
+          header.appendChild(document.createTextNode(' '));
+          header.appendChild(note);
+        }
+        note.textContent = '· ' + n + ' in your library';
+      } else if (note) {
+        note.remove();
+      }
+    }
+    const tools = results.querySelector('.search-results-tools');
+    if (tools && n > 0 && !tools.querySelector('[data-action="toggle-owned"]')) {
+      const label = document.createElement('label');
+      label.className = 'owned-filter';
+      label.title = 'Hide results already in your Audiobookshelf library';
+      label.innerHTML =
+        '<input type="checkbox" data-action="toggle-owned">' +
+        '<i data-lucide="eye-off" aria-hidden="true"></i> Hide owned';
+      tools.insertBefore(label, tools.firstChild);
+    }
+  }
+
+  function refreshOwnershipCounts() {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    results.querySelectorAll('.series-group').forEach((group) => {
+      updateSeriesCount(group);
+      updateSeriesOwnedNote(group);
+    });
+    updateOwnedSummary();
+    refreshIcons();
+  }
+
+  function applyOwnership(ranking) {
+    const own = ranking && ranking.ownership;
+    const results = document.getElementById('search-results');
+    if (!Array.isArray(own) || !results) return;
+    own.forEach((o) => {
+      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail);
+    });
+    refreshOwnershipCounts();
+  }
+
+  // Identity for each result id: the slim server payload (title + language),
+  // upgraded with the LLM's canonical {title, author, series, seq} when a smart
+  // sort has run -- so the poll's local join is as good as it was live, with no
+  // new model call.
+  function ownershipIdentities() {
+    const map = new Map();
+    const dataEl = document.getElementById('search-results-data');
+    if (dataEl) {
+      try {
+        JSON.parse(dataEl.textContent).forEach((r) => {
+          map.set(String(r.id), { title: r.title, language: r.language });
+        });
+      } catch (e) { /* ignore */ }
+    }
+    const ranking = smartSortState && smartSortState.ranking;
+    if (ranking && Array.isArray(ranking.canonical)) {
+      ranking.canonical.forEach((c) => {
+        const base = map.get(String(c.id)) || {};
+        map.set(String(c.id), {
+          title: c.title || base.title, author: c.author,
+          series: c.series, seq: c.seq, language: base.language,
+        });
+      });
+    }
+    return map;
+  }
+
+  // Periodically re-check the results still showing as un-owned. A book that has
+  // finished downloading into Audiobookshelf flips to "in your library" in
+  // place, and the counts update. Only un-owned cards are sent (the set shrinks
+  // over time), the tab is skipped when hidden, and the server shares one
+  // throttled ABS fetch across polls.
+  async function pollOwnership() {
+    if (document.hidden) return;
+    const results = document.getElementById('search-results');
+    const dataEl = document.getElementById('search-results-data');
+    if (!results || !dataEl || !dataEl.dataset.absMatch) return;
+    const unowned = Array.prototype.slice
+      .call(results.querySelectorAll('.book-card[data-result-id]'))
+      .filter((c) => !c.hasAttribute('data-in-library'));
+    if (!unowned.length) return;
+    const ids = ownershipIdentities();
+    const items = unowned.map((c) => {
+      const idy = ids.get(String(c.dataset.resultId)) || {};
+      return {
+        id: Number(c.dataset.resultId), title: idy.title || '', author: idy.author || '',
+        series: idy.series, seq: idy.seq, language: idy.language || '',
+      };
+    }).filter((it) => it.title);
+    if (!items.length) return;
+    let data;
+    try {
+      const res = await fetch('/api/ownership', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; }
+    const own = (data && data.ownership) || [];
+    if (!own.length) return;
+    own.forEach((o) =>
+      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail));
+    refreshOwnershipCounts();
+    showToast(own.length === 1
+      ? 'A book you queued is now in your library.'
+      : own.length + ' books you queued are now in your library.', 'info');
+  }
+
   function applyRanking(query, ranking) {
     smartSortState = { query, ranking, expanded: false, activeInterp: null };
     renderAmbiguity(ranking);
     renderSeries(ranking);
+    renderEditions(ranking);
     renderSmartSort();
+    applyOwnership(ranking);
     const header = document.querySelector('.search-results-header');
     if (header && !header.dataset.ranked) {
       header.dataset.ranked = '1';
@@ -591,7 +790,9 @@
         if (isCovered) { inc.checked = false; inc.disabled = true; }
         else {
           inc.disabled = false;
-          if (entry.dataset.wasCovered === '1') inc.checked = true;
+          // Restore to ticked when a collection stops covering it -- unless it's
+          // a book you already own, which stays unticked by default.
+          if (entry.dataset.wasCovered === '1' && entry.dataset.owned !== '1') inc.checked = true;
         }
       }
       entry.dataset.wasCovered = isCovered ? '1' : '';
@@ -682,8 +883,66 @@
     refreshIcons();
   }
 
+  // Standalone books that appear as several uploads: fold the duplicates into a
+  // single card (the best edition) with an alternatives tray, so one specific
+  // book is one entry instead of a wall of near-identical results.
+  function renderEditions(ranking) {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    const editions = (ranking && ranking.editions) || [];
+    if (editions.length === 0) return;
+    if (results.querySelector('.edition-group')) return; // already built
+
+    const cards = new Map();
+    results.querySelectorAll(':scope > .book-card').forEach((c) => cards.set(c.dataset.resultId, c));
+    const consumed = new Set();
+
+    editions.forEach((e) => {
+      const bestKey = e.best_id != null ? String(e.best_id) : null;
+      const bestCard = bestKey && !consumed.has(bestKey) ? cards.get(bestKey) : null;
+      if (!bestCard) return;
+      const altCards = (e.alt_ids || [])
+        .map((id) => String(id))
+        .filter((id) => id !== bestKey && cards.has(id) && !consumed.has(id))
+        .map((id) => { consumed.add(id); return cards.get(id); });
+      if (altCards.length === 0) return; // nothing to fold — leave it a plain card
+      consumed.add(bestKey);
+
+      const group = document.createElement('div');
+      group.className = 'edition-group';
+      group.dataset.resultId = bestKey;
+
+      const main = document.createElement('div');
+      main.className = 'series-entry-main';
+      results.insertBefore(group, bestCard); // wrapper takes the card's place...
+      main.appendChild(bestCard);            // ...then the card moves inside it
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'btn btn-ghost series-alts-toggle';
+      toggle.dataset.action = 'series-alts-toggle';
+      if (e.alt_note) toggle.dataset.note = e.alt_note;
+
+      const altsWrap = document.createElement('div');
+      altsWrap.className = 'series-alts';
+      altsWrap.hidden = true;
+      altCards.forEach((c) => {
+        c.classList.add('in-series', 'is-alt');
+        c.classList.remove('is-hidden-result', 'is-dimmed-result');
+        altsWrap.appendChild(c);
+      });
+
+      group.appendChild(main);
+      group.appendChild(toggle);
+      group.appendChild(altsWrap);
+      decorateEntry(group);
+    });
+
+    refreshIcons();
+  }
+
   function handleAltsToggle(toggle) {
-    const entry = toggle.closest('.series-entry');
+    const entry = toggle.closest('.series-entry, .edition-group');
     if (!entry) return;
     const altsWrap = entry.querySelector('.series-alts');
     const open = entry.classList.toggle('alts-open');
@@ -694,7 +953,7 @@
 
   function handleUseEdition(btn) {
     const altCard = btn.closest('.book-card');
-    const entry = btn.closest('.series-entry');
+    const entry = btn.closest('.series-entry, .edition-group');
     if (!altCard || !entry) return;
     const main = entry.querySelector('.series-entry-main');
     const altsWrap = entry.querySelector('.series-alts');
@@ -899,6 +1158,8 @@
       if (warning) warning.hidden = mode === 'tor';
       const renew = document.querySelector('.conn-renew-btn');
       if (renew) renew.disabled = mode !== 'tor';
+      // Switching to Direct unblocks a search that was waiting on Tor.
+      if (mode === 'direct') clearTorBooting();
       showToast(mode === 'tor' ? 'Routing AudioBook Bay via Tor.' : 'Routing AudioBook Bay directly.', 'success');
     } catch (err) {
       checkbox.checked = !checkbox.checked; // revert the visual toggle
@@ -929,6 +1190,60 @@
         const checkbox = document.getElementById('conn-route-tor');
         btn.disabled = !(checkbox && checkbox.checked);
       }, 10000);
+    }
+  }
+
+  /* ----------------------------------------------------------
+     Tor boot gating: when this browser defaults to Tor and Tor is
+     still bootstrapping, the search page waits (polling) and offers
+     a one-click switch to Direct, then enables itself when ready.
+     ---------------------------------------------------------- */
+  function clearTorBooting() {
+    if (torPollTimer) { clearTimeout(torPollTimer); torPollTimer = null; }
+    const notice = document.getElementById('tor-booting');
+    if (notice) notice.remove();
+    const submit = document.getElementById('search-submit');
+    if (submit) submit.disabled = false;
+    const label = document.querySelector('.conn-mode-label');
+    if (label && /starting/i.test(label.textContent)) label.textContent = 'Tor';
+  }
+
+  let torPollTimer = null;
+  function pollConnection() {
+    fetch('/api/connection')
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.tor_status === 'ready' || d.route_mode === 'direct') {
+          clearTorBooting();
+          if (d.tor_status === 'ready') showToast('Tor is ready — search away.', 'success');
+        } else {
+          torPollTimer = setTimeout(pollConnection, 2500);
+        }
+      })
+      .catch(() => { torPollTimer = setTimeout(pollConnection, 4000); });
+  }
+
+  async function handleSearchDirect(btn) {
+    btn.disabled = true;
+    try {
+      const res = await fetch('/settings/route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'direct' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Could not switch to Direct');
+      const sw = document.getElementById('conn-route-tor');
+      if (sw) sw.checked = false;
+      const warning = document.querySelector('.conn-direct-warning');
+      if (warning) warning.hidden = false;
+      const renew = document.querySelector('.conn-renew-btn');
+      if (renew) renew.disabled = true;
+      clearTorBooting();
+      showToast('Searching directly. Your server IP is visible to AudioBook Bay.', 'info');
+    } catch (err) {
+      btn.disabled = false;
+      showToast(err.message || 'Could not switch to Direct', 'error');
     }
   }
 
@@ -966,6 +1281,9 @@
     const connRenew = e.target.closest('[data-action="conn-renew"]');
     if (connRenew) { handleRenew(connRenew); return; }
 
+    const searchDirect = e.target.closest('[data-action="search-direct"]');
+    if (searchDirect) { handleSearchDirect(searchDirect); return; }
+
     // A click anywhere outside the connection control closes its popover.
     if (!e.target.closest('.conn-control')) closeConnPopover();
   });
@@ -973,6 +1291,13 @@
   document.addEventListener('change', (e) => {
     const route = e.target.closest('[data-action="conn-route"]');
     if (route) { handleRouteToggle(route); return; }
+
+    const ownedToggle = e.target.closest('[data-action="toggle-owned"]');
+    if (ownedToggle) {
+      const results = document.getElementById('search-results');
+      if (results) results.classList.toggle('hide-owned', ownedToggle.checked);
+      return;
+    }
 
     const selectAll = e.target.closest('.series-select-all');
     if (selectAll) {
@@ -1014,6 +1339,19 @@
       refreshDownloads();
       setInterval(refreshDownloads, 10000);
     }
+
+    // If the page rendered with Tor still bootstrapping, keep search gated and
+    // poll until routing is usable (or the user switches to Direct).
+    if (document.getElementById('tor-booting')) {
+      const submit = document.getElementById('search-submit');
+      if (submit) submit.disabled = true;
+      pollConnection();
+    }
+
+    // Re-check on-page results periodically so a book that finishes downloading
+    // into Audiobookshelf flips to "in your library" without a re-search. The
+    // function no-ops unless ABS matching is on and un-owned cards are present.
+    setInterval(pollOwnership, 90000);
   }
 
   if (document.readyState === 'loading') {

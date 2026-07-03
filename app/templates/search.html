@@ -44,11 +44,23 @@
             value="{{ query }}"
         >
     </div>
-    <button type="submit" id="search-submit" class="btn btn-primary">
+    <button type="submit" id="search-submit" class="btn btn-primary"
+            {% if route_mode == 'tor' and tor_status == 'starting' %}disabled{% endif %}>
         <i data-lucide="search" aria-hidden="true"></i>
         Search
     </button>
 </form>
+
+{% if route_mode == 'tor' and tor_status == 'starting' %}
+<div id="tor-booting" class="tor-booting" role="status">
+    <span class="spinner-icon" aria-hidden="true"></span>
+    <span class="tor-booting-text">Starting Tor — search will be ready in a moment.</span>
+    <button type="button" class="btn btn-secondary" data-action="search-direct">
+        <i data-lucide="zap" aria-hidden="true"></i>
+        Search directly instead
+    </button>
+</div>
+{% endif %}
 
 <div id="search-skeletons" class="search-skeletons" hidden aria-hidden="true">
     {% for _ in range(3) %}
@@ -70,18 +82,30 @@
             <p class="search-results-header">
                 {{ result_count }} result{{ 's' if result_count != 1 else '' }} for &ldquo;{{ query }}&rdquo;
                 {% if m4b_count %}<span class="results-m4b-note">· {{ m4b_count }} M4B {{ 'pick' if m4b_count == 1 else 'picks' }} up top</span>{% endif %}
+                {% if owned_count %}<span class="results-owned-note">· {{ owned_count }} in your library</span>{% endif %}
             </p>
-            {% if smart_sort_available and result_count > 1 %}
-            <button type="button" class="btn btn-secondary btn-smart-sort" data-action="smart-sort"
-                    data-query="{{ query | e }}">
-                <i data-lucide="sparkles" aria-hidden="true"></i>
-                Smart sort
-            </button>
-            {% endif %}
+            <div class="search-results-tools">
+                {% if owned_count %}
+                <label class="owned-filter" title="Hide results already in your Audiobookshelf library">
+                    <input type="checkbox" data-action="toggle-owned">
+                    <i data-lucide="eye-off" aria-hidden="true"></i>
+                    Hide owned
+                </label>
+                {% endif %}
+                {% if smart_sort_available and result_count > 1 %}
+                <button type="button" class="btn btn-secondary btn-smart-sort" data-action="smart-sort"
+                        data-query="{{ query | e }}">
+                    <i data-lucide="sparkles" aria-hidden="true"></i>
+                    Smart sort
+                </button>
+                {% endif %}
+            </div>
         </div>
 
+        {% if (smart_sort_available and result_count > 1) or abs_match_enabled %}
+        <script type="application/json" id="search-results-data"{% if abs_match_enabled %} data-abs-match="1"{% endif %}>{{ rank_payload | tojson }}</script>
+        {% endif %}
         {% if smart_sort_available and result_count > 1 %}
-        <script type="application/json" id="search-results-data">{{ rank_payload | tojson }}</script>
         <div id="smart-sort-ambiguity" class="smart-sort-ambiguity" hidden></div>
         {% endif %}
 

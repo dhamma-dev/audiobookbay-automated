@@ -36,6 +36,9 @@ Once a download finishes, the files are ready for a library manager like
 - **Download log (for shared instances)** — records who added which book and
   when, reading the username from your reverse proxy's auth headers (e.g.
   Authentik). See [Download log](#download-log).
+- **"In your library" flagging (optional)** — results you already own in
+  Audiobookshelf get a discreet badge, with a *Hide owned* toggle. Matched
+  locally and precision-first. See [In your library](#in-your-library-audiobookshelf).
 - **No AudioBook Bay account needed** — magnet links are built from the public
   infohashes on each listing.
 
@@ -129,11 +132,18 @@ All of the following are optional.
 ```env
 ABB_HOSTNAME=audiobookbay.lu   # AudioBook Bay mirror to use (default shown)
 REQUEST_TIMEOUT=45             # Hard cap (seconds) on outbound requests; unset = no cap
+PREFERRED_LANGUAGE=English     # Float this language's results up; unset = no preference
 
 # Add an extra link to the navigation bar (e.g. your audiobook player)
 NAV_LINK_NAME=Open Audiobook Player
 NAV_LINK_URL=https://audiobooks.yourdomain.com/
 ```
+
+> `PREFERRED_LANGUAGE` floats matching-language results above others in the
+> normal result order, and (when Smart sort is enabled) tells Gemini to rank
+> other-language editions far lower. Leave it unset to treat all languages
+> equally. It's a plain-text match against each listing's language field, so use
+> the word as the mirror shows it (e.g. `English`).
 
 ### Smart sort (Gemini)
 
@@ -203,6 +213,57 @@ not just gate access.
 > publish the container port and have the proxy reach it over a shared Docker
 > network.
 
+### In your library (Audiobookshelf)
+
+When `ABS_URL` + `ABS_TOKEN` are set, search results that already exist in your
+Audiobookshelf library get a discreet **"In your library"** badge, and a **Hide
+owned** toggle appears so you can focus on what's new. Matching is done locally
+and privately — the library is fetched once and cached in memory (`ABS_CACHE_TTL`
+seconds), and nothing leaves your server.
+
+```env
+ABS_URL=https://audiobooks.yourdomain.com   # your Audiobookshelf base URL
+ABS_TOKEN=your-abs-api-token                 # Settings → Users → (you) → API token
+# ABS_LIBRARY_ID=...                         # optional; defaults to first book library
+# ABS_CACHE_TTL=900                          # optional; library cache lifetime (seconds)
+```
+
+The matcher (`app/abs_match.py`) is **precision-first**: it only ever asserts a
+positive, and only when confident. A strong title match is *gated on the author*
+(so a same-title / wrong-author result is rejected), foreign-language editions
+and bundles matched against a single owned volume are held back, and a match it
+isn't sure about simply shows no badge. **A missing badge is never a claim you
+_don't_ own something** — so a slight title variation can never mislead you. The
+badge is informational and never blocks the Send button (you may still want a
+different edition or narrator).
+
+**With Smart sort, matching gets smarter — still without sending your library
+anywhere.** When you run Smart sort, Gemini *canonicalizes the public search
+results* (resolving variant or bare titles to their series and number — e.g. a
+bare `Waybound` is Cradle #12), and the app joins those clean identities to your
+library **locally, on the server**. That catches books the plain matcher misses,
+adds a per-series **"own N of 12"** count, and flags bundles you only partly own
+(**"Own 4 of 10"**). Only the public result metadata Smart sort already sends
+leaves the box — never anything about what you own.
+
+#### Evaluating / tuning the matcher
+
+`app/abs_match_spike.py` is a companion CLI (safe to delete) that prints how each
+result of a real ABB search matches your library, so you can judge precision and
+recall on your own data. It reuses the app's Tor and `.env`:
+
+```bash
+# offline logic check — no ABS or ABB needed, exercises the matcher + guards:
+docker compose exec audiobookbay-automated python abs_match_spike.py --selftest
+
+# live run against your library + real ABB searches:
+docker compose exec audiobookbay-automated \
+    python abs_match_spike.py "cradle" "land fit for heroes"
+```
+
+`STRONG` rows are what become a badge; `maybe`/`none` are shown only to gauge
+recall. Thresholds live at the top of `app/abs_match.py`.
+
 ### Tor
 
 AudioBook Bay requests (search and magnet-link lookups) are routed through Tor by
@@ -210,6 +271,12 @@ default, so the mirror only ever sees a Tor exit node rather than your server's
 real IP. The app launches and manages its own Tor process on startup — nothing
 extra needs to be running, and the Docker image bundles the `tor` binary.
 Requests to your download client and to Google are **not** proxied.
+
+Tor bootstraps **in the background**, so the app is reachable the instant it
+starts rather than waiting for the circuit. If you open the page while Tor is
+still connecting and your default route is Tor, search waits and enables itself
+the moment Tor is ready — or you can switch to Direct and search immediately.
+Defaulting to Direct (`USE_TOR=false`) lets you search right away regardless.
 
 **Per-user controls.** A **Connection** menu in the navbar lets each visitor:
 
@@ -316,6 +383,9 @@ The app is then available on `http://<your-host>:5078`.
 
 This project is a work in progress, and feedback is welcome. Feel free to open
 issues or submit pull requests.
+
+Working on the code? Start with [`CLAUDE.md`](CLAUDE.md) for an architecture
+overview and conventions, with deep dives in [`docs/`](docs/).
 
 ---
 
