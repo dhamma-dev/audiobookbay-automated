@@ -384,6 +384,9 @@ The app is then available on `http://<your-host>:5078`.
 This project is a work in progress, and feedback is welcome. Feel free to open
 issues or submit pull requests.
 
+Working on the code? Start with [`CLAUDE.md`](CLAUDE.md) for an architecture
+overview and conventions, with deep dives in [`docs/`](docs/).
+
 ---
 
 ## Screenshots
