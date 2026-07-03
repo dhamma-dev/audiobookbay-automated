@@ -82,14 +82,24 @@
             <p class="search-results-header">
                 {{ result_count }} result{{ 's' if result_count != 1 else '' }} for &ldquo;{{ query }}&rdquo;
                 {% if m4b_count %}<span class="results-m4b-note">· {{ m4b_count }} M4B {{ 'pick' if m4b_count == 1 else 'picks' }} up top</span>{% endif %}
+                {% if owned_count %}<span class="results-owned-note">· {{ owned_count }} in your library</span>{% endif %}
             </p>
-            {% if smart_sort_available and result_count > 1 %}
-            <button type="button" class="btn btn-secondary btn-smart-sort" data-action="smart-sort"
-                    data-query="{{ query | e }}">
-                <i data-lucide="sparkles" aria-hidden="true"></i>
-                Smart sort
-            </button>
-            {% endif %}
+            <div class="search-results-tools">
+                {% if owned_count %}
+                <label class="owned-filter" title="Hide results already in your Audiobookshelf library">
+                    <input type="checkbox" data-action="toggle-owned">
+                    <i data-lucide="eye-off" aria-hidden="true"></i>
+                    Hide owned
+                </label>
+                {% endif %}
+                {% if smart_sort_available and result_count > 1 %}
+                <button type="button" class="btn btn-secondary btn-smart-sort" data-action="smart-sort"
+                        data-query="{{ query | e }}">
+                    <i data-lucide="sparkles" aria-hidden="true"></i>
+                    Smart sort
+                </button>
+                {% endif %}
+            </div>
         </div>
 
         {% if smart_sort_available and result_count > 1 %}

@@ -1,7 +1,8 @@
-import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading, uuid
+import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading, time, uuid
 from datetime import datetime, timezone
 from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
+import abs_match
 from qbittorrentapi import Client
 from transmission_rpc import Client as transmissionrpc
 from deluge_web_client import DelugeWebClient as delugewebclient
@@ -429,6 +430,114 @@ def _infohash_from_magnet(magnet_link):
     m = re.search(r'btih:([0-9a-zA-Z]+)', magnet_link or '')
     return m.group(1).lower() if m else None
 
+
+# --- Audiobookshelf "in your library" matching -------------------------------
+# Optional. When ABS_URL + ABS_TOKEN are set, each result we can confidently tie
+# to something already in your Audiobookshelf library gets a discreet "In your
+# library" badge. This is the deterministic *foundation*: precision-first (see
+# abs_match.py), always-on, free, and private -- nothing leaves the box. It also
+# serves as the cheap "blocker" (abs_match.candidates) that a future Smart-sort
+# pass can hand to Gemini to resolve the harder cases. A missing badge is never
+# a claim you DON'T own something.
+#
+#   ABS_URL         - Audiobookshelf base URL (e.g. https://audiobooks.example.com)
+#   ABS_TOKEN       - ABS API token (Settings -> Users -> your user)
+#   ABS_LIBRARY_ID  - optional; defaults to the first "book" library
+#   ABS_CACHE_TTL   - seconds to cache the library index in memory (default 900)
+ABS_URL = (os.getenv("ABS_URL") or "").strip().rstrip("/")
+ABS_TOKEN = (os.getenv("ABS_TOKEN") or "").strip()
+ABS_LIBRARY_ID = (os.getenv("ABS_LIBRARY_ID") or "").strip()
+ABS_CACHE_TTL = int(os.getenv("ABS_CACHE_TTL", "900"))
+ABS_MATCH_ENABLED = bool(ABS_URL and ABS_TOKEN)
+_abs_cache = {"items": [], "fetched_at": 0.0}
+_abs_lock = threading.Lock()
+
+
+def _abs_get(path, **params):
+    r = requests.get(f"{ABS_URL}{path}", headers={"Authorization": f"Bearer {ABS_TOKEN}"},
+                     params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _abs_pick_library():
+    if ABS_LIBRARY_ID:
+        return ABS_LIBRARY_ID
+    libs = _abs_get("/api/libraries").get("libraries", [])
+    for lib in libs:
+        if lib.get("mediaType") == "book":
+            return lib["id"]
+    return libs[0]["id"] if libs else None
+
+
+def _abs_load_items(library_id):
+    items, page, limit = [], 0, 500
+    while True:
+        data = _abs_get(f"/api/libraries/{library_id}/items", limit=limit, page=page)
+        results = data.get("results", [])
+        for it in results:
+            md = (it.get("media") or {}).get("metadata") or {}
+            authors = md.get("authors") or []
+            author = md.get("authorName") or ", ".join(a.get("name", "") for a in authors)
+            series = [(s.get("name"), s.get("sequence")) for s in (md.get("series") or [])]
+            items.append({
+                "title": md.get("title") or "",
+                "author": author,
+                "series": series,
+                "asin": md.get("asin") or "",
+                "isbn": md.get("isbn") or "",
+                "language": md.get("language") or "",
+            })
+        if len(results) < limit or (data.get("total") and len(items) >= data["total"]):
+            break
+        page += 1
+    return items
+
+
+def get_abs_index():
+    """Cached Audiobookshelf library items, refreshed once older than
+    ABS_CACHE_TTL. Keeps the last good snapshot on error so a transient ABS
+    outage doesn't wipe every badge; returns [] when disabled or not yet loaded."""
+    if not ABS_MATCH_ENABLED:
+        return []
+    now = time.monotonic()
+    with _abs_lock:
+        if _abs_cache["items"] and now - _abs_cache["fetched_at"] < ABS_CACHE_TTL:
+            return _abs_cache["items"]
+        try:
+            lib = _abs_pick_library()
+            items = _abs_load_items(lib) if lib else []
+            _abs_cache.update(items=items, fetched_at=now)
+            print(f"ABS match: indexed {len(items)} Audiobookshelf items")
+        except Exception as e:
+            print(f"[WARNING] Audiobookshelf library fetch failed: {e}")
+            _abs_cache["fetched_at"] = now  # back off before retrying
+        return _abs_cache["items"]
+
+
+def annotate_library_matches(books):
+    """Tag each result we confidently own with book['library_match']. Best-effort:
+    any failure just leaves results unbadged, never breaks a search."""
+    if not ABS_MATCH_ENABLED:
+        return
+    try:
+        index = get_abs_index()
+        if not index:
+            return
+        for book in books:
+            raw = book.get("title", "")
+            title, author = abs_match.split_title_author(raw)
+            abb = {"raw": raw, "title": title, "author": author,
+                   "language": book.get("language", "")}
+            tier, score, item, _ = abs_match.best_match(abb, index)
+            if tier == abs_match.STRONG and item:
+                book["library_match"] = {"title": item["title"], "author": item["author"]}
+    except Exception as e:
+        print(f"[WARNING] Library match annotation failed: {e}")
+
+
+print(f"ABS match: {'Enabled (' + ABS_URL + ')' if ABS_MATCH_ENABLED else 'Disabled'}")
+
 # Fields we are willing to forward to Gemini. Everything else (link, cover,
 # is_m4b, etc.) is dropped before the request is built.
 RANK_FIELDS = ("title", "format", "bitrate", "language", "size", "keywords")
@@ -522,6 +631,7 @@ def inject_app_config():
         'putio_oauth_available': putio_oauth_available,
         'putio_session_login': putio_session_login,
         'smart_sort_available': bool(GEMINI_API_KEY),
+        'abs_match_enabled': ABS_MATCH_ENABLED,
         'log_enabled': LOG_ENABLED,
         # Connection controls (Tor routing toggle + circuit renewal).
         'tor_available': _tor_available,
@@ -1089,9 +1199,12 @@ def search():
     # them and then reorder the matching cards in place (see /api/rank).
     for i, book in enumerate(books):
         book['id'] = i
+    annotate_library_matches(books)
     m4b_count = sum(1 for b in books if b.get('is_m4b'))
+    owned_count = sum(1 for b in books if b.get('library_match'))
     return render_template('search.html', books=books, query=query,
                            result_count=len(books), m4b_count=m4b_count,
+                           owned_count=owned_count,
                            rank_payload=rank_payload(books))
 
 

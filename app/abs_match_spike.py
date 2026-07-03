@@ -106,14 +106,7 @@ def _session():
 
 
 def _split_title_author(raw):
-    """ABB titles are usually 'Title - Author' or 'Title by Author'."""
-    for sep in (" - ", " – ", " by "):
-        if sep in raw:
-            head, tail = raw.rsplit(sep, 1)
-            # Guard against splitting on a hyphen inside the title.
-            if 1 <= len(tail.split()) <= 5:
-                return head.strip(), tail.strip()
-    return raw.strip(), ""
+    return abs_match.split_title_author(raw)
 
 
 def search_abb(session, query, max_pages=2):

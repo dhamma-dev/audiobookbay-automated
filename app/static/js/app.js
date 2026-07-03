@@ -1099,6 +1099,13 @@
     const route = e.target.closest('[data-action="conn-route"]');
     if (route) { handleRouteToggle(route); return; }
 
+    const ownedToggle = e.target.closest('[data-action="toggle-owned"]');
+    if (ownedToggle) {
+      const results = document.getElementById('search-results');
+      if (results) results.classList.toggle('hide-owned', ownedToggle.checked);
+      return;
+    }
+
     const selectAll = e.target.closest('.series-select-all');
     if (selectAll) {
       const group = selectAll.closest('.series-group');

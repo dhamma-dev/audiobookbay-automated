@@ -1,7 +1,7 @@
 {% from "macros/metadata_item.html" import render as meta %}
 
 {% macro render(book, download_client_label) %}
-<div class="book-card{% if book.is_m4b %} is-m4b{% endif %}" data-result-id="{{ book.id }}">
+<div class="book-card{% if book.is_m4b %} is-m4b{% endif %}" data-result-id="{{ book.id }}"{% if book.library_match %} data-in-library="owned"{% endif %}>
   {% if book.is_m4b %}
   <div class="m4b-ribbon" title="M4B is a single-file audiobook with chapters and bookmarks — the recommended format.">
     <i data-lucide="star" aria-hidden="true"></i>
@@ -28,6 +28,16 @@
   </div>
   <div class="book-details">
     <h2 class="book-title">{{ book.title }}</h2>
+
+    {# Deterministic "you already own this" flag. Rendered here as the baseline;
+       Smart sort can later upgrade the text/state via [data-library-flag]. #}
+    {% if book.library_match %}
+    <div class="library-flag" data-library-flag
+         title="In your Audiobookshelf library — matches “{{ book.library_match.title }}”{% if book.library_match.author %} by {{ book.library_match.author }}{% endif %}">
+      <i data-lucide="library-big" aria-hidden="true"></i>
+      <span class="library-flag-text">In your library</span>
+    </div>
+    {% endif %}
 
     <div class="metadata-grid">
       {{ meta('Size', book.size) }}

@@ -73,9 +73,52 @@
   font-weight: 600;
 }
 
+.results-owned-note {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
 .results-ranked-note {
   color: var(--color-success);
   font-weight: 600;
+}
+
+.search-results-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+/* Discreet "hide the ones I already own" toggle. */
+.owned-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.owned-filter:hover {
+  color: var(--color-text);
+}
+
+.owned-filter svg {
+  width: 15px;
+  height: 15px;
+}
+
+.owned-filter input {
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+/* When engaged, drop any card we've tagged as already owned -- even once Smart
+   sort has nested it inside a series/edition group. */
+.search-results.hide-owned .book-card[data-in-library] {
+  display: none;
 }
 
 .btn-smart-sort {

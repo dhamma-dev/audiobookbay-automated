@@ -36,6 +36,9 @@ Once a download finishes, the files are ready for a library manager like
 - **Download log (for shared instances)** — records who added which book and
   when, reading the username from your reverse proxy's auth headers (e.g.
   Authentik). See [Download log](#download-log).
+- **"In your library" flagging (optional)** — results you already own in
+  Audiobookshelf get a discreet badge, with a *Hide owned* toggle. Matched
+  locally and precision-first. See [In your library](#in-your-library-audiobookshelf).
 - **No AudioBook Bay account needed** — magnet links are built from the public
   infohashes on each listing.
 
@@ -210,33 +213,43 @@ not just gate access.
 > publish the container port and have the proxy reach it over a shared Docker
 > network.
 
-### Audiobookshelf match spike (experimental)
+### In your library (Audiobookshelf)
 
-A throwaway tool (`app/abs_match.py` + `app/abs_match_spike.py`, safe to delete)
-for evaluating whether we can reliably flag results you **already own** in
-Audiobookshelf. It pulls your ABS library, scrapes a real ABB search through the
-container's Tor, and prints each result's best match — so you can judge the
-matching quality on your own data before any UI is built. It is not imported by
-the app and runs nothing at startup.
-
-The matcher only ever asserts a **positive** ("you own this") and only when
-confident: a strong title match is *gated on the author*, so a same-title /
-wrong-author result is rejected rather than mislabeled, and a title-only match
-(no author to confirm) is downgraded — a near miss shows no badge instead of a
-misleading "you don't have it".
-
-Add your ABS details to `.env`:
+When `ABS_URL` + `ABS_TOKEN` are set, search results that already exist in your
+Audiobookshelf library get a discreet **"In your library"** badge, and a **Hide
+owned** toggle appears so you can focus on what's new. Matching is done locally
+and privately — the library is fetched once and cached in memory (`ABS_CACHE_TTL`
+seconds), and nothing leaves your server.
 
 ```env
 ABS_URL=https://audiobooks.yourdomain.com   # your Audiobookshelf base URL
 ABS_TOKEN=your-abs-api-token                 # Settings → Users → (you) → API token
 # ABS_LIBRARY_ID=...                         # optional; defaults to first book library
+# ABS_CACHE_TTL=900                          # optional; library cache lifetime (seconds)
 ```
 
-Then run it inside the running container (reuses the app's Tor and `.env`):
+The matcher (`app/abs_match.py`) is **precision-first**: it only ever asserts a
+positive, and only when confident. A strong title match is *gated on the author*
+(so a same-title / wrong-author result is rejected), foreign-language editions
+and bundles matched against a single owned volume are held back, and a match it
+isn't sure about simply shows no badge. **A missing badge is never a claim you
+_don't_ own something** — so a slight title variation can never mislead you. The
+badge is informational and never blocks the Send button (you may still want a
+different edition or narrator).
+
+This deterministic pass is also the foundation for a future Smart-sort tier: it
+exposes candidate matches (`abs_match.candidates`) that an LLM can later verify
+for the harder cases (translations, omnibus vs. owned volumes, series-aware "own
+N of M") without ever shipping your whole library out.
+
+#### Evaluating / tuning the matcher
+
+`app/abs_match_spike.py` is a companion CLI (safe to delete) that prints how each
+result of a real ABB search matches your library, so you can judge precision and
+recall on your own data. It reuses the app's Tor and `.env`:
 
 ```bash
-# offline logic check — no ABS or ABB needed, shows the matcher's behavior:
+# offline logic check — no ABS or ABB needed, exercises the matcher + guards:
 docker compose exec audiobookbay-automated python abs_match_spike.py --selftest
 
 # live run against your library + real ABB searches:
@@ -244,9 +257,8 @@ docker compose exec audiobookbay-automated \
     python abs_match_spike.py "cradle" "land fit for heroes"
 ```
 
-Only `STRONG` matches would become an "In your library" badge; `maybe`/`none`
-are shown just to gauge recall. Tune the thresholds at the top of
-`app/abs_match.py` and re-run until the precision/recall feels right.
+`STRONG` rows are what become a badge; `maybe`/`none` are shown only to gauge
+recall. Thresholds live at the top of `app/abs_match.py`.
 
 ### Tor
 

@@ -155,6 +155,18 @@ def _series_match(abb_raw, abs_series):
     return False
 
 
+def split_title_author(raw):
+    """ABB titles are usually 'Title - Author' or 'Title by Author'. Returns
+    (title, author); author is '' when no delimiter is found. Guards against
+    splitting on a hyphen inside the title by only accepting a short tail."""
+    for sep in (" - ", " – ", " by "):
+        if sep in raw:
+            head, tail = raw.rsplit(sep, 1)
+            if 1 <= len(tail.split()) <= 5:
+                return head.strip(), tail.strip()
+    return raw.strip(), ""
+
+
 # --- Ownership guards --------------------------------------------------------
 # These catch the "you own the work, but not THIS item" cases. They only ever
 # downgrade a STRONG match (never upgrade), so they cannot create a false
@@ -276,3 +288,18 @@ def best_match(abb, items):
         if (_TIER_RANK[tier], score) > (_TIER_RANK[best[0]], best[1]):
             best = cand
     return best
+
+
+def candidates(abb, items, k=3):
+    """Top-k scored library items for a result, best first, regardless of tier.
+
+    This is the cheap 'blocker': it narrows the whole library to a short list a
+    downstream LLM can verify with world knowledge (translations, omnibus/owned
+    -volume reasoning, series-aware ownership) -- so we never have to ship the
+    full library out to do that. Each entry is {item, tier, score, reason}."""
+    scored = []
+    for item in items:
+        tier, score, reason = score_pair(abb, item)
+        scored.append({"item": item, "tier": tier, "score": score, "reason": reason})
+    scored.sort(key=lambda c: (_TIER_RANK[c["tier"]], c["score"]), reverse=True)
+    return scored[:k]
