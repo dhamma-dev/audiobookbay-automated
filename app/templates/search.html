@@ -102,8 +102,10 @@
             </div>
         </div>
 
+        {% if (smart_sort_available and result_count > 1) or abs_match_enabled %}
+        <script type="application/json" id="search-results-data"{% if abs_match_enabled %} data-abs-match="1"{% endif %}>{{ rank_payload | tojson }}</script>
+        {% endif %}
         {% if smart_sort_available and result_count > 1 %}
-        <script type="application/json" id="search-results-data">{{ rank_payload | tojson }}</script>
         <div id="smart-sort-ambiguity" class="smart-sort-ambiguity" hidden></div>
         {% endif %}
 

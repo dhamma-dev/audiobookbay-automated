@@ -354,42 +354,164 @@
     }
   }
 
+  // Apply the "owned" treatment to a single card: badge it, and if it sits in a
+  // series shelf, de-select + mark its entry (owned books aren't pre-picked, and
+  // "Hide owned" can then drop the whole row). Partly-owned bundles stay picked.
+  function markOwnedCard(card, status, detail) {
+    if (!card) return;
+    setLibraryFlag(card, status, detail);
+    if (status === 'partial') return;
+    const entry = card.closest('.series-entry');
+    if (entry && !entry.classList.contains('is-owned')) {
+      entry.classList.add('is-owned');
+      entry.dataset.owned = '1';
+      const inc = entry.querySelector('.entry-include');
+      if (inc) inc.checked = false;
+    }
+  }
+
+  function updateSeriesOwnedNote(group) {
+    const count = group.querySelector('.series-group-count');
+    if (!count) return;
+    const owned = group.querySelectorAll('.series-entry.is-owned:not(.is-collection)').length;
+    let note = count.querySelector('.series-owned-note');
+    if (owned) {
+      if (!note) {
+        note = document.createElement('span');
+        note.className = 'series-owned-note';
+        count.appendChild(document.createTextNode(' '));
+        count.appendChild(note);
+      }
+      note.textContent = '· own ' + owned;
+    } else if (note) {
+      note.remove();
+    }
+  }
+
+  // Keep the header "N in your library" note and the Hide owned toggle in sync
+  // with however many cards are currently flagged owned (they can grow after a
+  // smart sort or an ownership poll).
+  function updateOwnedSummary() {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    const n = results.querySelectorAll(
+      '.book-card[data-in-library="owned"], .book-card[data-in-library="edition"]').length;
+    const header = results.querySelector('.search-results-header');
+    if (header) {
+      let note = header.querySelector('.results-owned-note');
+      if (n > 0) {
+        if (!note) {
+          note = document.createElement('span');
+          note.className = 'results-owned-note';
+          header.appendChild(document.createTextNode(' '));
+          header.appendChild(note);
+        }
+        note.textContent = '· ' + n + ' in your library';
+      } else if (note) {
+        note.remove();
+      }
+    }
+    const tools = results.querySelector('.search-results-tools');
+    if (tools && n > 0 && !tools.querySelector('[data-action="toggle-owned"]')) {
+      const label = document.createElement('label');
+      label.className = 'owned-filter';
+      label.title = 'Hide results already in your Audiobookshelf library';
+      label.innerHTML =
+        '<input type="checkbox" data-action="toggle-owned">' +
+        '<i data-lucide="eye-off" aria-hidden="true"></i> Hide owned';
+      tools.insertBefore(label, tools.firstChild);
+    }
+  }
+
+  function refreshOwnershipCounts() {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    results.querySelectorAll('.series-group').forEach((group) => {
+      updateSeriesCount(group);
+      updateSeriesOwnedNote(group);
+    });
+    updateOwnedSummary();
+    refreshIcons();
+  }
+
   function applyOwnership(ranking) {
     const own = ranking && ranking.ownership;
     const results = document.getElementById('search-results');
     if (!Array.isArray(own) || !results) return;
-    const touched = new Set();
     own.forEach((o) => {
-      const card = results.querySelector('.book-card[data-result-id="' + o.id + '"]');
-      if (!card) return;
-      setLibraryFlag(card, o.status, o.detail);
-      // In a series shelf, a book you already own shouldn't be pre-selected:
-      // mark the entry owned and untick it, so "Send N" counts only what you're
-      // missing and "Hide owned" can drop the whole row (not just the card).
-      // Partly-owned bundles stay selectable — you don't have all of it yet.
-      const entry = card.closest('.series-entry');
-      if (entry && o.status !== 'partial') {
-        entry.classList.add('is-owned');
-        entry.dataset.owned = '1';
-        const inc = entry.querySelector('.entry-include');
-        if (inc) inc.checked = false;
-        const group = entry.closest('.series-group');
-        if (group) touched.add(group);
-      }
+      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail);
     });
-    // Recompute "Send N selected" / select-all now that owned rows are unticked.
-    touched.forEach((group) => updateSeriesCount(group));
-    // Note how many books of each series shelf you already own.
-    results.querySelectorAll('.series-group').forEach((group) => {
-      const owned = group.querySelectorAll('.series-entry.is-owned:not(.is-collection)').length;
-      const count = group.querySelector('.series-group-count');
-      if (owned && count && !count.dataset.ownNoted) {
-        count.dataset.ownNoted = '1';
-        count.insertAdjacentHTML('beforeend',
-          ' <span class="series-owned-note">· own ' + owned + '</span>');
-      }
-    });
-    refreshIcons();
+    refreshOwnershipCounts();
+  }
+
+  // Identity for each result id: the slim server payload (title + language),
+  // upgraded with the LLM's canonical {title, author, series, seq} when a smart
+  // sort has run -- so the poll's local join is as good as it was live, with no
+  // new model call.
+  function ownershipIdentities() {
+    const map = new Map();
+    const dataEl = document.getElementById('search-results-data');
+    if (dataEl) {
+      try {
+        JSON.parse(dataEl.textContent).forEach((r) => {
+          map.set(String(r.id), { title: r.title, language: r.language });
+        });
+      } catch (e) { /* ignore */ }
+    }
+    const ranking = smartSortState && smartSortState.ranking;
+    if (ranking && Array.isArray(ranking.canonical)) {
+      ranking.canonical.forEach((c) => {
+        const base = map.get(String(c.id)) || {};
+        map.set(String(c.id), {
+          title: c.title || base.title, author: c.author,
+          series: c.series, seq: c.seq, language: base.language,
+        });
+      });
+    }
+    return map;
+  }
+
+  // Periodically re-check the results still showing as un-owned. A book that has
+  // finished downloading into Audiobookshelf flips to "in your library" in
+  // place, and the counts update. Only un-owned cards are sent (the set shrinks
+  // over time), the tab is skipped when hidden, and the server shares one
+  // throttled ABS fetch across polls.
+  async function pollOwnership() {
+    if (document.hidden) return;
+    const results = document.getElementById('search-results');
+    const dataEl = document.getElementById('search-results-data');
+    if (!results || !dataEl || !dataEl.dataset.absMatch) return;
+    const unowned = Array.prototype.slice
+      .call(results.querySelectorAll('.book-card[data-result-id]'))
+      .filter((c) => !c.hasAttribute('data-in-library'));
+    if (!unowned.length) return;
+    const ids = ownershipIdentities();
+    const items = unowned.map((c) => {
+      const idy = ids.get(String(c.dataset.resultId)) || {};
+      return {
+        id: Number(c.dataset.resultId), title: idy.title || '', author: idy.author || '',
+        series: idy.series, seq: idy.seq, language: idy.language || '',
+      };
+    }).filter((it) => it.title);
+    if (!items.length) return;
+    let data;
+    try {
+      const res = await fetch('/api/ownership', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; }
+    const own = (data && data.ownership) || [];
+    if (!own.length) return;
+    own.forEach((o) =>
+      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail));
+    refreshOwnershipCounts();
+    showToast(own.length === 1
+      ? 'A book you queued is now in your library.'
+      : own.length + ' books you queued are now in your library.', 'info');
   }
 
   function applyRanking(query, ranking) {
@@ -1225,6 +1347,11 @@
       if (submit) submit.disabled = true;
       pollConnection();
     }
+
+    // Re-check on-page results periodically so a book that finishes downloading
+    // into Audiobookshelf flips to "in your library" without a re-search. The
+    // function no-ops unless ABS matching is on and un-owned cards are present.
+    setInterval(pollOwnership, 90000);
   }
 
   if (document.readyState === 'loading') {

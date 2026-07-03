@@ -494,15 +494,19 @@ def _abs_load_items(library_id):
     return items
 
 
-def get_abs_index():
-    """Cached Audiobookshelf library items, refreshed once older than
-    ABS_CACHE_TTL. Keeps the last good snapshot on error so a transient ABS
-    outage doesn't wipe every badge; returns [] when disabled or not yet loaded."""
+def get_abs_index(max_age=None):
+    """Cached Audiobookshelf library items, refreshed once older than the cache
+    TTL. `max_age` (seconds) lets a caller demand a fresher snapshot -- the
+    ownership poll uses a short value so a just-finished download shows up
+    quickly, while still fetching ABS at most once per that window regardless of
+    how many polls arrive. Keeps the last good snapshot on error; returns []
+    when disabled or not yet loaded."""
     if not ABS_MATCH_ENABLED:
         return []
+    ttl = ABS_CACHE_TTL if max_age is None else min(ABS_CACHE_TTL, max_age)
     now = time.monotonic()
     with _abs_lock:
-        if _abs_cache["items"] and now - _abs_cache["fetched_at"] < ABS_CACHE_TTL:
+        if _abs_cache["items"] and now - _abs_cache["fetched_at"] < ttl:
             return _abs_cache["items"]
         try:
             lib = _abs_pick_library()
@@ -563,6 +567,19 @@ def _owned_seqs_for(series_name, owned_series):
     return seqs
 
 
+def _canonical_owned(c, index, owned_series):
+    """Is one canonical identity {title, author, series?, seq?} owned? Series
+    books join exactly on (fuzzy series name, seq); everything else falls back to
+    the local author-gated matcher. Shared by smart sort and the ownership poll."""
+    series, seq = c.get("series"), c.get("seq")
+    if series and seq is not None and _norm_seq(seq) in _owned_seqs_for(series, owned_series):
+        return True
+    abb = {"raw": c.get("title", ""), "title": c.get("title", ""),
+           "author": c.get("author", ""), "language": c.get("language", "")}
+    tier, _s, _item, _r = abs_match.best_match(abb, index)
+    return tier == abs_match.STRONG
+
+
 def resolve_ownership(ranking, index):
     """Compute ownership LOCALLY, joining the LLM's canonicalized *public* results
     (ranking['canonical']) to the ABS index. Adds ranking['ownership'] =
@@ -580,16 +597,7 @@ def resolve_ownership(ranking, index):
         ownership = {}
         for c in ranking.get("canonical") or []:
             rid = c.get("id")
-            if rid is None:
-                continue
-            series, seq = c.get("series"), c.get("seq")
-            if series and seq is not None and _norm_seq(seq) in _owned_seqs_for(series, owned_series):
-                ownership[rid] = {"status": "owned"}
-                continue
-            abb = {"raw": c.get("title", ""), "title": c.get("title", ""),
-                   "author": c.get("author", ""), "language": ""}
-            tier, _s, _item, _r = abs_match.best_match(abb, index)
-            if tier == abs_match.STRONG:
+            if rid is not None and _canonical_owned(c, index, owned_series):
                 ownership[rid] = {"status": "owned"}
         for block in ranking.get("series") or []:
             seqs = _owned_seqs_for(block.get("label", ""), owned_series)
@@ -1291,6 +1299,36 @@ def api_rank():
     except Exception as e:
         print(f"[ERROR] Smart sort failed: {e}")
         return jsonify({'message': f'Smart sort failed: {e}'}), 502
+
+
+@app.route('/api/ownership', methods=['POST'])
+def api_ownership():
+    """Re-check ownership of results already on the page against a freshly-ish
+    ABS index, so a book that finished downloading into Audiobookshelf can flip
+    to 'in your library' in place -- no re-search, no LLM. The client sends only
+    the identities of results it currently shows as un-owned (ids + title, and,
+    when it has them from a prior smart sort, author/series/seq)."""
+    if not ABS_MATCH_ENABLED:
+        return jsonify({'ownership': []})
+    data = request.get_json(silent=True) or {}
+    items = data.get('items') or []
+    index = get_abs_index(max_age=120)  # at most one ABS fetch per ~2 min
+    if not index:
+        return jsonify({'ownership': []})
+    owned_series = _owned_series_index(index)
+    ownership = []
+    for it in items:
+        rid = it.get('id')
+        if rid is None:
+            continue
+        # Without a canonical author (page not smart-sorted), split it out of the
+        # raw ABB title so the matcher can author-gate, mirroring the initial pass.
+        if not it.get('author') and not it.get('series'):
+            title, author = abs_match.split_title_author(it.get('title', ''))
+            it = {**it, 'title': title, 'author': author}
+        if _canonical_owned(it, index, owned_series):
+            ownership.append({'id': rid, 'status': 'owned'})
+    return jsonify({'ownership': ownership})
 
 
 # Endpoint for search page
