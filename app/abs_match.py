@@ -80,21 +80,51 @@ def token_set_ratio(a, b):
     return max(_seq(inter, a_rest), _seq(inter, b_rest), _seq(a_rest, b_rest))
 
 
-def _last_name(author):
-    parts = normalize(author).split()
-    return parts[-1] if parts else ""
+def _split_authors(s):
+    """Split a possibly multi-author credit into individual normalized names."""
+    return [normalize(p) for p in re.split(r"[,;/&]| and ", s or "") if normalize(p)]
+
+
+def _author_key(name):
+    """(surname, first-initial) for a single normalized author name. A one-word
+    credit is treated as a surname with no initial, so "Shirtaloon" stays
+    compatible with "Travis Deverell Shirtaloon" instead of reading "S" vs "T"."""
+    parts = name.split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[-1], parts[0][0]
 
 
 def author_similarity(a, b):
-    """0..1, or None when either side has no author. Boosted when last names
-    match so initials vs. full names ("Richard K." vs "Richard Kellan") still
-    line up."""
+    """0..1, or None when either side has no author.
+
+    Compares author *sets* (a book may credit several) and keys on the SURNAME:
+    two names only count as the same author when their surnames agree, with a
+    compatible first initial. A shared first name alone -- "Richard Kadrey" vs
+    "Richard K. Morgan" -- scores below the gate, so it can't confirm a match."""
     if not a or not b:
         return None
-    base = token_set_ratio(a, b)
-    if _last_name(a) and _last_name(a) == _last_name(b):
-        base = max(base, 0.85)
-    return base
+    A, B = _split_authors(a), _split_authors(b)
+    if not A or not B:
+        return None
+    best = 0.0
+    for x in A:
+        for y in B:
+            (sx, ix), (sy, iy) = _author_key(x), _author_key(y)
+            if sx and sx == sy:
+                # Same surname; a missing initial (surname-only credit) is fine,
+                # but a conflicting one is likely a different person.
+                if not ix or not iy or ix == iy:
+                    best = max(best, max(0.9, _seq(x, y)))
+                else:
+                    best = max(best, 0.5)
+            else:
+                # Different surname -> not the same author. Allow a fuzzy
+                # full-name score only as a weak signal, capped below the gate.
+                best = max(best, min(_seq(x, y), 0.45))
+    return best
 
 
 def parse_series(raw):
@@ -125,11 +155,57 @@ def _series_match(abb_raw, abs_series):
     return False
 
 
+# --- Ownership guards --------------------------------------------------------
+# These catch the "you own the work, but not THIS item" cases. They only ever
+# downgrade a STRONG match (never upgrade), so they cannot create a false
+# positive -- at worst they hide a badge we'd otherwise have shown.
+_LANGS = (r"(spanish|espanol|español|french|francais|français|german|deutsch|"
+          r"italian|italiano|portuguese|portugues|brazilian|russian|japanese|chinese|"
+          r"mandarin|cantonese|korean|hindi|dutch|nederlands|polish|swedish|norwegian|"
+          r"danish|finnish|czech|turkish|arabic|hebrew|greek|latin|vietnamese|thai|"
+          r"indonesian|tagalog|ukrainian|romanian|hungarian|catalan)")
+# A language named inside brackets/parens ("[Spanish Edition]", "(Hindi Edition)")
+# or as an explicit "<language> edition/version/translation" marker.
+_LANG_BRACKET_RE = re.compile(r"[\[(][^\])]*\b" + _LANGS + r"\b[^\])]*[\])]", re.IGNORECASE)
+_LANG_EDITION_RE = re.compile(r"\b" + _LANGS + r"\s+(?:edition|version|translation|dub|language)\b", re.IGNORECASE)
+# Multi-book markers: "Books 1-10", "Vol 1 - 3", "#1-12", "Bundle", "Box Set",
+# "Omnibus", "Complete Collection", "Full Series".
+_RANGE_RE = re.compile(r"\b(?:books?|vol(?:ume)?s?|parts?)\s*\.?\s*0*\d+\s*[-–—]\s*0*\d+", re.IGNORECASE)
+_HASH_RANGE_RE = re.compile(r"#\s*0*\d+\s*[-–—]\s*0*\d+")
+_BUNDLE_WORDS_RE = re.compile(
+    r"\b(bundle|box\s?set|omnibus|anthology|complete\s+(?:series|collection|set)|full\s+series)\b",
+    re.IGNORECASE,
+)
+
+
+def foreign_edition(raw, language=None):
+    """Return the language name when a result is a non-English edition -- from a
+    scraped Language field or an explicit title marker -- else None. Owning the
+    English audiobook doesn't mean you own the Spanish or Hindi one."""
+    if language:
+        norm = language.strip().lower()
+        if norm and norm not in ("english", "en", "eng", "unknown"):
+            return language.strip().title()
+    for rx in (_LANG_BRACKET_RE, _LANG_EDITION_RE):
+        m = rx.search(raw or "")
+        if m:
+            return m.group(1).title()
+    return None
+
+
+def is_multi_volume(raw):
+    """True when a title denotes a bundle / box set / range of books rather than
+    a single volume, so a match against one owned volume shouldn't read as
+    'you own this'."""
+    raw = raw or ""
+    return bool(_RANGE_RE.search(raw) or _HASH_RANGE_RE.search(raw) or _BUNDLE_WORDS_RE.search(raw))
+
+
 def score_pair(abb, item):
     """Score one ABB result against one ABS item. `abb` and `item` are dicts.
 
-    abb:  {title, author, asin?, isbn?, raw?}
-    item: {title, author, series:[(name,seq)], asin?, isbn?}
+    abb:  {title, author, asin?, isbn?, raw?, language?}
+    item: {title, author, series:[(name,seq)], asin?, isbn?, language?}
 
     Returns (tier, score, reason).
     """
@@ -169,6 +245,20 @@ def score_pair(abb, item):
         tier = MAYBE
     else:
         tier = NONE
+
+    # Ownership guards -- only ever demote a STRONG that would mislead. A foreign
+    # edition (unless the owned item is that same language) or a bundle/range
+    # matched against a single owned volume is not "this item you own".
+    if tier == STRONG:
+        abb_raw = abb.get("raw") or abb.get("title", "")
+        lang = foreign_edition(abb_raw, abb.get("language"))
+        if lang and foreign_edition(item.get("title", ""), item.get("language")) != lang:
+            tier = MAYBE
+            reason_bits.append(f"{lang} edition -> not the owned copy")
+        elif is_multi_volume(abb_raw) and not is_multi_volume(item.get("title", "")):
+            tier = MAYBE
+            reason_bits.append("bundle/range vs single volume -> not this item")
+
     return tier, score, "; ".join(reason_bits)
 
 

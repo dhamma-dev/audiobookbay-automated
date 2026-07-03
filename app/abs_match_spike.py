@@ -23,6 +23,7 @@ Environment (add ABS_* to your .env):
 """
 
 import os
+import re
 import sys
 import requests
 from bs4 import BeautifulSoup
@@ -80,6 +81,7 @@ def load_library(library_id):
                 "series": series,
                 "asin": md.get("asin") or "",
                 "isbn": md.get("isbn") or "",
+                "language": md.get("language") or "",
             })
         if len(results) < limit or (data.get("total") and len(items) >= data["total"]):
             break
@@ -130,7 +132,11 @@ def search_abb(session, query, max_pages=2):
                 continue
             raw = a.text.strip()
             title, author = _split_title_author(raw)
-            results.append({"raw": raw, "title": title, "author": author})
+            # Grab the post's Language field (like the app does) so the foreign
+            # -edition guard can use it alongside any marker in the title.
+            lm = re.search(r"Language:\s*([A-Za-z]+)", post.get_text(" ", strip=True))
+            language = lm.group(1) if lm else ""
+            results.append({"raw": raw, "title": title, "author": author, "language": language})
     return results
 
 
@@ -159,12 +165,18 @@ def run_query(session, library, query):
 
 # --- Offline self-test (demonstrates the matcher without ABS/ABB) ------------
 def selftest():
+    def item(title, author, series=None, language="English"):
+        return {"title": title, "author": author, "series": series or [],
+                "asin": "", "isbn": "", "language": language}
+
     library = [
-        {"title": "The Steel Remains", "author": "Richard K. Morgan",
-         "series": [("A Land Fit for Heroes", "1")], "asin": "", "isbn": ""},
-        {"title": "Unsouled", "author": "Will Wight", "series": [("Cradle", "1")], "asin": "", "isbn": ""},
-        {"title": "The Gathering Storm", "author": "Robert Jordan",
-         "series": [("The Wheel of Time", "12")], "asin": "", "isbn": ""},
+        item("The Steel Remains", "Richard K. Morgan", [("A Land Fit for Heroes", "1")]),
+        item("Unsouled", "Will Wight", [("Cradle", "1")]),
+        item("The Gathering Storm", "Robert Jordan", [("The Wheel of Time", "12")]),
+        item("The Sandman", "Neil Gaiman, Dirk Maggs"),
+        item("He Who Fights with Monsters 10", "Travis Deverell Shirtaloon",
+             [("He Who Fights with Monsters", "10")]),
+        item("No Man's Land", "Richard K. Morgan"),
     ]
     cases = [
         ("The Steel Remains (A Land Fit for Heroes #1) - Richard K. Morgan", "STRONG (title+author+series)"),
@@ -172,6 +184,11 @@ def selftest():
         ("The Gathering Storm - Kim Fielding", "NONE (same title, WRONG author -> rejected)"),
         ("The Steel Remains", "MAYBE (title only, no author to confirm)"),
         ("Some Book We Do Not Own - Nobody", "NONE (no match)"),
+        # Guards added after the first real run:
+        ("The Sandman [Spanish Edition] (Libros 1-3) - Neil Gaiman", "MAYBE (foreign edition -> not owned copy)"),
+        ("The Sandman - Neil Gaiman, Dirk Maggs", "STRONG (English original, still matches)"),
+        ("He Who Fights with Monsters, Books 01-10 - Shirtaloon", "MAYBE (bundle vs single owned volume)"),
+        ("Sandman Slim - Richard Kadrey", "NONE (shared first name only -> author rejected)"),
     ]
     print("Self-test (thresholds: STRONG_TITLE=%.2f MAYBE_TITLE=%.2f AUTHOR_MIN=%.2f)\n"
           % (abs_match.STRONG_TITLE, abs_match.MAYBE_TITLE, abs_match.AUTHOR_MIN))
