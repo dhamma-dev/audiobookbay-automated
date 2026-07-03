@@ -358,15 +358,30 @@
     const own = ranking && ranking.ownership;
     const results = document.getElementById('search-results');
     if (!Array.isArray(own) || !results) return;
+    const touched = new Set();
     own.forEach((o) => {
       const card = results.querySelector('.book-card[data-result-id="' + o.id + '"]');
-      if (card) setLibraryFlag(card, o.status, o.detail);
+      if (!card) return;
+      setLibraryFlag(card, o.status, o.detail);
+      // In a series shelf, a book you already own shouldn't be pre-selected:
+      // mark the entry owned and untick it, so "Send N" counts only what you're
+      // missing and "Hide owned" can drop the whole row (not just the card).
+      // Partly-owned bundles stay selectable — you don't have all of it yet.
+      const entry = card.closest('.series-entry');
+      if (entry && o.status !== 'partial') {
+        entry.classList.add('is-owned');
+        entry.dataset.owned = '1';
+        const inc = entry.querySelector('.entry-include');
+        if (inc) inc.checked = false;
+        const group = entry.closest('.series-group');
+        if (group) touched.add(group);
+      }
     });
+    // Recompute "Send N selected" / select-all now that owned rows are unticked.
+    touched.forEach((group) => updateSeriesCount(group));
     // Note how many books of each series shelf you already own.
     results.querySelectorAll('.series-group').forEach((group) => {
-      let owned = 0;
-      group.querySelectorAll('.series-entry:not(.is-gap):not(.is-collection)')
-        .forEach((entry) => { if (entry.querySelector('.book-card[data-in-library]')) owned++; });
+      const owned = group.querySelectorAll('.series-entry.is-owned:not(.is-collection)').length;
       const count = group.querySelector('.series-group-count');
       if (owned && count && !count.dataset.ownNoted) {
         count.dataset.ownNoted = '1';
@@ -653,7 +668,9 @@
         if (isCovered) { inc.checked = false; inc.disabled = true; }
         else {
           inc.disabled = false;
-          if (entry.dataset.wasCovered === '1') inc.checked = true;
+          // Restore to ticked when a collection stops covering it -- unless it's
+          // a book you already own, which stays unticked by default.
+          if (entry.dataset.wasCovered === '1' && entry.dataset.owned !== '1') inc.checked = true;
         }
       }
       entry.dataset.wasCovered = isCovered ? '1' : '';

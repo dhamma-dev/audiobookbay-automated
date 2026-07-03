@@ -115,11 +115,21 @@
   cursor: pointer;
 }
 
-/* When engaged, drop cards we've tagged as fully owned -- even once Smart sort
-   has nested them inside a series/edition group. Partly-owned bundles stay
-   visible (you don't have all of it yet). */
-.search-results.hide-owned .book-card[data-in-library="owned"],
-.search-results.hide-owned .book-card[data-in-library="edition"] {
+/* Owned books already in a series shelf are de-emphasised and left unticked --
+   you have them; the shelf's job is to help you fill the gaps. */
+.series-entry.is-owned .series-entry-main {
+  opacity: 0.5;
+}
+
+/* "Hide owned": drop loose/standalone owned cards entirely, and inside a series
+   shelf hide the whole owned entry row (not just its card, which would strand
+   the "Book N" label). Partly-owned bundles stay visible. */
+.search-results.hide-owned .book-card[data-in-library="owned"]:not(.in-series),
+.search-results.hide-owned .book-card[data-in-library="edition"]:not(.in-series) {
+  display: none;
+}
+
+.search-results.hide-owned .series-entry.is-owned {
   display: none;
 }
 
