@@ -29,9 +29,11 @@ from bs4 import BeautifulSoup
 
 import abs_match
 
-ABS_URL = (os.getenv("ABS_URL") or "").rstrip("/")
-ABS_TOKEN = os.getenv("ABS_TOKEN") or ""
-ABS_LIBRARY_ID = os.getenv("ABS_LIBRARY_ID") or ""
+# .strip() guards against trailing spaces/newlines in .env values, which would
+# otherwise produce an invalid URL like "http://host:8080 /api/libraries".
+ABS_URL = (os.getenv("ABS_URL") or "").strip().rstrip("/")
+ABS_TOKEN = (os.getenv("ABS_TOKEN") or "").strip()
+ABS_LIBRARY_ID = (os.getenv("ABS_LIBRARY_ID") or "").strip()
 ABB_HOSTNAME = os.getenv("ABB_HOSTNAME", "audiobookbay.lu")
 TOR_SOCKS_PORT = os.getenv("TOR_SOCKS_PORT", "9050")
 
