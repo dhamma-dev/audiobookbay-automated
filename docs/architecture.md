@@ -87,6 +87,17 @@ applies **without re-rendering** — it reorders/wraps the existing cards.
 Privacy: only `RANK_FIELDS` (`title, format, bitrate, language, size, keywords`)
 are ever sent. The feature is invisible unless `GEMINI_API_KEY` is set.
 
+**Speculative prefetch.** Because the call takes a few seconds, a per-browser
+setting ("Prepare automatically", persisted via `/settings/prefetch` →
+`session['smart_prefetch']`, default `SMART_PREFETCH_DEFAULT`) can run it in the
+background as soon as results render. Client side (`app.js`): `fetchRanking`
+de-dupes the call into one in-flight promise per (query, result set), so a
+background prefetch and a click share it — clicking while "Preparing…" simply
+attaches and applies when it lands. `setSmartBtnState` drives the button
+(idle → preparing → ready/applying → applied); `prefetchSmartSort`/`initSmartSort`
+kick it after each render when enabled. Results already have a per-query client
+cache (`smartSortCache`), so re-sorting is instant.
+
 ## Frontend model (`app/static/js/app.js`)
 
 One IIFE. Global event delegation: a single `click`/`change`/`submit` listener

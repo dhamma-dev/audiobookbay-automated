@@ -173,9 +173,18 @@ Series grouping leans on Gemini's own knowledge of reading order and series
 length; it only ever offers real listings to download, and gap markers are
 informational, never something you can click.
 
+**Prepare automatically (prefetch).** Smart sort takes a few seconds. In the
+settings popover (the shield menu) you can turn on **Prepare automatically**: it
+runs smart sort in the background the moment results load, so the button shows
+"Preparing…" and then "Apply smart sort" — instant when you click. Click while
+it's still preparing and it applies the moment it's ready. This spends one Gemini
+call per search, so it's opt-in per browser (`SMART_PREFETCH_DEFAULT` sets the
+default for new visitors).
+
 ```env
 GEMINI_API_KEY=your-google-ai-studio-key   # Enables Smart sort when set
 RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
+SMART_PREFETCH_DEFAULT=off                  # Optional; "on" prefetches by default
 ```
 
 > **Privacy note:** unlike AudioBook Bay scraping, the Smart sort request goes

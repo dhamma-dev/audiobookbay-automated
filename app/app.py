@@ -302,6 +302,11 @@ NAV_LINK_URL = os.getenv("NAV_LINK_URL")
 #   RANK_MODEL     - Gemini model id to use (default "gemini-3.5-flash").
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RANK_MODEL = os.getenv("RANK_MODEL", "gemini-3.5-flash")
+# Default per-browser behaviour for speculative smart-sort prefetch. "off" keeps
+# today's behaviour (smart sort runs only when clicked); "on" starts it in the
+# background as soon as results load so it's ready instantly. Each visitor can
+# override this in the in-app settings.
+SMART_PREFETCH_DEFAULT = "on" if _is_truthy(os.getenv("SMART_PREFETCH_DEFAULT", "off")) else "off"
 
 # Preferred listening language (e.g. "English"). When set, wrong-language
 # editions are floated below matching ones in the default result order, and
@@ -710,6 +715,7 @@ def inject_app_config():
         'putio_oauth_available': putio_oauth_available,
         'putio_session_login': putio_session_login,
         'smart_sort_available': bool(GEMINI_API_KEY),
+        'smart_prefetch': session.get('smart_prefetch', SMART_PREFETCH_DEFAULT),
         'abs_match_enabled': ABS_MATCH_ENABLED,
         'log_enabled': LOG_ENABLED,
         # Connection controls (Tor routing toggle + circuit renewal).
@@ -733,6 +739,18 @@ def set_route():
         return jsonify({'message': 'Tor is not available on this server.'}), 409
     session['route_mode'] = mode
     session.permanent = True  # remember the choice across browser restarts
+    return jsonify({'mode': mode})
+
+
+@app.route('/settings/prefetch', methods=['POST'])
+def set_prefetch():
+    """Persist this browser's smart-sort prefetch preference (on|off)."""
+    data = request.get_json(silent=True) or {}
+    mode = data.get('mode')
+    if mode not in ('on', 'off'):
+        return jsonify({'message': 'Invalid mode.'}), 400
+    session['smart_prefetch'] = mode
+    session.permanent = True
     return jsonify({'mode': mode})
 
 

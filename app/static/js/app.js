@@ -169,7 +169,8 @@
       const fresh = doc.getElementById('search-results');
       if (fresh) {
         results.innerHTML = fresh.innerHTML;
-        smartSortReset(); // new result set => any cached ranking is stale
+        smartSortReset();  // new result set => any cached ranking is stale
+        initSmartSort();   // opt-in prefetch for the new results
       } else {
         results.innerHTML =
           '<div class="empty-state">' +
@@ -196,30 +197,104 @@
   /* ----------------------------------------------------------
      Smart sort: Gemini re-ranking of already-loaded results
      ---------------------------------------------------------- */
-  const smartSortCache = new Map(); // query -> ranking response
-  let smartSortState = null;        // { query, ranking, expanded, activeInterp }
+  const smartSortCache = new Map();    // query -> ranking response (completed)
+  const smartSortInflight = new Map(); // query -> in-flight /api/rank promise
+  let smartSortState = null;           // { query, ranking, expanded, activeInterp }
+  let smartClicked = false;            // user asked to apply for the current results
 
   function smartSortReset() {
     smartSortCache.clear();
+    smartSortInflight.clear();
     smartSortState = null;
+    smartClicked = false;
   }
 
-  function setSmartSortLoading(btn, loading) {
-    const results = document.getElementById('search-results');
-    if (loading) {
-      if (results) results.classList.add('is-ranking');
-      btn.disabled = true;
-      btn.dataset.originalHtml = btn.innerHTML;
-      btn.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span> Ranking…';
-    } else {
-      if (results) results.classList.remove('is-ranking');
-      btn.disabled = false;
-      if (btn.dataset.originalHtml) {
-        btn.innerHTML = btn.dataset.originalHtml;
-        delete btn.dataset.originalHtml;
-      }
-      refreshIcons();
+  // One /api/rank call per (query, result set), de-duped: a background prefetch
+  // and a click share the same in-flight promise, so clicking while it's still
+  // preparing simply attaches and applies the moment it lands.
+  function fetchRanking(query) {
+    if (smartSortCache.has(query)) return Promise.resolve(smartSortCache.get(query));
+    if (smartSortInflight.has(query)) return smartSortInflight.get(query);
+    const dataEl = document.getElementById('search-results-data');
+    let results = null;
+    try { results = JSON.parse(dataEl.textContent); } catch (e) { /* no data */ }
+    if (!Array.isArray(results) || results.length === 0) {
+      return Promise.reject(new Error('No results to sort.'));
     }
+    const p = fetch('/api/rank', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, results }),
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Smart sort failed');
+      smartSortCache.set(query, data);
+      return data;
+    }).finally(() => { smartSortInflight.delete(query); });
+    smartSortInflight.set(query, p);
+    return p;
+  }
+
+  // Reflect prefetch/apply progress on the Smart sort button.
+  function setSmartBtnState(btn, state) {
+    if (!btn) return;
+    const conf = {
+      idle:      { icon: 'sparkles', text: 'Smart sort',      disabled: false, spin: false },
+      preparing: { icon: 'sparkles', text: 'Preparing…', disabled: false, spin: true },
+      ready:     { icon: 'sparkles', text: 'Apply smart sort', disabled: false, spin: false },
+      applying:  { icon: 'sparkles', text: 'Applying…',  disabled: true,  spin: true },
+      applied:   { icon: 'check',    text: 'Sorted',           disabled: true,  spin: false },
+    }[state];
+    if (!conf) return;
+    btn.dataset.state = state;
+    btn.disabled = conf.disabled;
+    btn.innerHTML = (conf.spin
+      ? '<span class="spinner-icon" aria-hidden="true"></span>'
+      : '<i data-lucide="' + conf.icon + '" aria-hidden="true"></i>') + ' ' + conf.text;
+    const results = document.getElementById('search-results');
+    if (results) results.classList.toggle('is-ranking', state === 'applying');
+    if (!conf.spin) refreshIcons();
+  }
+
+  function prefetchEnabled() {
+    const cb = document.getElementById('prefetch-toggle');
+    return !!(cb && cb.checked);
+  }
+
+  // Kick smart sort in the background so it's ready before the user asks.
+  function prefetchSmartSort() {
+    const btn = document.querySelector('[data-action="smart-sort"]');
+    if (!btn) return;
+    const query = btn.dataset.query || '';
+    if (smartSortState || smartSortCache.has(query) || smartSortInflight.has(query)) return;
+    setSmartBtnState(btn, 'preparing');
+    fetchRanking(query).then(() => {
+      const b = document.querySelector('[data-action="smart-sort"]');
+      if (b && b.dataset.query === query && !smartClicked && !smartSortState) setSmartBtnState(b, 'ready');
+    }).catch(() => {
+      // Silent: a failed *background* prefetch just falls back to the manual button.
+      const b = document.querySelector('[data-action="smart-sort"]');
+      if (b && b.dataset.query === query && !smartClicked && !smartSortState) setSmartBtnState(b, 'idle');
+    });
+  }
+
+  // Run after each result render: reset per-query state and, if the user opted
+  // in, start preparing smart sort immediately.
+  function initSmartSort() {
+    smartClicked = false;
+    if (document.querySelector('[data-action="smart-sort"]') && prefetchEnabled()) prefetchSmartSort();
+  }
+
+  async function handlePrefetchToggle(input) {
+    const mode = input.checked ? 'on' : 'off';
+    try {
+      await fetch('/settings/prefetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+    } catch (e) { /* best-effort persistence */ }
+    if (mode === 'on') prefetchSmartSort();
   }
 
   function renderAmbiguity(ranking) {
@@ -530,37 +605,26 @@
 
   async function handleSmartSort(btn) {
     const query = btn.dataset.query || '';
-    const dataEl = document.getElementById('search-results-data');
-    if (!dataEl) return;
-    let results;
-    try {
-      results = JSON.parse(dataEl.textContent);
-    } catch (e) {
-      return;
-    }
-    if (!Array.isArray(results) || results.length === 0) return;
-
-    if (smartSortCache.has(query)) {
+    if (smartSortState) return;              // already applied
+    smartClicked = true;
+    if (smartSortCache.has(query)) {         // a prefetch already finished — instant
       applyRanking(query, smartSortCache.get(query));
+      setSmartBtnState(document.querySelector('[data-action="smart-sort"]'), 'applied');
       return;
     }
-
-    setSmartSortLoading(btn, true);
+    // Waits on the shared in-flight promise if a prefetch is mid-flight, or
+    // starts the call now if prefetch was off — either way applies when ready.
+    setSmartBtnState(btn, 'applying');
     try {
-      const res = await fetch('/api/rank', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, results }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || 'Smart sort failed');
-      smartSortCache.set(query, data);
+      const data = await fetchRanking(query);
+      const b = document.querySelector('[data-action="smart-sort"]');
+      if (!b || b.dataset.query !== query) return;   // results changed under us
       applyRanking(query, data);
+      setSmartBtnState(b, 'applied');
       showToast('Sorted by relevance.', 'success');
     } catch (err) {
+      setSmartBtnState(document.querySelector('[data-action="smart-sort"]'), 'idle');
       showToast(err.message || 'Smart sort failed', 'error');
-    } finally {
-      setSmartSortLoading(btn, false);
     }
   }
 
@@ -1299,6 +1363,9 @@
       return;
     }
 
+    const prefetchToggle = e.target.closest('[data-action="prefetch-toggle"]');
+    if (prefetchToggle) { handlePrefetchToggle(prefetchToggle); return; }
+
     const selectAll = e.target.closest('.series-select-all');
     if (selectAll) {
       const group = selectAll.closest('.series-group');
@@ -1352,6 +1419,9 @@
     // into Audiobookshelf flips to "in your library" without a re-search. The
     // function no-ops unless ABS matching is on and un-owned cards are present.
     setInterval(pollOwnership, 90000);
+
+    // If the page loaded already showing results, honour the prefetch preference.
+    initSmartSort();
   }
 
   if (document.readyState === 'loading') {

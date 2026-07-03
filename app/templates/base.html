@@ -86,6 +86,19 @@
                         </button>
                         <p class="conn-popover-note">Use if results won't load or the mirror is blocking the current exit.</p>
                         {% endif %}
+
+                        {% if smart_sort_available %}
+                        <div class="conn-popover-section">
+                            <p class="conn-popover-title">Smart sort</p>
+                            <label class="conn-switch">
+                                <input type="checkbox" id="prefetch-toggle" data-action="prefetch-toggle"
+                                       {% if smart_prefetch == 'on' %}checked{% endif %}>
+                                <span class="conn-switch-track" aria-hidden="true"></span>
+                                <span class="conn-switch-text">Prepare automatically</span>
+                            </label>
+                            <p class="conn-popover-note">Runs smart sort in the background as soon as results load, so it's ready instantly. Uses one Gemini call per search.</p>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
