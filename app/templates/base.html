@@ -31,6 +31,12 @@
                     <i data-lucide="download" aria-hidden="true"></i>
                     Downloads
                 </a>
+                {% if abs_match_enabled %}
+                <a href="{{ url_for('upgrades') }}" class="{% if request.endpoint == 'upgrades' %}active{% endif %}">
+                    <i data-lucide="arrow-up-circle" aria-hidden="true"></i>
+                    Upgrades
+                </a>
+                {% endif %}
                 {% if log_enabled %}
                 <a href="{{ url_for('download_log') }}" class="{% if request.endpoint == 'download_log' %}active{% endif %}">
                     <i data-lucide="history" aria-hidden="true"></i>

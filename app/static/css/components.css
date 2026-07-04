@@ -382,6 +382,14 @@
   border-color: rgba(224, 139, 60, 0.3);
 }
 
+/* You own this book, but badly (low bitrate / fragmented rip) and this result
+   beats it — an invitation, not a "you have this". */
+.library-flag-upgrade {
+  background-color: var(--color-warning-muted);
+  color: var(--color-warning);
+  border-color: rgba(224, 139, 60, 0.3);
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

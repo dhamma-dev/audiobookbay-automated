@@ -413,6 +413,7 @@
   function setLibraryFlag(card, status, detail) {
     if (!card) return;
     const state = status === 'partial' ? 'partial'
+      : status === 'upgrade' ? 'upgrade'
       : status === 'owned_other_edition' ? 'edition' : 'owned';
     card.setAttribute('data-in-library', state);
     const details = card.querySelector('.book-details');
@@ -420,30 +421,31 @@
     let flag = card.querySelector('[data-library-flag]');
     if (!flag) {
       flag = document.createElement('div');
-      flag.className = 'library-flag';
       flag.setAttribute('data-library-flag', '');
-      flag.innerHTML =
-        '<i data-lucide="library-big" aria-hidden="true"></i><span class="library-flag-text"></span>';
       const title = details.querySelector('.book-title');
       if (title) title.insertAdjacentElement('afterend', flag);
       else details.prepend(flag);
     }
-    flag.classList.toggle('library-flag-partial', state === 'partial');
-    const txt = flag.querySelector('.library-flag-text');
-    if (txt) {
-      txt.textContent = state === 'partial' ? 'Own ' + (detail || 'some')
-        : state === 'edition' ? 'In library · other edition'
-        : 'In your library';
-    }
+    const icon = state === 'upgrade' ? 'arrow-up-circle' : 'library-big';
+    const text = state === 'partial' ? 'Own ' + (detail || 'some')
+      : state === 'upgrade' ? 'Upgrade available' + (detail ? ' · yours is ' + detail : '')
+      : state === 'edition' ? 'In library · other edition'
+      : 'In your library';
+    flag.className = 'library-flag'
+      + (state === 'partial' ? ' library-flag-partial' : '')
+      + (state === 'upgrade' ? ' library-flag-upgrade' : '');
+    flag.innerHTML = '<i data-lucide="' + icon + '" aria-hidden="true"></i>'
+      + '<span class="library-flag-text">' + escapeHtml(text) + '</span>';
   }
 
   // Apply the "owned" treatment to a single card: badge it, and if it sits in a
   // series shelf, de-select + mark its entry (owned books aren't pre-picked, and
-  // "Hide owned" can then drop the whole row). Partly-owned bundles stay picked.
+  // "Hide owned" can then drop the whole row). Partly-owned bundles stay picked,
+  // and so do upgrades -- replacing a below-par copy is a wanted download.
   function markOwnedCard(card, status, detail) {
     if (!card) return;
     setLibraryFlag(card, status, detail);
-    if (status === 'partial') return;
+    if (status === 'partial' || status === 'upgrade') return;
     const entry = card.closest('.series-entry');
     if (entry && !entry.classList.contains('is-owned')) {
       entry.classList.add('is-owned');

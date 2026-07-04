@@ -265,6 +265,28 @@ adds a per-series **"own N of 12"** count, and flags bundles you only partly own
 (**"Own 4 of 10"**). Only the public result metadata Smart sort already sends
 leaves the box — never anything about what you own.
 
+#### Upgrade radar
+
+Owning a book isn't the end of the story — a 32 kbps rip split across 40 MP3s
+is a candidate for replacement, not a reason to skip a clean M4B. When ABS is
+connected, an **Upgrades** page appears in the nav: it computes every owned
+copy's *effective bitrate* from its real size and duration (pure local
+arithmetic — nothing leaves your server), flags copies at or below
+`ABS_LOW_KBPS` (default 63) or fragmented per-chapter rips (≥ 8 files), and
+gives each a **Find better** button that deep-links into a normal search
+(`/?q=…`, which also makes searches shareable).
+
+The loop closes in the results: a listing you own **well** shows the green
+*In your library* badge, but a listing that would **beat a below-par copy**
+(M4B, not worse than what you have) shows an amber **“Upgrade available ·
+yours is ~48 kbps”** instead — and in series shelves, upgrades stay
+**pre-selected** while owned-fine books stay unticked. Fill the gaps and
+replace the junk in one send.
+
+```env
+ABS_LOW_KBPS=63   # Optional; flag owned copies at/below this effective bitrate
+```
+
 #### Evaluating / tuning the matcher
 
 `app/abs_match_spike.py` is a companion CLI (safe to delete) that prints how each

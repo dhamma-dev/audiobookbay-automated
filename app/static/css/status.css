@@ -100,3 +100,27 @@
   margin-left: var(--space-2);
   vertical-align: middle;
 }
+
+/* ============================================================
+   Upgrade radar
+   ============================================================ */
+.upgrade-author {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.btn-upgrade-search {
+  white-space: nowrap;
+  padding: 4px var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.upgrades-footnote {
+  margin-top: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.upgrades-footnote .badge {
+  vertical-align: middle;
+}

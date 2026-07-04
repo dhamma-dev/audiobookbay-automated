@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "macros/empty_state.html" import render as empty_state %}
+
+{% block title %}Upgrades{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-header-row">
+        <div>
+            <span class="page-header-eyebrow">Library</span>
+            <h1>Upgrade radar</h1>
+            <p>Copies in your Audiobookshelf library that look below par — judged locally
+               from each book's real size and duration. Nothing leaves your server.</p>
+        </div>
+    </div>
+</div>
+
+{% if not enabled %}
+{{ empty_state('plug-zap', 'Audiobookshelf is not connected',
+               'Set ABS_URL and ABS_TOKEN to let the app scan your library for low-quality copies.') }}
+{% elif not flagged %}
+{{ empty_state('sparkles', 'Your library is in good shape',
+               'No owned copies at or below ' ~ (low_kbps | int) ~ ' kbps, and no fragmented rips found.') }}
+{% else %}
+<div class="downloads-toolbar">
+    <span class="downloads-count">
+        {{ flagged | length }} of {{ total }} books could sound better
+    </span>
+    <span class="downloads-updated">flagged at ≤ {{ low_kbps | int }} kbps effective, or ≥ 8 files</span>
+</div>
+
+<div class="log-table-wrap">
+    <table class="log-table">
+        <thead>
+            <tr>
+                <th>Book</th>
+                <th>Series</th>
+                <th>Effective bitrate</th>
+                <th>Files</th>
+                <th>Size / Length</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for f in flagged %}
+            <tr>
+                <td class="log-book">
+                    <strong>{{ f.title }}</strong>
+                    {% if f.author %}<span class="upgrade-author">— {{ f.author }}</span>{% endif %}
+                </td>
+                <td>{{ f.series }}</td>
+                <td>
+                    {% if f.kbps %}
+                    <span class="badge {{ 'badge-error' if f.kbps <= 40 else 'badge-warning' }}">
+                        ~{{ f.kbps | round | int }} kbps
+                    </span>
+                    {% else %}
+                    <span class="badge badge-neutral">unknown</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if f.tracks >= 8 %}
+                    <span class="badge badge-warning">{{ f.tracks }} files</span>
+                    {% else %}
+                    {{ f.tracks or '?' }}
+                    {% endif %}
+                </td>
+                <td class="log-when">{{ f.size_h }} · {{ f.duration_h }}</td>
+                <td>
+                    <a class="btn btn-secondary btn-upgrade-search" href="{{ url_for('search', q=f.query) }}">
+                        <i data-lucide="search" aria-hidden="true"></i>
+                        Find better
+                    </a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p class="upgrades-footnote">
+    “Find better” runs a normal search — results you already own show their badge, and
+    M4B uploads that beat this copy are marked <span class="badge badge-warning">Upgrade available</span>.
+</p>
+{% endif %}
+{% endblock %}

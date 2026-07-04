@@ -1,7 +1,7 @@
 {% from "macros/metadata_item.html" import render as meta %}
 
 {% macro render(book, download_client_label) %}
-<div class="book-card{% if book.is_m4b %} is-m4b{% endif %}" data-result-id="{{ book.id }}"{% if book.library_match %} data-in-library="owned"{% endif %}>
+<div class="book-card{% if book.is_m4b %} is-m4b{% endif %}" data-result-id="{{ book.id }}"{% if book.library_match %} data-in-library="{{ 'upgrade' if book.library_match.upgrade else 'owned' }}"{% endif %}>
   {% if book.is_m4b %}
   <div class="m4b-ribbon" title="M4B is a single-file audiobook with chapters and bookmarks — the recommended format.">
     <i data-lucide="star" aria-hidden="true"></i>
@@ -30,8 +30,16 @@
     <h2 class="book-title">{{ book.title }}</h2>
 
     {# Deterministic "you already own this" flag. Rendered here as the baseline;
-       Smart sort can later upgrade the text/state via [data-library-flag]. #}
-    {% if book.library_match %}
+       Smart sort can later upgrade the text/state via [data-library-flag].
+       When the owned copy is below par and this result beats it, the flag flips
+       to an amber upgrade invitation instead. #}
+    {% if book.library_match and book.library_match.upgrade %}
+    <div class="library-flag library-flag-upgrade" data-library-flag
+         title="You own “{{ book.library_match.title }}” at {{ book.library_match.note }} — this M4B would be an upgrade.">
+      <i data-lucide="arrow-up-circle" aria-hidden="true"></i>
+      <span class="library-flag-text">Upgrade available · yours is {{ book.library_match.note }}</span>
+    </div>
+    {% elif book.library_match %}
     <div class="library-flag" data-library-flag
          title="In your Audiobookshelf library — matches “{{ book.library_match.title }}”{% if book.library_match.author %} by {{ book.library_match.author }}{% endif %}">
       <i data-lucide="library-big" aria-hidden="true"></i>

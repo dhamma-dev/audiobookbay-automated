@@ -76,7 +76,7 @@
 </div>
 
 <div id="search-results" class="search-results" role="region" aria-live="polite" aria-label="Search results">
-    {% if request.method == 'POST' %}
+    {% if searched %}
         {% if books %}
         <div class="search-results-bar">
             <p class="search-results-header">

@@ -536,16 +536,65 @@ def _abs_pick_library():
     return libs[0]["id"] if libs else None
 
 
+# --- Owned-copy quality ("Upgrade Radar") -------------------------------------
+# Audiobookshelf doesn't expose a bitrate on the items listing, but it does give
+# size (bytes) and duration (seconds) -- which is all we need: the *effective*
+# bitrate of an owned copy is just size*8/duration. Everything here is local
+# arithmetic on the cached index; nothing is sent anywhere.
+#
+#   ABS_LOW_KBPS - flag owned copies at or below this effective bitrate as
+#                  upgrade candidates (default 63: spoken word is fine at 64+,
+#                  while 32-48kbps rips are audibly poor).
+ABS_LOW_KBPS = float(os.getenv("ABS_LOW_KBPS", "63"))
+_FRAGMENTED_TRACKS = 8  # >= this many files reads as a per-chapter MP3 rip
+
+
+def _quality_flag(item):
+    """Return a short human reason when an owned copy looks below par, else
+    None. Precision-first, like the matcher: unknown duration/size -> no flag."""
+    reasons = []
+    kbps, tracks = item.get("est_kbps"), item.get("tracks") or 0
+    if kbps and kbps <= ABS_LOW_KBPS:
+        reasons.append(f"~{int(round(kbps))} kbps")
+    if tracks >= _FRAGMENTED_TRACKS:
+        reasons.append(f"{tracks} files")
+    return " · ".join(reasons) or None
+
+
+def _parse_kbps(bitrate_str):
+    m = re.search(r"([\d.]+)\s*kbps", bitrate_str or "", re.IGNORECASE)
+    return float(m.group(1)) if m else None
+
+
+def _is_upgrade_result(book, item):
+    """Would this ABB result be a quality upgrade over the owned copy? True only
+    when the owned copy is flagged AND the result is M4B AND its stated bitrate
+    (when stated) isn't worse than what we already have."""
+    if not item or not _quality_flag(item):
+        return False
+    if not book.get("is_m4b"):
+        return False
+    stated = _parse_kbps(book.get("bitrate"))
+    owned = item.get("est_kbps")
+    if stated and owned and stated < owned:
+        return False
+    return True
+
+
 def _abs_load_items(library_id):
     items, page, limit = [], 0, 500
     while True:
         data = _abs_get(f"/api/libraries/{library_id}/items", limit=limit, page=page)
         results = data.get("results", [])
         for it in results:
-            md = (it.get("media") or {}).get("metadata") or {}
+            media = it.get("media") or {}
+            md = media.get("metadata") or {}
             authors = md.get("authors") or []
             author = md.get("authorName") or ", ".join(a.get("name", "") for a in authors)
             series = [(s.get("name"), s.get("sequence")) for s in (md.get("series") or [])]
+            size = media.get("size") or 0
+            duration = media.get("duration") or 0
+            tracks = media.get("numTracks") or media.get("numAudioFiles") or 0
             items.append({
                 "title": md.get("title") or "",
                 "author": author,
@@ -553,6 +602,11 @@ def _abs_load_items(library_id):
                 "asin": md.get("asin") or "",
                 "isbn": md.get("isbn") or "",
                 "language": md.get("language") or "",
+                "size": size,
+                "duration": duration,
+                "tracks": tracks,
+                # Effective bitrate of the copy on disk; None when unknown.
+                "est_kbps": (size * 8 / duration / 1000) if size and duration else None,
             })
         if len(results) < limit or (data.get("total") and len(items) >= data["total"]):
             break
@@ -601,7 +655,13 @@ def annotate_library_matches(books):
                    "language": book.get("language", "")}
             tier, score, item, _ = abs_match.best_match(abb, index)
             if tier == abs_match.STRONG and item:
-                book["library_match"] = {"title": item["title"], "author": item["author"]}
+                match = {"title": item["title"], "author": item["author"]}
+                # Owned, but this result would improve on a below-par copy:
+                # surface it as an invitation rather than a "you have this".
+                if _is_upgrade_result(book, item):
+                    match["upgrade"] = True
+                    match["note"] = _quality_flag(item)
+                book["library_match"] = match
     except Exception as e:
         print(f"[WARNING] Library match annotation failed: {e}")
 
@@ -612,41 +672,47 @@ def _norm_seq(seq):
 
 
 def _owned_series_index(index):
-    """Map normalized series name -> set of owned normalized sequence numbers."""
+    """Map normalized series name -> {normalized seq: owned item}. Carrying the
+    item (not just the number) lets upgrade detection see the owned copy's
+    quality."""
     m = {}
     for item in index:
         for sname, seq in item.get("series") or []:
             if sname and seq is not None:
-                m.setdefault(abs_match.normalize(sname), set()).add(_norm_seq(seq))
+                m.setdefault(abs_match.normalize(sname), {})[_norm_seq(seq)] = item
     return m
 
 
 def _owned_seqs_for(series_name, owned_series):
-    """Fuzzy-match a canonical series name to the owned index; union its seqs."""
+    """Fuzzy-match a canonical series name to the owned index; merge its
+    {seq: item} maps."""
     target = abs_match.normalize(series_name or "")
     if not target:
-        return set()
-    seqs = set()
+        return {}
+    seqs = {}
     for name, owned in owned_series.items():
         if name == target or abs_match.token_set_ratio(target, name) >= 0.8:
-            seqs |= owned
+            seqs.update(owned)
     return seqs
 
 
 def _canonical_owned(c, index, owned_series):
-    """Is one canonical identity {title, author, series?, seq?} owned? Series
-    books join exactly on (fuzzy series name, seq); everything else falls back to
-    the local author-gated matcher. Shared by smart sort and the ownership poll."""
+    """Resolve one canonical identity {title, author, series?, seq?} to the
+    owned library item (None when not owned). Series books join exactly on
+    (fuzzy series name, seq); everything else falls back to the local
+    author-gated matcher. Shared by smart sort and the ownership poll."""
     series, seq = c.get("series"), c.get("seq")
-    if series and seq is not None and _norm_seq(seq) in _owned_seqs_for(series, owned_series):
-        return True
+    if series and seq is not None:
+        hit = _owned_seqs_for(series, owned_series).get(_norm_seq(seq))
+        if hit is not None:
+            return hit
     abb = {"raw": c.get("title", ""), "title": c.get("title", ""),
            "author": c.get("author", ""), "language": c.get("language", "")}
-    tier, _s, _item, _r = abs_match.best_match(abb, index)
-    return tier == abs_match.STRONG
+    tier, _s, item, _r = abs_match.best_match(abb, index)
+    return item if tier == abs_match.STRONG else None
 
 
-def resolve_ownership(ranking, index):
+def resolve_ownership(ranking, index, results=None):
     """Compute ownership LOCALLY, joining the LLM's canonicalized *public* results
     (ranking['canonical']) to the ABS index. Adds ranking['ownership'] =
     [{id, status, detail}]. Nothing about the library is ever sent out -- the LLM
@@ -655,29 +721,50 @@ def resolve_ownership(ranking, index):
     - Series books: exact join on (fuzzy series name, seq).
     - Standalones: the local author-gated matcher (abs_match).
     - Omnibus/box-set collections: covers intersected with owned seqs -> partial.
+    - When `results` (the sanitized rank payload) is given, an owned result that
+      would improve on a below-par copy is reported as 'upgrade' instead of
+      'owned' (see _is_upgrade_result), so the UI can invite replacing junk.
     """
     if not isinstance(ranking, dict) or not index:
         return
     try:
+        by_id = {r.get("id"): r for r in results or []}
+
+        def _book_for(rid):
+            r = by_id.get(rid) or {}
+            fmt = (r.get("format") or "").lower()
+            return {"is_m4b": "m4b" in fmt, "bitrate": r.get("bitrate")}
+
+        def _verdict(rid, item):
+            if rid in by_id and _is_upgrade_result(_book_for(rid), item):
+                return {"status": "upgrade", "detail": _quality_flag(item)}
+            return {"status": "owned"}
+
         owned_series = _owned_series_index(index)
         ownership = {}
         for c in ranking.get("canonical") or []:
             rid = c.get("id")
-            if rid is not None and _canonical_owned(c, index, owned_series):
-                ownership[rid] = {"status": "owned"}
+            if rid is None:
+                continue
+            item = _canonical_owned(c, index, owned_series)
+            if item is not None:
+                ownership[rid] = _verdict(rid, item)
         for block in ranking.get("series") or []:
             seqs = _owned_seqs_for(block.get("label", ""), owned_series)
             # Series members: the shelf already carries each book's number, so we
             # join (series, seq) locally -- no per-result canonical card needed.
             # Alternates are the same work as their entry, so they inherit its
-            # ownership (keeps the badge if the user swaps editions).
+            # ownership -- each judged for upgrade against its own format.
             for entry in block.get("entries") or []:
                 eseq = entry.get("seq")
-                if eseq is None or _norm_seq(eseq) not in seqs:
+                if eseq is None:
+                    continue
+                item = seqs.get(_norm_seq(eseq))
+                if item is None:
                     continue
                 for rid in [entry.get("best_id")] + list(entry.get("alt_ids") or []):
                     if rid is not None:
-                        ownership.setdefault(rid, {"status": "owned"})
+                        ownership.setdefault(rid, _verdict(rid, item))
             for col in block.get("collections") or []:
                 cid, covers = col.get("id"), col.get("covers") or []
                 if cid is None or not covers:
@@ -1434,7 +1521,7 @@ def api_rank():
     try:
         ranking = rank_results(query, results, want_ownership=ABS_MATCH_ENABLED)
         if ABS_MATCH_ENABLED:
-            resolve_ownership(ranking, get_abs_index())
+            resolve_ownership(ranking, get_abs_index(), results)
         return jsonify(ranking)
     except Exception as e:
         print(f"[ERROR] Smart sort failed: {e}")
@@ -1466,7 +1553,7 @@ def api_ownership():
         if not it.get('author') and not it.get('series'):
             title, author = abs_match.split_title_author(it.get('title', ''))
             it = {**it, 'title': title, 'author': author}
-        if _canonical_owned(it, index, owned_series):
+        if _canonical_owned(it, index, owned_series) is not None:
             ownership.append({'id': rid, 'status': 'owned'})
     return jsonify({'ownership': ownership})
 
@@ -1475,16 +1562,20 @@ def api_ownership():
 @app.route('/', methods=['GET', 'POST'])
 def search():
     books = []
-    query = ''
-    if request.method == 'POST':
+    # A search runs on the POSTed form, or on a shareable GET link (/?q=...) --
+    # the Upgrade Radar uses the latter to deep-link straight into results.
+    query = (request.form.get('query', '') if request.method == 'POST'
+             else request.args.get('q', '')).strip().lower()
+    if query:
         # If this browser is set to Tor but Tor is still bootstrapping, don't
         # silently scrape over Direct -- tell the client to wait (it polls and
         # re-enables) or switch to Direct.
         if current_route_mode() == 'tor' and tor_status() != 'ready':
-            return jsonify({'message': 'Tor is still starting. Please wait a moment or switch to Direct.',
-                            'tor_status': tor_status()}), 503
-        query = request.form.get('query', '').strip().lower()
-        if query:
+            if request.method == 'POST':
+                return jsonify({'message': 'Tor is still starting. Please wait a moment or switch to Direct.',
+                                'tor_status': tor_status()}), 503
+            query, books = '', []  # GET deep link while Tor boots: render the page unsearched
+        else:
             books = search_audiobookbay(query)
             # Float preferred results to the top: matching-language first (when a
             # PREFERRED_LANGUAGE is set), then M4B. Python's stable sort keeps the
@@ -1498,9 +1589,45 @@ def search():
     m4b_count = sum(1 for b in books if b.get('is_m4b'))
     owned_count = sum(1 for b in books if b.get('library_match'))
     return render_template('search.html', books=books, query=query,
+                           searched=bool(query),
                            result_count=len(books), m4b_count=m4b_count,
                            owned_count=owned_count,
                            rank_payload=rank_payload(books))
+
+
+@app.route('/upgrades')
+def upgrades():
+    """Upgrade Radar: scan the Audiobookshelf index for below-par copies (low
+    effective bitrate, per-chapter MP3 rips) and offer a one-click ABB search
+    for each. Everything is local arithmetic on the cached index -- see
+    _quality_flag. Worst copies first."""
+    if not ABS_MATCH_ENABLED:
+        return render_template('upgrades.html', enabled=False, flagged=[],
+                               total=0, low_kbps=ABS_LOW_KBPS)
+    index = get_abs_index()
+    flagged = []
+    for item in index:
+        reason = _quality_flag(item)
+        if not reason:
+            continue
+        series = next(iter(item.get("series") or []), None)
+        size, duration = item.get("size") or 0, item.get("duration") or 0
+        flagged.append({
+            "title": item["title"],
+            "author": item["author"],
+            "series": f"{series[0]} #{_norm_seq(series[1])}" if series and series[0] and series[1] is not None else "",
+            "kbps": item.get("est_kbps"),
+            "tracks": item.get("tracks") or 0,
+            "size_h": f"{size / 1048576:.0f} MB" if size else "?",
+            "duration_h": f"{duration / 3600:.1f} h" if duration else "?",
+            "reason": reason,
+            # Deep link into search; title + author is the query most likely to
+            # surface a clean M4B of the same book.
+            "query": " ".join(x for x in (item["title"], item["author"].split(",")[0].strip()) if x),
+        })
+    flagged.sort(key=lambda f: (f["kbps"] is None, f["kbps"] or 0.0, -f["tracks"]))
+    return render_template('upgrades.html', enabled=True, flagged=flagged,
+                           total=len(index), low_kbps=ABS_LOW_KBPS)
 
 
 # --- Download backends -------------------------------------------------------

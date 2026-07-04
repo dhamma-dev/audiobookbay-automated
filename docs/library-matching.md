@@ -87,7 +87,29 @@ No import side effects; usable from the app and the spike. Key pieces:
 | `owned` | "In your library" (green) | series entry unticked + dimmed |
 | `owned_other_edition` | "In library · other edition" | same as owned |
 | `partial` | "Own N of M" (amber) | stays selectable (you lack some) |
+| `upgrade` | "Upgrade available · yours is …" (amber) | **stays ticked** — replacing junk is a wanted download |
 | *(none)* | no badge | normal |
+
+## Upgrade radar (owned-copy quality)
+
+The ABS index also carries each item's `size`, `duration`, `tracks`, and a
+computed `est_kbps` (= size×8/duration — ABS doesn't expose bitrate on the
+listing, but this effective rate is all we need). `_quality_flag(item)` returns
+a short reason ("~48 kbps", "27 files") when a copy is at/below `ABS_LOW_KBPS`
+(default 63) or has ≥ 8 files; `_is_upgrade_result(book, item)` is true when the
+owned copy is flagged AND the result is M4B AND its stated bitrate isn't worse.
+All local arithmetic; nothing is transmitted.
+
+Surfaces:
+- **`/upgrades`** — worst-first table of flagged copies with a "Find better"
+  deep link (`/?q=<title author>`; the search route accepts GET `?q=` for this,
+  which also makes searches shareable).
+- **Deterministic badge** — `annotate_library_matches` sets
+  `library_match.upgrade` + `note`; the card renders the amber flag.
+- **Smart sort** — `resolve_ownership(..., results)` reports `upgrade` instead
+  of `owned` per result id (alts judged against their own format), and
+  `markOwnedCard` keeps upgrade entries ticked in series shelves.
+- "Hide owned" does **not** hide upgrades (they're actionable, not redundant).
 
 ## UI — `book_card.html`, `search.html`, `app.js`, CSS
 
