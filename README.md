@@ -302,7 +302,11 @@ flags like *abridged* or *AI-narrated*, and explains its pick in one line shown
 on the row. The pick and all rated alternatives are then **persisted — found
 books are settled** and never searched or rated again unless you force that
 title with the per-row re-check (↻). Books with no confident match re-check
-about once a day, so newly-uploaded books surface on their own.
+about once a day, so newly-uploaded books surface on their own. Searches cast
+the **widest possible net** (the bare title stem — subtitles, volume
+designators and authors stripped) and the AI verdict does the targeted
+selection from the haul, so a comic-edition author or a subtitle can never
+hide the audiobook.
 
 ```env
 HARDCOVER_API_KEY=your-hardcover-token   # hardcover.app → account settings → Hardcover API

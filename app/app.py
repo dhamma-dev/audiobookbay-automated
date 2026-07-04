@@ -952,12 +952,16 @@ def _wanted_mark_sent_by_link(link):
 
 # --- search + pick (all deterministic; no LLM anywhere in this pipeline) ------
 def _wanted_queries(title, author):
-    """Query ladder for one wanted book, narrowest first. ABB's search is an
-    AND-ish full-text match, so the full Hardcover title -- subtitles, volume
-    designators and all ("The Witcher, Vol. 1: House of Glass") -- often matches
-    nothing. Search BROAD and let the matching stage pick the candidate:
-    1) subtitle-stripped title + author surname, 2) the same with any trailing
-    volume/book/part designator removed, 3) that bare stem alone."""
+    """Query ladder for one wanted book: MAXIMUM search area first, targeted
+    selection later. ABB's search is an AND-ish full-text match, so any extra
+    word (subtitle, volume designator, an author who only wrote the comic
+    edition) silently zeroes the results. The primary query is therefore the
+    bare stem -- title cut at subtitle/parenthetical, trailing
+    volume/book/part designators stripped -- and the verdict stage narrows
+    from the broad haul using the full book info. A surname-narrowed query is
+    the fallback, and LEADS only for ultra-generic one-word stems ("It"),
+    where the bare term matches everything and the right result may not even
+    surface in the fetched pages."""
     short = re.split(r"[:(\[]", title)[0].strip() or title.strip()
     # "The Witcher, Vol. 1" -> "The Witcher"; also Book/Part/No. suffixes.
     stem = re.sub(r"[,\s]*\b(?:vol(?:ume)?|book|part|no)\.?\s*\d+\s*$", "",
@@ -966,13 +970,13 @@ def _wanted_queries(title, author):
     if author:
         parts = author.split(",")[0].strip().split()
         surname = parts[-1] if parts else ""
-    queries = []
-    if surname:
-        queries.append(f"{short} {surname}")
-        queries.append(f"{stem} {surname}")
-    queries.append(stem)
+    words = [w for w in re.findall(r"[a-z0-9]+", stem.lower())
+             if w not in ("the", "a", "an")]
+    generic = len(words) <= 1 and (not words or len(words[0]) <= 3)
+    narrowed = f"{stem} {surname}" if surname else None
+    queries = [narrowed, stem] if (generic and narrowed) else [stem, narrowed]
     seen, out = set(), []
-    for q in (q.lower() for q in queries):
+    for q in ((q or "").lower() for q in queries):
         if q and q not in seen:
             seen.add(q)
             out.append(q)
@@ -992,12 +996,18 @@ WANTED_LLM = _is_truthy(os.getenv("WANTED_LLM", "true"))
 
 WANTED_VERDICT_INSTRUCTION = (
     "You verify audiobook listings against ONE specific wanted book. You get "
-    "the wanted book's exact title and author, and a list of listings (id, "
-    "title, format, bitrate, size, language) from a torrent-site search.\n"
+    "the wanted book's full title and author(s), and a list of listings (id, "
+    "title, format, bitrate, size, language) from a DELIBERATELY BROAD "
+    "torrent-site search -- most listings may be other works that merely share "
+    "words with the title, so be strict on identity.\n"
     "Rules:\n"
     "- A listing matches only if it IS that exact work by that author, as a "
-    "complete audiobook. Different works, other volumes/entries in the same "
-    "series, samples, and request posts are NOT matches.\n"
+    "complete audiobook. Match on the work, not the wording: the wanted title "
+    "may carry subtitles or volume designators the listing omits (and vice "
+    "versa), and the wanted author list may include co-authors, illustrators "
+    "or narrators the listing doesn't name. Different works, other "
+    "volumes/entries in the same series, samples, and request posts are NOT "
+    "matches.\n"
     "- Rank matching listings best-first: prefer M4B, then a healthy bitrate, "
     "then completeness; demote abridged, dramatized/adaptation, AI/TTS-narrated "
     "and suspiciously small files -- and give such listings a short note "
