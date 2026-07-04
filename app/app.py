@@ -1118,7 +1118,11 @@ def _wanted_search_one(row, sess=None):
                 print(f"[WANTED] {title!r}: found via {q!r} ({meta}; "
                       f"{len(ranked)} candidate(s))")
                 return "found"
+        # Clear any previous pick -- "no longer available" with a stale best
+        # match still showing reads as a contradiction.
         _wanted_upsert({"hc_id": row["hc_id"], "status": "unmatched", "searched_at": now,
+                        "best_link": None, "best_title": None, "best_meta": None,
+                        "candidates": None,
                         "detail": f"no confident match ({tried} searches, "
                                   f"{considered} results considered)"})
         print(f"[WANTED] {title!r}: no match ({tried} searches, {considered} results)")
