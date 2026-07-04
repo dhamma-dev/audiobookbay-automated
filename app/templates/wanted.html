@@ -13,7 +13,8 @@
             <span class="page-header-eyebrow">Hardcover</span>
             <h1>Wanted books</h1>
             <p>Your Hardcover “Want to Read” list, pre-searched on AudioBook Bay in the
-               background. Matching is fully local — no LLM calls anywhere in this pipeline.</p>
+               background. Each book's results are AI-rated once when found, then kept —
+               no repeat lookups unless you force a re-check.</p>
         </div>
         {% if enabled %}
         <form method="post" action="{{ url_for('wanted_sync') }}">
@@ -97,6 +98,11 @@
                         {% if 'M4B' in (r.best_meta or '') %}<span class="badge badge-accent">M4B</span> {% endif %}{{ r.best_title }}
                     </span>
                     {% if r.best_meta %}<span class="wanted-match-meta">{{ r.best_meta }}</span>{% endif %}
+                    {% if r.verdict %}
+                    <span class="wanted-verdict" title="{{ r.verdict }}">
+                        <i data-lucide="sparkles" aria-hidden="true"></i> {{ r.verdict }}
+                    </span>
+                    {% endif %}
                     {% if r.alts %}
                     <button type="button" class="wanted-alts-toggle" data-action="wanted-alts"
                             data-target="wanted-alts-{{ r.hc_id }}" aria-expanded="false">
@@ -138,6 +144,7 @@
                     {% for a in r.alts %}
                     <div class="wanted-alt">
                         {% if a.is_m4b %}<span class="badge badge-accent">M4B</span>{% endif %}
+                        {% if a.note %}<span class="badge badge-warning" title="AI note">{{ a.note }}</span>{% endif %}
                         <span class="wanted-alt-title" title="{{ a.title }}">{{ a.title }}</span>
                         {% if a.meta %}<span class="wanted-alt-meta">{{ a.meta }}</span>{% endif %}
                         <span class="wanted-alt-actions">
@@ -164,9 +171,10 @@
     </table>
 </div>
 <p class="upgrades-footnote">
-    Books are re-checked automatically about once a day; “Not available yet” just means no
-    confident match has appeared on AudioBook Bay so far. Sending (manually or auto) marks the
-    row — and once the download lands in Audiobookshelf, it flips to “In your library”.
+    “Not available yet” books are re-checked about once a day. Found books are settled — their
+    results and AI rating are stored and never looked up again unless you hit re-check (↻) on
+    that row. Sending (manually or auto) marks the row — and once the download lands in
+    Audiobookshelf, it flips to “In your library”.
 </p>
 {% else %}
 {{ empty_state('bookmark', 'No wanted books found',

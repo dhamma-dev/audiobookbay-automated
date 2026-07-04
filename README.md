@@ -293,10 +293,16 @@ Connect your [Hardcover](https://hardcover.app) account and your **“Want to
 Read” list becomes a dashboard**: a **Wanted** page appears in the nav where
 every wanted book is pre-searched on AudioBook Bay in the background and moves
 through a pipeline — *Queued → Found → Sent → In your library* (books you
-already own in Audiobookshelf are marked instead of searched). Found books show
-the best edition (M4B preferred, your language, best bitrate) with a one-click
-**Send**, plus a deep link into a full search. Books with no confident match
-are re-checked about once a day, so newly-uploaded books surface on their own.
+already own in Audiobookshelf are marked instead of searched).
+
+When a search turns up results, they are **AI-rated once** (same Gemini model
+as Smart sort): the model verifies each listing really is that exact work,
+ranks the editions (M4B preferred, your language, healthy bitrate), flags red
+flags like *abridged* or *AI-narrated*, and explains its pick in one line shown
+on the row. The pick and all rated alternatives are then **persisted — found
+books are settled** and never searched or rated again unless you force that
+title with the per-row re-check (↻). Books with no confident match re-check
+about once a day, so newly-uploaded books surface on their own.
 
 ```env
 HARDCOVER_API_KEY=your-hardcover-token   # hardcover.app → account settings → Hardcover API
@@ -321,13 +327,16 @@ match, **M4B only**), it sends it to your download client automatically and
 records it in the download log as `hardcover-auto`. Anything less than
 confident stays a dashboard suggestion for you to decide.
 
-> **Cost & privacy notes:** this pipeline uses the same deterministic matcher
-> as library matching — **no LLM calls anywhere**, even fully automated, so
-> there is zero Gemini token cost. Hardcover is queried a couple of times per
-> sync window (well under their 60 req/min limit), ABB is searched through
-> your normal Tor/Direct routing at most a few books per minute, and nothing
-> about your library or wanted list is sent to any LLM. Heads-up: Hardcover
-> API tokens expire every January 1st, and their API is in beta.
+> **Cost & privacy notes:** the AI verdict is **~one small call per wanted
+> book, ever** — it fires only when a search first finds results, and the
+> rating is persisted (found = settled). Set `WANTED_LLM=false` for a fully
+> deterministic pipeline (M4B/language/bitrate rules, no calls at all). What
+> the model sees is the wanted book's public title/author and the public ABB
+> listing metadata — never your library. Hardcover is queried a couple of
+> times per sync window (well under their 60 req/min limit), and ABB is
+> searched through your normal Tor/Direct routing at most a few books per
+> minute. Heads-up: Hardcover API tokens expire every January 1st, and their
+> API is in beta.
 
 #### Evaluating / tuning the matcher
 

@@ -440,8 +440,10 @@ def init_download_log():
                 )
             """)
             existing = {r["name"] for r in conn.execute("PRAGMA table_info(wanted)")}
-            if "candidates" not in existing:  # added later: all STRONG matches, as JSON
-                conn.execute("ALTER TABLE wanted ADD COLUMN candidates TEXT")
+            for col in ("candidates",   # matched listings beyond the pick, as JSON
+                        "verdict"):     # the AI's one-line reason for the pick
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE wanted ADD COLUMN {col} TEXT")
         admins = ', '.join(sorted(LOG_ADMIN_USERS)) if LOG_ADMIN_USERS else None
         print(f"Download log: {LOG_DB_PATH}" + (f" (admins: {admins})" if admins else " (viewable by everyone)"))
     except Exception as e:
@@ -902,7 +904,7 @@ def _wanted_upsert(row):
             _wanted_mem[row["hc_id"]] = {**_wanted_mem.get(row["hc_id"], {}), **row}
         return
     cols = ("hc_id", "title", "author", "slug", "status", "best_link", "best_title",
-            "best_meta", "searched_at", "detail", "candidates")
+            "best_meta", "searched_at", "detail", "candidates", "verdict")
     with _log_lock, _log_connect() as conn:
         existing = conn.execute("SELECT * FROM wanted WHERE hc_id = ?", (row["hc_id"],)).fetchone()
         merged = {**(dict(existing) if existing else {}), **row}
@@ -950,18 +952,25 @@ def _wanted_mark_sent_by_link(link):
 
 # --- search + pick (all deterministic; no LLM anywhere in this pipeline) ------
 def _wanted_queries(title, author):
-    """Query ladder for one wanted book. ABB's search is an AND-ish full-text
-    match, so the full Hardcover title -- subtitles and all ("The Last Wish:
-    Introducing the Witcher") -- often matches nothing. Search BROAD and let the
-    matcher pick the candidate: subtitle/parenthetical stripped, first with the
-    author's surname for signal, then the bare short title as fallback."""
+    """Query ladder for one wanted book, narrowest first. ABB's search is an
+    AND-ish full-text match, so the full Hardcover title -- subtitles, volume
+    designators and all ("The Witcher, Vol. 1: House of Glass") -- often matches
+    nothing. Search BROAD and let the matching stage pick the candidate:
+    1) subtitle-stripped title + author surname, 2) the same with any trailing
+    volume/book/part designator removed, 3) that bare stem alone."""
     short = re.split(r"[:(\[]", title)[0].strip() or title.strip()
+    # "The Witcher, Vol. 1" -> "The Witcher"; also Book/Part/No. suffixes.
+    stem = re.sub(r"[,\s]*\b(?:vol(?:ume)?|book|part|no)\.?\s*\d+\s*$", "",
+                  short, flags=re.IGNORECASE).strip(" ,-") or short
     surname = ""
     if author:
         parts = author.split(",")[0].strip().split()
         surname = parts[-1] if parts else ""
-    queries = [f"{short} {surname}"] if surname else []
-    queries.append(short)
+    queries = []
+    if surname:
+        queries.append(f"{short} {surname}")
+        queries.append(f"{stem} {surname}")
+    queries.append(stem)
     seen, out = set(), []
     for q in (q.lower() for q in queries):
         if q and q not in seen:
@@ -973,6 +982,94 @@ def _wanted_queries(title, author):
 # ABB "request" posts describe a book somebody is ASKING for -- there's no
 # torrent behind them, so they must never become a pick.
 _ABB_REQUEST_RE = re.compile(r"\(\s*REQ", re.IGNORECASE)
+
+# The pick for a wanted book is AI-rated ONCE, when a search first turns up
+# results, then persisted -- found rows are settled and never re-searched or
+# re-rated unless the user forces that title (the per-row re-check). So the
+# LLM cost is ~one small call per wanted book EVER, not per sync cycle.
+# WANTED_LLM=false keeps the pipeline fully deterministic.
+WANTED_LLM = _is_truthy(os.getenv("WANTED_LLM", "true"))
+
+WANTED_VERDICT_INSTRUCTION = (
+    "You verify audiobook listings against ONE specific wanted book. You get "
+    "the wanted book's exact title and author, and a list of listings (id, "
+    "title, format, bitrate, size, language) from a torrent-site search.\n"
+    "Rules:\n"
+    "- A listing matches only if it IS that exact work by that author, as a "
+    "complete audiobook. Different works, other volumes/entries in the same "
+    "series, samples, and request posts are NOT matches.\n"
+    "- Rank matching listings best-first: prefer M4B, then a healthy bitrate, "
+    "then completeness; demote abridged, dramatized/adaptation, AI/TTS-narrated "
+    "and suspiciously small files -- and give such listings a short note "
+    "(e.g. 'abridged', 'AI-narrated', 'low bitrate').\n"
+    "- If the wanted item cannot exist as an audiobook (e.g. it is a comic or "
+    "graphic novel), set match_found=false and say so in reason.\n"
+    "- reason is one short human sentence explaining the pick or the rejection."
+)
+
+WANTED_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "match_found": {"type": "boolean"},
+        "ranked": {"type": "array", "items": {"type": "integer"}},
+        "notes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "note": {"type": "string"}},
+                "required": ["id", "note"],
+            },
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["match_found", "ranked", "notes", "reason"],
+}
+
+
+def _wanted_llm_verdict(title, author, listings):
+    """Rate a successful search's listings against the wanted identity with one
+    small Gemini call (same model/thinking settings as smart sort). Returns the
+    parsed verdict dict, or None on any failure/disablement so the caller can
+    fall back to the deterministic pick."""
+    global _thinking_supported
+    if not (GEMINI_API_KEY and WANTED_LLM and listings):
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        system_instruction = WANTED_VERDICT_INSTRUCTION
+        if PREFERRED_LANGUAGE:
+            system_instruction += (f"\n- The user listens in {PREFERRED_LANGUAGE}; "
+                                   "rank other languages below it and note them.")
+        prompt = json.dumps({"wanted": {"title": title, "author": author},
+                             "listings": listings}, ensure_ascii=False)
+        config_kwargs = dict(system_instruction=system_instruction,
+                             response_mime_type="application/json",
+                             response_schema=WANTED_VERDICT_SCHEMA,
+                             temperature=0)
+        if RANK_THINKING_BUDGET is not None and _thinking_supported:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=RANK_THINKING_BUDGET)
+        started = time.monotonic()
+        try:
+            response = client.models.generate_content(
+                model=RANK_MODEL, contents=prompt,
+                config=types.GenerateContentConfig(**config_kwargs))
+        except Exception:
+            if "thinking_config" not in config_kwargs:
+                raise
+            _thinking_supported = False
+            config_kwargs.pop("thinking_config")
+            response = client.models.generate_content(
+                model=RANK_MODEL, contents=prompt,
+                config=types.GenerateContentConfig(**config_kwargs))
+        verdict = json.loads(response.text)
+        print(f"[WANTED] verdict for {title!r}: match={verdict.get('match_found')} "
+              f"in {time.monotonic() - started:.1f}s", flush=True)
+        return verdict
+    except Exception as e:
+        print(f"[WARNING] wanted verdict failed for {title!r}: {e}")
+        return None
 
 
 def _match_wanted_against(books, title, author):
@@ -1094,7 +1191,18 @@ def _wanted_search_one(row, sess=None):
         if _wanted_owned(title, author):
             _wanted_upsert({"hc_id": row["hc_id"], "status": "owned", "searched_at": now})
             return "owned"
-        considered, tried = 0, 0
+        def _store_found(ranked, q, verdict_reason):
+            best = ranked[0]
+            meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
+                                          best.get("size")) if x and x != "Unknown")
+            _wanted_upsert({"hc_id": row["hc_id"], "status": "found",
+                            "best_link": best.get("link"), "best_title": best.get("title"),
+                            "best_meta": meta, "searched_at": now, "detail": "",
+                            "verdict": verdict_reason,
+                            "candidates": json.dumps(ranked[:8])})
+            print(f"[WANTED] {title!r}: found via {q!r} ({meta}; {len(ranked)} candidate(s))")
+
+        considered, tried, ai_reason = 0, 0, ""
         for q in _wanted_queries(title, author):
             tried += 1
             books = search_audiobookbay(q, max_pages=2, sess=sess)
@@ -1105,26 +1213,47 @@ def _wanted_search_one(row, sess=None):
                                           "route — retrying shortly"})
                 return "unreachable"  # row status is 'wanted'; sentinel drives renewal
             considered += len(books)
-            ranked = _rank_wanted_candidates(_match_wanted_against(books, title, author))
-            if ranked:
-                best = ranked[0]
-                meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
-                                              best.get("size")) if x and x != "Unknown")
-                _wanted_upsert({"hc_id": row["hc_id"], "status": "found",
-                                "best_link": best.get("link"), "best_title": best.get("title"),
-                                "best_meta": meta, "searched_at": now, "detail": "",
-                                "candidates": json.dumps([_candidate_payload(b)
-                                                          for b in ranked[:8]])})
-                print(f"[WANTED] {title!r}: found via {q!r} ({meta}; "
-                      f"{len(ranked)} candidate(s))")
+            usable = [b for b in books if not _ABB_REQUEST_RE.search(b.get("title", ""))][:25]
+            if not usable:
+                continue
+            # The pick comes from ONE small AI verdict over this query's results
+            # (rated once, persisted; see WANTED_LLM). Deterministic fallback
+            # keeps the pipeline working with no key / on API failure.
+            verdict = _wanted_llm_verdict(title, author, [
+                {"id": i, "title": b.get("title"), "format": b.get("format"),
+                 "bitrate": b.get("bitrate"), "size": b.get("size"),
+                 "language": b.get("language")} for i, b in enumerate(usable)])
+            if verdict is not None:
+                if verdict.get("match_found"):
+                    idx = [i for i in (verdict.get("ranked") or [])
+                           if isinstance(i, int) and 0 <= i < len(usable)]
+                    if idx:
+                        notes = {n.get("id"): n.get("note")
+                                 for n in (verdict.get("notes") or [])}
+                        ranked = []
+                        for i in idx:
+                            c = _candidate_payload(usable[i])
+                            if notes.get(i):
+                                c["note"] = notes[i]
+                            ranked.append(c)
+                        _store_found(ranked, q, verdict.get("reason") or "")
+                        return "found"
+                # The AI looked at these results and says none are this book --
+                # remember why, and try the broader query next.
+                ai_reason = verdict.get("reason") or ai_reason
+                continue
+            ranked_det = _rank_wanted_candidates(_match_wanted_against(usable, title, author))
+            if ranked_det:
+                _store_found([_candidate_payload(b) for b in ranked_det], q, "")
                 return "found"
         # Clear any previous pick -- "no longer available" with a stale best
         # match still showing reads as a contradiction.
+        detail = f"no confident match ({tried} searches, {considered} results considered)"
+        if ai_reason:
+            detail += f" — AI: {ai_reason}"
         _wanted_upsert({"hc_id": row["hc_id"], "status": "unmatched", "searched_at": now,
                         "best_link": None, "best_title": None, "best_meta": None,
-                        "candidates": None,
-                        "detail": f"no confident match ({tried} searches, "
-                                  f"{considered} results considered)"})
+                        "candidates": None, "verdict": None, "detail": detail})
         print(f"[WANTED] {title!r}: no match ({tried} searches, {considered} results)")
         return "unmatched"
     except Exception as e:
@@ -1183,12 +1312,14 @@ def _wanted_sync_list():
 def _wanted_due_rows():
     """Rows that need (re)searching: never searched, or past their cadence.
     'wanted' rows (not yet successfully searched, incl. failed scrapes) retry on
-    the short WANTED_RETRY_TTL; successfully-searched rows use the daily TTL."""
+    the short WANTED_RETRY_TTL; 'unmatched' rows re-check daily. 'found' rows
+    are SETTLED -- their results and AI verdict are persisted and never looked
+    up again unless the user forces that title (per-row re-check)."""
     due = []
     now = datetime.now(timezone.utc)
     for row in _wanted_rows():
         status = row.get("status") or "wanted"
-        if status in ("sent", "owned"):
+        if status in ("found", "sent", "owned"):
             continue
         searched = row.get("searched_at")
         if not searched:
@@ -1239,13 +1370,14 @@ def _wanted_worker():
 
 
 def _wanted_requeue_open():
-    """Mark every open row due for a fresh search. Run at boot so a restart
-    always sweeps the list -- otherwise rows stamped by an older (possibly
-    buggier) build sit out their whole retry backoff before anything visible
-    happens. Sent/owned rows are settled and stay put."""
+    """Mark every UNRESOLVED row due for a fresh search. Run at boot so a
+    restart always sweeps the list -- otherwise rows stamped by an older
+    (possibly buggier) build sit out their whole retry backoff before anything
+    visible happens. Found rows are settled (their results and verdict are
+    persisted); sent/owned likewise stay put."""
     n = 0
     for row in _wanted_rows():
-        if row.get("status") not in ("sent", "owned") and row.get("searched_at"):
+        if row.get("status") not in ("found", "sent", "owned") and row.get("searched_at"):
             _wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
             n += 1
     return n
@@ -2162,8 +2294,10 @@ def wanted_sync():
         _wanted_sync_list()
     except Exception as e:
         return jsonify({'message': f'Hardcover sync failed: {e}'}), 502
+    # Requeue the unresolved rows only: found rows are settled (rated + stored);
+    # re-rating one is the per-row re-check's job, on the user's say-so.
     for row in _wanted_rows():
-        if row.get("status") not in ("sent", "owned"):
+        if row.get("status") not in ("found", "sent", "owned"):
             _wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
     return redirect(url_for('wanted'))
 

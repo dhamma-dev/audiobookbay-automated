@@ -48,12 +48,19 @@ Key regions (search by name; line numbers drift):
   `record_download`, `fetch_download_log`, `/log`.
 - **Hardcover wanted list** — `_hardcover_gql`/`_fetch_hardcover_wanted` (GraphQL,
   documented `user_books status_id=1` shape), `_wanted_worker` daemon thread
-  (sync every `HARDCOVER_SYNC_TTL`, ≤3 ABB searches/min, re-search after
-  `WANTED_RESEARCH_TTL`), `_match_wanted_against`/`_pick_best_wanted`
-  (deterministic, no LLM), `_wanted_auto_send` (M4B-only gate), `/wanted` +
-  `/wanted/sync` + `/wanted/research/<id>`. Rows persist in the log DB's
+  (sync every `HARDCOVER_SYNC_TTL`, ≤3 ABB searches/min via a broad query
+  ladder `_wanted_queries`; failed scrapes retry on `WANTED_RETRY_TTL` with
+  auto Tor-circuit renewal; unmatched re-check after `WANTED_RESEARCH_TTL`).
+  A successful search is rated by ONE small Gemini call
+  (`_wanted_llm_verdict`: verify identity, rank editions, flag
+  abridged/AI-narrated, one-line reason) with a deterministic fallback
+  (`_match_wanted_against`/`_rank_wanted_candidates`); the verdict +
+  candidates persist and **found rows are settled** (no re-search/re-rate)
+  until the user forces `/wanted/research/<id>`. `_wanted_auto_send`
+  (M4B-only gate), `/wanted` + `/wanted/sync`. Rows persist in the log DB's
   `wanted` table (in-memory fallback). `/send` success calls
-  `_wanted_mark_sent_by_link` so manual sends advance the pipeline.
+  `_wanted_mark_sent_by_link` (pick or any stored alternative) so manual
+  sends advance the pipeline.
 - **Routes** — `/` (search), `/send`, `/status`, `/api/status`, `/api/rank`,
   `/api/ownership`, `/log`, `/settings/route`, `/tor/renew`, Put.io OAuth.
 - **Bottom of file** — `init_download_log()` and `init_outbound()` (starts/join

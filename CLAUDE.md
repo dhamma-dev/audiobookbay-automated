@@ -41,7 +41,7 @@ progressive-enhancement vanilla JS.
 - **Smart sort** — optional Gemini call (`/api/rank`) that re-ranks results and groups series/editions. Only public result metadata (`RANK_FIELDS`) is sent. See [`docs/architecture.md`](docs/architecture.md).
 - **ABS library matching** — flags results you already own; deterministic baseline + LLM-canonicalized local join + a live re-check poll. **Precision-first, and your library never leaves the box.** See [`docs/library-matching.md`](docs/library-matching.md).
 - **Download log** — SQLite audit of who sent what; identity from reverse-proxy auth headers (Authentik). `/log` gated by `LOG_ADMIN_USERS`.
-- **Hardcover wanted list** — `/wanted` dashboard syncs the user's Hardcover "Want to Read" list (GraphQL, `HARDCOVER_API_KEY`), background-searches ABB per book (worker thread, deterministic matcher — **zero LLM**), optional strict auto-download (`WANTED_AUTO_DOWNLOAD`, M4B-only). State in the log SQLite (`wanted` table).
+- **Hardcover wanted list** — `/wanted` dashboard syncs the user's Hardcover "Want to Read" list (GraphQL, `HARDCOVER_API_KEY`), background-searches ABB per book (worker thread, broad query ladder). Results are **AI-rated once at find time** (`_wanted_llm_verdict`; ~one call per book ever; `WANTED_LLM=false` → deterministic fallback), then persisted — found rows are settled until the user forces a re-check. Optional strict auto-download (`WANTED_AUTO_DOWNLOAD`, M4B-only). State in the log SQLite (`wanted` table).
 - **Auth deployment** — runs behind Authentik forward-auth via Nginx Proxy Manager; `X-authentik-username` etc. arrive as request headers.
 
 ## Dev workflow (important)
