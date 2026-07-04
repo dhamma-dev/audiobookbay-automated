@@ -938,6 +938,27 @@ def _wanted_mark_sent_by_link(link):
 
 
 # --- search + pick (all deterministic; no LLM anywhere in this pipeline) ------
+def _wanted_queries(title, author):
+    """Query ladder for one wanted book. ABB's search is an AND-ish full-text
+    match, so the full Hardcover title -- subtitles and all ("The Last Wish:
+    Introducing the Witcher") -- often matches nothing. Search BROAD and let the
+    matcher pick the candidate: subtitle/parenthetical stripped, first with the
+    author's surname for signal, then the bare short title as fallback."""
+    short = re.split(r"[:(\[]", title)[0].strip() or title.strip()
+    surname = ""
+    if author:
+        parts = author.split(",")[0].strip().split()
+        surname = parts[-1] if parts else ""
+    queries = [f"{short} {surname}"] if surname else []
+    queries.append(short)
+    seen, out = set(), []
+    for q in (q.lower() for q in queries):
+        if q and q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out
+
+
 def _match_wanted_against(books, title, author):
     """STRONG-only matches of scraped ABB results against one clean wanted
     identity. Returns the matching book dicts (the wanted book acts as a
@@ -1045,25 +1066,30 @@ def _wanted_search_one(row, sess=None):
         if _wanted_owned(title, author):
             _wanted_upsert({"hc_id": row["hc_id"], "status": "owned", "searched_at": now})
             return "owned"
-        books = search_audiobookbay(title.lower(), max_pages=2, sess=sess)
-        if books is None:
-            print(f"[WANTED] {title!r}: ABB unreachable on this route; will retry")
-            _wanted_upsert({"hc_id": row["hc_id"], "status": "wanted", "searched_at": now,
-                            "detail": "AudioBook Bay didn't respond on the background "
-                                      "route — retrying shortly"})
-            return "unreachable"  # row status is 'wanted'; sentinel drives renewal
-        best = _pick_best_wanted(_match_wanted_against(books, title, author))
-        if best:
-            meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
-                                          best.get("size")) if x and x != "Unknown")
-            _wanted_upsert({"hc_id": row["hc_id"], "status": "found",
-                            "best_link": best.get("link"), "best_title": best.get("title"),
-                            "best_meta": meta, "searched_at": now, "detail": ""})
-            print(f"[WANTED] {title!r}: found ({meta})")
-            return "found"
+        considered, tried = 0, 0
+        for q in _wanted_queries(title, author):
+            tried += 1
+            books = search_audiobookbay(q, max_pages=2, sess=sess)
+            if books is None:
+                print(f"[WANTED] {title!r}: ABB unreachable on this route; will retry")
+                _wanted_upsert({"hc_id": row["hc_id"], "status": "wanted", "searched_at": now,
+                                "detail": "AudioBook Bay didn't respond on the background "
+                                          "route — retrying shortly"})
+                return "unreachable"  # row status is 'wanted'; sentinel drives renewal
+            considered += len(books)
+            best = _pick_best_wanted(_match_wanted_against(books, title, author))
+            if best:
+                meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
+                                              best.get("size")) if x and x != "Unknown")
+                _wanted_upsert({"hc_id": row["hc_id"], "status": "found",
+                                "best_link": best.get("link"), "best_title": best.get("title"),
+                                "best_meta": meta, "searched_at": now, "detail": ""})
+                print(f"[WANTED] {title!r}: found via {q!r} ({meta})")
+                return "found"
         _wanted_upsert({"hc_id": row["hc_id"], "status": "unmatched", "searched_at": now,
-                        "detail": f"no confident match in {len(books)} results"})
-        print(f"[WANTED] {title!r}: no match in {len(books)} results")
+                        "detail": f"no confident match ({tried} searches, "
+                                  f"{considered} results considered)"})
+        print(f"[WANTED] {title!r}: no match ({tried} searches, {considered} results)")
         return "unmatched"
     except Exception as e:
         print(f"[WARNING] wanted search failed for {title!r}: {e}")
@@ -2048,6 +2074,8 @@ def wanted():
     rows = sorted(_wanted_rows(), key=lambda r: (r.get("title") or "").lower())
     order = {"found": 0, "wanted": 1, "unmatched": 2, "sent": 3, "owned": 4}
     rows.sort(key=lambda r: order.get(r.get("status") or "wanted", 1))
+    for r in rows:  # manual Search uses the same broad primary query as the worker
+        r["search_q"] = _wanted_queries(r.get("title") or "", r.get("author") or "")[0]
     counts = {}
     for r in rows:
         counts[r.get("status") or "wanted"] = counts.get(r.get("status") or "wanted", 0) + 1

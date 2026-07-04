@@ -111,7 +111,7 @@
                     {% endif %}
                     {% if r.status not in ('sent',) %}
                     <a class="btn btn-secondary btn-upgrade-search" data-busy="Searching…"
-                       href="{{ url_for('search', q=(r.title ~ ' ' ~ (r.author.split(',')[0] if r.author else '')) | trim) }}">
+                       href="{{ url_for('search', q=r.search_q) }}">
                         <i data-lucide="search" aria-hidden="true"></i>
                         Search
                     </a>
