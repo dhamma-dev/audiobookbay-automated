@@ -37,6 +37,12 @@
                     Upgrades
                 </a>
                 {% endif %}
+                {% if wanted_enabled %}
+                <a href="{{ url_for('wanted') }}" class="{% if request.endpoint == 'wanted' %}active{% endif %}">
+                    <i data-lucide="bookmark" aria-hidden="true"></i>
+                    Wanted
+                </a>
+                {% endif %}
                 {% if log_enabled %}
                 <a href="{{ url_for('download_log') }}" class="{% if request.endpoint == 'download_log' %}active{% endif %}">
                     <i data-lucide="history" aria-hidden="true"></i>

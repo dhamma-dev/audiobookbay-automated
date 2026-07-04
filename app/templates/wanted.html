@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% from "macros/empty_state.html" import render as empty_state %}
+
+{% block title %}Wanted{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-header-row">
+        <div>
+            <span class="page-header-eyebrow">Hardcover</span>
+            <h1>Wanted books</h1>
+            <p>Your Hardcover “Want to Read” list, pre-searched on AudioBook Bay in the
+               background. Matching is fully local — no LLM calls anywhere in this pipeline.</p>
+        </div>
+        {% if enabled %}
+        <form method="post" action="{{ url_for('wanted_sync') }}">
+            <button type="submit" class="btn btn-secondary">
+                <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                Sync now
+            </button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+{% if not enabled %}
+{{ empty_state('bookmark', 'Hardcover is not connected',
+               'Set HARDCOVER_API_KEY (from hardcover.app account settings) to sync your Want to Read list.') }}
+{% else %}
+
+{% if sync_error %}
+<div class="alert alert-error" role="alert">
+    <i data-lucide="alert-circle" aria-hidden="true"></i>
+    <span>Last Hardcover sync failed: {{ sync_error }}. Tokens expire every January 1st — a fresh one from your Hardcover account settings usually fixes this.</span>
+</div>
+{% endif %}
+
+<div class="downloads-toolbar">
+    <span class="downloads-count">
+        {% if rows %}
+        {{ rows | length }} wanted
+        {%- if counts.found %} · <span class="wanted-note-found">{{ counts.found }} found</span>{% endif %}
+        {%- if counts.sent %} · {{ counts.sent }} sent{% endif %}
+        {%- if counts.owned %} · {{ counts.owned }} already in library{% endif %}
+        {%- if counts.unmatched %} · {{ counts.unmatched }} not available yet{% endif %}
+        {% else %}
+        Nothing on your Want to Read list yet
+        {% endif %}
+    </span>
+    <span class="downloads-updated">
+        {% if auto %}auto-download is ON (M4B only){% else %}auto-download off — sends are manual{% endif %}
+    </span>
+</div>
+
+{% if rows %}
+<div class="log-table-wrap">
+    <table class="log-table">
+        <thead>
+            <tr>
+                <th>Book</th>
+                <th>Status</th>
+                <th>Best match</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in rows %}
+            <tr>
+                <td class="log-book">
+                    {% if r.slug %}
+                    <a href="https://hardcover.app/books/{{ r.slug }}" target="_blank" rel="noopener noreferrer"><strong>{{ r.title }}</strong></a>
+                    {% else %}
+                    <strong>{{ r.title }}</strong>
+                    {% endif %}
+                    {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
+                </td>
+                <td>
+                    {% if r.status == 'found' %}
+                    <span class="badge badge-success"><i data-lucide="check" aria-hidden="true"></i> Found</span>
+                    {% elif r.status == 'sent' %}
+                    <span class="badge badge-info">Sent</span>
+                    {% elif r.status == 'owned' %}
+                    <span class="badge badge-neutral">In your library</span>
+                    {% elif r.status == 'unmatched' %}
+                    <span class="badge badge-neutral" title="{{ r.detail }}">Not available yet</span>
+                    {% else %}
+                    <span class="badge badge-warning">Queued for search</span>
+                    {% endif %}
+                </td>
+                <td class="wanted-match">
+                    {% if r.best_title %}
+                    <span class="wanted-match-title" title="{{ r.best_title }}">{{ r.best_title }}</span>
+                    {% if r.best_meta %}<span class="wanted-match-meta">{{ r.best_meta }}</span>{% endif %}
+                    {% elif r.status == 'unmatched' %}
+                    <span class="wanted-match-meta">will re-check automatically</span>
+                    {% endif %}
+                </td>
+                <td class="wanted-actions">
+                    {% if r.status == 'found' and r.best_link %}
+                    <button type="button" class="btn btn-primary btn-upgrade-search"
+                            data-action="download"
+                            data-link="{{ r.best_link | e }}"
+                            data-title="{{ (r.best_title or r.title) | e }}">
+                        <i data-lucide="download" aria-hidden="true"></i>
+                        Send
+                    </button>
+                    {% endif %}
+                    {% if r.status not in ('sent',) %}
+                    <a class="btn btn-secondary btn-upgrade-search" href="{{ url_for('search', q=(r.title ~ ' ' ~ (r.author.split(',')[0] if r.author else '')) | trim) }}">
+                        <i data-lucide="search" aria-hidden="true"></i>
+                        Search
+                    </a>
+                    <form method="post" action="{{ url_for('wanted_research', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                        <button type="submit" class="btn btn-secondary btn-upgrade-search" title="Re-check AudioBook Bay for this book now">
+                            <i data-lucide="rotate-cw" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p class="upgrades-footnote">
+    Books are re-checked automatically about once a day; “Not available yet” just means no
+    confident match has appeared on AudioBook Bay so far. Sending (manually or auto) marks the
+    row — and once the download lands in Audiobookshelf, it flips to “In your library”.
+</p>
+{% else %}
+{{ empty_state('bookmark', 'No wanted books found',
+               'Add books to your Want to Read list on Hardcover, then Sync now.') }}
+{% endif %}
+{% endif %}
+{% endblock %}

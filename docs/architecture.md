@@ -46,6 +46,14 @@ Key regions (search by name; line numbers drift):
   `resolve_ownership`, `/api/ownership`. See [`library-matching.md`](library-matching.md).
 - **Download log** — `current_user_label` (identity from proxy headers),
   `record_download`, `fetch_download_log`, `/log`.
+- **Hardcover wanted list** — `_hardcover_gql`/`_fetch_hardcover_wanted` (GraphQL,
+  documented `user_books status_id=1` shape), `_wanted_worker` daemon thread
+  (sync every `HARDCOVER_SYNC_TTL`, ≤3 ABB searches/min, re-search after
+  `WANTED_RESEARCH_TTL`), `_match_wanted_against`/`_pick_best_wanted`
+  (deterministic, no LLM), `_wanted_auto_send` (M4B-only gate), `/wanted` +
+  `/wanted/sync` + `/wanted/research/<id>`. Rows persist in the log DB's
+  `wanted` table (in-memory fallback). `/send` success calls
+  `_wanted_mark_sent_by_link` so manual sends advance the pipeline.
 - **Routes** — `/` (search), `/send`, `/status`, `/api/status`, `/api/rank`,
   `/api/ownership`, `/log`, `/settings/route`, `/tor/renew`, Put.io OAuth.
 - **Bottom of file** — `init_download_log()` and `init_outbound()` (starts/join

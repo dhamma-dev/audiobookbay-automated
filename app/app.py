@@ -2,7 +2,7 @@ import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, temp
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from flask import Flask, request, render_template, jsonify, redirect, session, url_for
+from flask import Flask, request, render_template, jsonify, redirect, session, url_for, has_request_context
 from bs4 import BeautifulSoup
 import abs_match
 from qbittorrentapi import Client
@@ -203,7 +203,8 @@ def current_route_mode():
     ready, or the user can switch to Direct)."""
     if tor_status() == 'unavailable':
         return 'direct'
-    mode = session.get('route_mode')
+    # Background work (the wanted-list worker) has no request; use the default.
+    mode = session.get('route_mode') if has_request_context() else None
     if mode not in ('tor', 'direct'):
         mode = 'tor' if USE_TOR else 'direct'
     return mode
@@ -423,6 +424,21 @@ def init_download_log():
                 )
             """)
             _ensure_log_columns(conn)
+            # Hardcover wanted-list pipeline state (see the Hardcover section).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS wanted (
+                    hc_id INTEGER PRIMARY KEY,
+                    title TEXT,
+                    author TEXT,
+                    slug TEXT,
+                    status TEXT,
+                    best_link TEXT,
+                    best_title TEXT,
+                    best_meta TEXT,
+                    searched_at TEXT,
+                    detail TEXT
+                )
+            """)
         admins = ', '.join(sorted(LOG_ADMIN_USERS)) if LOG_ADMIN_USERS else None
         print(f"Download log: {LOG_DB_PATH}" + (f" (admins: {admins})" if admins else " (viewable by everyone)"))
     except Exception as e:
@@ -781,6 +797,300 @@ def resolve_ownership(ranking, index, results=None):
 
 print(f"ABS match: {'Enabled (' + ABS_URL + ')' if ABS_MATCH_ENABLED else 'Disabled'}")
 
+
+# --- Hardcover wanted list -----------------------------------------------------
+# Optional. With a Hardcover API key, the user's "Want to Read" list becomes a
+# /wanted dashboard: each wanted book is pre-searched on ABB in the background
+# and shown as Wanted -> Found -> Sent -> In library. Matching is entirely the
+# deterministic matcher (Hardcover gives clean title+author, same shape as the
+# ABS side), so the whole pipeline -- even fully automated -- costs ZERO Gemini
+# tokens. Hardcover API notes (docs.hardcover.app): GraphQL at
+# api.hardcover.app/v1/graphql, Bearer token, 60 req/min, tokens expire Jan 1,
+# beta. We stay far under the rate limit (a couple of calls per sync) and send a
+# descriptive user-agent, per their guidance. v1 is read-only toward Hardcover.
+#
+#   HARDCOVER_API_KEY    - token from hardcover.app account settings; enables it.
+#   HARDCOVER_SYNC_TTL   - seconds between wanted-list refreshes (default 21600).
+#   WANTED_RESEARCH_TTL  - seconds before an unfound book is searched again
+#                          (default 86400 -- ABB inventory changes slowly).
+#   WANTED_AUTO_DOWNLOAD - "true" to auto-send the best match. Strictest gate
+#                          only: STRONG title+author match AND M4B. Default off.
+HARDCOVER_API_KEY = (os.getenv("HARDCOVER_API_KEY") or "").strip()
+HARDCOVER_SYNC_TTL = int(os.getenv("HARDCOVER_SYNC_TTL", "21600"))
+WANTED_RESEARCH_TTL = int(os.getenv("WANTED_RESEARCH_TTL", "86400"))
+WANTED_AUTO_DOWNLOAD = _is_truthy(os.getenv("WANTED_AUTO_DOWNLOAD", "false"))
+WANTED_ENABLED = bool(HARDCOVER_API_KEY)
+_HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
+_wanted_lock = threading.Lock()
+_wanted_mem = {}          # hc_id -> row dict; fallback store when the log DB is off
+_wanted_last_sync = 0.0
+_wanted_sync_error = ""   # last sync failure, surfaced on the dashboard
+
+
+def _hardcover_gql(query, variables=None):
+    token = HARDCOVER_API_KEY
+    if token and not token.lower().startswith("bearer "):
+        token = f"Bearer {token}"
+    r = requests.post(_HARDCOVER_URL,
+                      json={"query": query, "variables": variables or {}},
+                      headers={"authorization": token,
+                               "content-type": "application/json",
+                               "user-agent": "audiobookbay-automated (self-hosted wanted-list sync)"},
+                      timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("errors"):
+        raise RuntimeError(data["errors"][0].get("message", "Hardcover API error"))
+    return data.get("data") or {}
+
+
+def _parse_wanted_payload(data):
+    """Pure: Hardcover user_books payload -> [{hc_id, title, author, slug}]."""
+    rows = []
+    for ub in data.get("user_books") or []:
+        b = ub.get("book") or {}
+        if not b.get("title"):
+            continue
+        authors = [c.get("author", {}).get("name", "")
+                   for c in (b.get("contributions") or []) if c.get("author")]
+        rows.append({
+            "hc_id": b.get("id"),
+            "title": b["title"],
+            "author": ", ".join(a for a in authors if a),
+            "slug": b.get("slug") or "",
+        })
+    return [r for r in rows if r["hc_id"] is not None]
+
+
+def _fetch_hardcover_wanted():
+    me = _hardcover_gql("query { me { id } }").get("me")
+    uid = (me[0] if isinstance(me, list) and me else me or {}).get("id")
+    if not uid:
+        raise RuntimeError("Couldn't resolve the Hardcover user id for this token.")
+    data = _hardcover_gql(
+        """query ($uid: Int!) {
+             user_books(where: {user_id: {_eq: $uid}, status_id: {_eq: 1}}) {
+               book { id title slug contributions { author { name } } }
+             }
+           }""", {"uid": uid})
+    return _parse_wanted_payload(data)
+
+
+# --- wanted-row store: SQLite when the download log is on, else in-memory ----
+def _wanted_rows():
+    if not LOG_ENABLED:
+        with _wanted_lock:
+            return [dict(r) for r in _wanted_mem.values()]
+    with _log_lock, _log_connect() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM wanted").fetchall()]
+
+
+def _wanted_upsert(row):
+    if not LOG_ENABLED:
+        with _wanted_lock:
+            _wanted_mem[row["hc_id"]] = {**_wanted_mem.get(row["hc_id"], {}), **row}
+        return
+    cols = ("hc_id", "title", "author", "slug", "status", "best_link", "best_title",
+            "best_meta", "searched_at", "detail")
+    with _log_lock, _log_connect() as conn:
+        existing = conn.execute("SELECT * FROM wanted WHERE hc_id = ?", (row["hc_id"],)).fetchone()
+        merged = {**(dict(existing) if existing else {}), **row}
+        conn.execute(
+            f"INSERT OR REPLACE INTO wanted ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+            tuple(merged.get(c) for c in cols))
+
+
+def _wanted_delete_missing(keep_ids):
+    if not LOG_ENABLED:
+        with _wanted_lock:
+            for k in list(_wanted_mem):
+                if k not in keep_ids:
+                    del _wanted_mem[k]
+        return
+    with _log_lock, _log_connect() as conn:
+        rows = conn.execute("SELECT hc_id FROM wanted").fetchall()
+        for r in rows:
+            if r["hc_id"] not in keep_ids:
+                conn.execute("DELETE FROM wanted WHERE hc_id = ?", (r["hc_id"],))
+
+
+def _wanted_mark_sent_by_link(link):
+    """Called after a successful /send: if that link was a wanted book's best
+    match, advance its status so the dashboard follows the user's action."""
+    if not (WANTED_ENABLED and link):
+        return
+    try:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for row in _wanted_rows():
+            if row.get("best_link") == link and row.get("status") in ("found", "wanted"):
+                _wanted_upsert({"hc_id": row["hc_id"], "status": "sent",
+                                "detail": f"sent {now}"})
+    except Exception as e:
+        print(f"[WARNING] wanted mark-sent failed: {e}")
+
+
+# --- search + pick (all deterministic; no LLM anywhere in this pipeline) ------
+def _match_wanted_against(books, title, author):
+    """STRONG-only matches of scraped ABB results against one clean wanted
+    identity. Returns the matching book dicts (the wanted book acts as a
+    one-item 'library' for the same author-gated matcher used everywhere)."""
+    target = [{"title": title, "author": author, "series": [], "language": ""}]
+    hits = []
+    for b in books:
+        rt, ra = abs_match.split_title_author(b.get("title", ""))
+        abb = {"raw": b.get("title", ""), "title": rt, "author": ra,
+               "language": b.get("language", "")}
+        tier, _s, _i, _r = abs_match.best_match(abb, target)
+        if tier == abs_match.STRONG:
+            hits.append(b)
+    return hits
+
+
+def _pick_best_wanted(hits):
+    """Best edition among STRONG matches: M4B first, preferred language, then
+    stated bitrate. Deterministic counterpart of smart sort's edition rules."""
+    def key(b):
+        return (bool(b.get("is_m4b")), _language_matches(b),
+                _parse_kbps(b.get("bitrate")) or 0)
+    return max(hits, key=key) if hits else None
+
+
+def _wanted_owned(title, author):
+    if not ABS_MATCH_ENABLED:
+        return False
+    index = get_abs_index()
+    if not index:
+        return False
+    tier, _s, _i, _r = abs_match.best_match(
+        {"raw": title, "title": title, "author": author, "language": ""}, index)
+    return tier == abs_match.STRONG
+
+
+def _wanted_search_one(row):
+    """Search ABB for one wanted book and update its row. Returns new status."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    title, author = row["title"], row.get("author") or ""
+    try:
+        if _wanted_owned(title, author):
+            _wanted_upsert({"hc_id": row["hc_id"], "status": "owned", "searched_at": now})
+            return "owned"
+        books = search_audiobookbay(title.lower(), max_pages=2)
+        best = _pick_best_wanted(_match_wanted_against(books, title, author))
+        if best:
+            meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
+                                          best.get("size")) if x and x != "Unknown")
+            _wanted_upsert({"hc_id": row["hc_id"], "status": "found",
+                            "best_link": best.get("link"), "best_title": best.get("title"),
+                            "best_meta": meta, "searched_at": now, "detail": ""})
+            return "found"
+        _wanted_upsert({"hc_id": row["hc_id"], "status": "unmatched", "searched_at": now})
+        return "unmatched"
+    except Exception as e:
+        print(f"[WARNING] wanted search failed for {title!r}: {e}")
+        _wanted_upsert({"hc_id": row["hc_id"], "searched_at": now, "detail": str(e)})
+        return row.get("status") or "wanted"
+
+
+def _wanted_auto_send(row):
+    """Auto-download a found match under the strictest gate (M4B was already
+    required by the picker order? No -- enforce it here explicitly)."""
+    try:
+        link, title = row.get("best_link"), row.get("best_title") or row["title"]
+        if not (link and CLIENT_OK):
+            return
+        if "m4b" not in (row.get("best_meta") or "").lower():
+            return  # auto only ever grabs the recommended single-file format
+        magnet = extract_magnet_link(link)
+        if not magnet:
+            record_download("hardcover-auto", title, link, None, "error",
+                            "Failed to extract magnet link")
+            return
+        DOWNLOAD_BACKENDS[DOWNLOAD_CLIENT]["add"](magnet, title)
+        record_download("hardcover-auto", title, link, _infohash_from_magnet(magnet),
+                        "ok", "Wanted-list auto-download")
+        _wanted_upsert({"hc_id": row["hc_id"], "status": "sent",
+                        "detail": "auto-downloaded"})
+        print(f"[WANTED] auto-sent {title!r}")
+    except Exception as e:
+        print(f"[WARNING] wanted auto-send failed for {row.get('title')!r}: {e}")
+        record_download("hardcover-auto", row.get("best_title") or row["title"],
+                        row.get("best_link"), None, "error", str(e))
+
+
+def _wanted_sync_list():
+    """Refresh the wanted list from Hardcover, upserting new books and dropping
+    ones the user removed (their Hardcover list stays the source of truth)."""
+    global _wanted_last_sync, _wanted_sync_error
+    wanted = _fetch_hardcover_wanted()
+    keep = set()
+    for w in wanted:
+        keep.add(w["hc_id"])
+        _wanted_upsert({"hc_id": w["hc_id"], "title": w["title"],
+                        "author": w["author"], "slug": w["slug"]})
+    # New rows need a status; don't clobber rows already progressed.
+    for row in _wanted_rows():
+        if row["hc_id"] in keep and not row.get("status"):
+            _wanted_upsert({"hc_id": row["hc_id"], "status": "wanted"})
+    _wanted_delete_missing(keep)
+    _wanted_last_sync = time.monotonic()
+    _wanted_sync_error = ""
+    print(f"[WANTED] synced {len(wanted)} wanted books from Hardcover")
+
+
+def _wanted_due_rows():
+    """Rows that need (re)searching: never searched, or stale and still open."""
+    due = []
+    now = datetime.now(timezone.utc)
+    for row in _wanted_rows():
+        if row.get("status") in ("sent", "owned"):
+            continue
+        searched = row.get("searched_at")
+        if not searched:
+            due.append(row)
+            continue
+        try:
+            age = (now - datetime.fromisoformat(searched)).total_seconds()
+        except ValueError:
+            age = WANTED_RESEARCH_TTL + 1
+        if age > WANTED_RESEARCH_TTL:
+            due.append(row)
+    return due
+
+
+def _wanted_worker():
+    """Background loop: keep the wanted list synced and searched. Deliberately
+    gentle -- at most 3 ABB searches per minute-tick, all through the default
+    route (Tor when available), and a couple of Hardcover calls per sync TTL."""
+    global _wanted_sync_error
+    while True:
+        try:
+            if time.monotonic() - _wanted_last_sync > HARDCOVER_SYNC_TTL or _wanted_last_sync == 0:
+                try:
+                    _wanted_sync_list()
+                except Exception as e:
+                    _wanted_sync_error = str(e)
+                    print(f"[WARNING] Hardcover sync failed: {e}")
+            if tor_status() in ("ready", "unavailable"):  # don't scrape mid-bootstrap
+                for row in _wanted_due_rows()[:3]:
+                    status = _wanted_search_one(row)
+                    if status == "found" and WANTED_AUTO_DOWNLOAD:
+                        fresh = next((r for r in _wanted_rows()
+                                      if r["hc_id"] == row["hc_id"]), None)
+                        if fresh:
+                            _wanted_auto_send(fresh)
+        except Exception as e:
+            print(f"[WARNING] wanted worker tick failed: {e}")
+        time.sleep(60)
+
+
+def init_wanted():
+    if not WANTED_ENABLED:
+        print("Hardcover wanted list: disabled (no HARDCOVER_API_KEY)")
+        return
+    threading.Thread(target=_wanted_worker, daemon=True, name="wanted-worker").start()
+    print("Hardcover wanted list: enabled"
+          + (", auto-download ON (M4B-only)" if WANTED_AUTO_DOWNLOAD else ", dashboard only"))
+
 # Fields we are willing to forward to Gemini. Everything else (link, cover,
 # is_m4b, etc.) is dropped before the request is built.
 RANK_FIELDS = ("title", "format", "bitrate", "language", "size", "keywords")
@@ -878,6 +1188,7 @@ def inject_app_config():
         'smart_prefetch': session.get('smart_prefetch', SMART_PREFETCH_DEFAULT),
         'abs_match_enabled': ABS_MATCH_ENABLED,
         'log_enabled': LOG_ENABLED,
+        'wanted_enabled': WANTED_ENABLED,
         # Connection controls (Tor routing toggle + circuit renewal).
         'tor_available': _tor_available,
         'tor_renewable': _tor_available and _tor_managed,
@@ -1630,6 +1941,51 @@ def upgrades():
                            total=len(index), low_kbps=ABS_LOW_KBPS)
 
 
+@app.route('/wanted')
+def wanted():
+    """Hardcover wanted-list dashboard: every 'Want to Read' book with its
+    pipeline status and, when found, the best ABB match ready to send."""
+    if not WANTED_ENABLED:
+        return render_template('wanted.html', enabled=False, rows=[], counts={},
+                               auto=WANTED_AUTO_DOWNLOAD, sync_error="")
+    rows = sorted(_wanted_rows(), key=lambda r: (r.get("title") or "").lower())
+    order = {"found": 0, "wanted": 1, "unmatched": 2, "sent": 3, "owned": 4}
+    rows.sort(key=lambda r: order.get(r.get("status") or "wanted", 1))
+    counts = {}
+    for r in rows:
+        counts[r.get("status") or "wanted"] = counts.get(r.get("status") or "wanted", 0) + 1
+    return render_template('wanted.html', enabled=True, rows=rows, counts=counts,
+                           auto=WANTED_AUTO_DOWNLOAD, sync_error=_wanted_sync_error)
+
+
+@app.route('/wanted/sync', methods=['POST'])
+def wanted_sync():
+    """Refresh the list from Hardcover now and make every open row due for a
+    re-search; the background worker drains them a few per minute."""
+    if not WANTED_ENABLED:
+        return jsonify({'message': 'Hardcover is not configured.'}), 503
+    try:
+        _wanted_sync_list()
+    except Exception as e:
+        return jsonify({'message': f'Hardcover sync failed: {e}'}), 502
+    for row in _wanted_rows():
+        if row.get("status") not in ("sent", "owned"):
+            _wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
+    return redirect(url_for('wanted'))
+
+
+@app.route('/wanted/research/<int:hc_id>', methods=['POST'])
+def wanted_research(hc_id):
+    """Re-search one wanted book right now (synchronous -- it's one scrape)."""
+    if not WANTED_ENABLED:
+        return jsonify({'message': 'Hardcover is not configured.'}), 503
+    row = next((r for r in _wanted_rows() if r["hc_id"] == hc_id), None)
+    if not row:
+        return jsonify({'message': 'Unknown wanted book.'}), 404
+    _wanted_search_one(row)
+    return redirect(url_for('wanted'))
+
+
 # --- Download backends -------------------------------------------------------
 # One add/list pair per client. send() and the status page dispatch through
 # DOWNLOAD_BACKENDS instead of branching inline, so adding a client is a single
@@ -1762,6 +2118,7 @@ def send():
 
         DOWNLOAD_BACKENDS[DOWNLOAD_CLIENT]['add'](magnet_link, title)
         record_download(user, title, details_url, _infohash_from_magnet(magnet_link), 'ok')
+        _wanted_mark_sent_by_link(details_url)
         return jsonify({'message': f'Download added successfully! This may take some time, the download will show in Audiobookshelf when completed.'})
     except PutioNotConnected as e:
         record_download(user, title, details_url, None, 'error', str(e))
@@ -1809,6 +2166,7 @@ def send_batch():
             DOWNLOAD_BACKENDS[DOWNLOAD_CLIENT]['add'](magnet_link, title)
             record_download(user, title, link, _infohash_from_magnet(magnet_link),
                             'ok', '', batch_id, batch_label)
+            _wanted_mark_sent_by_link(link)
             results.append({'link': link, 'title': title, 'ok': True})
             sent += 1
         except Exception as e:
@@ -1873,6 +2231,7 @@ def download_log():
 # import time so it also covers WSGI servers, not just `python app.py`.
 init_download_log()
 init_outbound()
+init_wanted()  # after outbound: the worker scrapes through the Tor/direct sessions
 
 
 if __name__ == '__main__':

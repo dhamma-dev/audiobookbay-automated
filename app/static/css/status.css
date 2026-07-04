@@ -124,3 +124,38 @@
 .upgrades-footnote .badge {
   vertical-align: middle;
 }
+
+/* ============================================================
+   Wanted (Hardcover) dashboard
+   ============================================================ */
+.wanted-note-found {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+.wanted-match {
+  max-width: 340px;
+}
+
+.wanted-match-title {
+  display: block;
+  max-width: 340px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-sm);
+}
+
+.wanted-match-meta {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.wanted-actions {
+  white-space: nowrap;
+}
+
+.wanted-inline-form {
+  display: inline-block;
+}
