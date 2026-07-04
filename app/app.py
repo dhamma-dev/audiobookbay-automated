@@ -9,7 +9,7 @@ from qbittorrentapi import Client
 from transmission_rpc import Client as transmissionrpc
 from deluge_web_client import DelugeWebClient as delugewebclient
 from dotenv import load_dotenv
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 import secrets
 
 app = Flask(__name__)
@@ -815,10 +815,18 @@ print(f"ABS match: {'Enabled (' + ABS_URL + ')' if ABS_MATCH_ENABLED else 'Disab
 #                          (default 86400 -- ABB inventory changes slowly).
 #   WANTED_AUTO_DOWNLOAD - "true" to auto-send the best match. Strictest gate
 #                          only: STRONG title+author match AND M4B. Default off.
+#   WANTED_ROUTE         - route for BACKGROUND searches: "default" (the server's
+#                          USE_TOR default), "tor", or "direct". The manual
+#                          per-row re-check always uses YOUR browser's route
+#                          toggle instead, so it doubles as a diagnostic: if
+#                          re-check finds books the background can't, the
+#                          background route's exit is being blocked.
 HARDCOVER_API_KEY = (os.getenv("HARDCOVER_API_KEY") or "").strip()
 HARDCOVER_SYNC_TTL = int(os.getenv("HARDCOVER_SYNC_TTL", "21600"))
 WANTED_RESEARCH_TTL = int(os.getenv("WANTED_RESEARCH_TTL", "86400"))
+WANTED_RETRY_TTL = int(os.getenv("WANTED_RETRY_TTL", "1800"))  # after a failed scrape
 WANTED_AUTO_DOWNLOAD = _is_truthy(os.getenv("WANTED_AUTO_DOWNLOAD", "false"))
+WANTED_ROUTE = (os.getenv("WANTED_ROUTE") or "default").strip().lower()
 WANTED_ENABLED = bool(HARDCOVER_API_KEY)
 _HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
 _wanted_lock = threading.Lock()
@@ -955,6 +963,22 @@ def _pick_best_wanted(hits):
     return max(hits, key=key) if hits else None
 
 
+def _wanted_session():
+    """Session for BACKGROUND wanted searches per WANTED_ROUTE. Manual re-checks
+    pass sess=None so they follow the requesting browser's route toggle."""
+    if WANTED_ROUTE == "direct":
+        return DIRECT_SESSION
+    if WANTED_ROUTE == "tor":
+        return TOR_SESSION if TOR_SESSION is not None else DIRECT_SESSION
+    return None  # "default": scrape_session() resolves it (server default)
+
+
+def wanted_route_label():
+    if WANTED_ROUTE in ("tor", "direct"):
+        return WANTED_ROUTE.capitalize()
+    return ("Tor" if USE_TOR and _tor_available else "Direct") + " (server default)"
+
+
 def _wanted_owned(title, author):
     if not ABS_MATCH_ENABLED:
         return False
@@ -966,15 +990,24 @@ def _wanted_owned(title, author):
     return tier == abs_match.STRONG
 
 
-def _wanted_search_one(row):
-    """Search ABB for one wanted book and update its row. Returns new status."""
+def _wanted_search_one(row, sess=None):
+    """Search ABB for one wanted book and update its row. Returns new status.
+    A failed scrape (mirror unreachable / blocked exit) is NOT "unmatched": the
+    row drops back to 'wanted' with the error in detail and retries on the
+    short WANTED_RETRY_TTL instead of the daily re-search cadence."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     title, author = row["title"], row.get("author") or ""
     try:
         if _wanted_owned(title, author):
             _wanted_upsert({"hc_id": row["hc_id"], "status": "owned", "searched_at": now})
             return "owned"
-        books = search_audiobookbay(title.lower(), max_pages=2)
+        books = search_audiobookbay(title.lower(), max_pages=2, sess=sess)
+        if books is None:
+            print(f"[WANTED] {title!r}: ABB unreachable on this route; will retry")
+            _wanted_upsert({"hc_id": row["hc_id"], "status": "wanted", "searched_at": now,
+                            "detail": "AudioBook Bay didn't respond on the background "
+                                      "route — retrying shortly"})
+            return "wanted"
         best = _pick_best_wanted(_match_wanted_against(books, title, author))
         if best:
             meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
@@ -982,13 +1015,17 @@ def _wanted_search_one(row):
             _wanted_upsert({"hc_id": row["hc_id"], "status": "found",
                             "best_link": best.get("link"), "best_title": best.get("title"),
                             "best_meta": meta, "searched_at": now, "detail": ""})
+            print(f"[WANTED] {title!r}: found ({meta})")
             return "found"
-        _wanted_upsert({"hc_id": row["hc_id"], "status": "unmatched", "searched_at": now})
+        _wanted_upsert({"hc_id": row["hc_id"], "status": "unmatched", "searched_at": now,
+                        "detail": f"no confident match in {len(books)} results"})
+        print(f"[WANTED] {title!r}: no match in {len(books)} results")
         return "unmatched"
     except Exception as e:
         print(f"[WARNING] wanted search failed for {title!r}: {e}")
-        _wanted_upsert({"hc_id": row["hc_id"], "searched_at": now, "detail": str(e)})
-        return row.get("status") or "wanted"
+        _wanted_upsert({"hc_id": row["hc_id"], "status": "wanted",
+                        "searched_at": now, "detail": str(e)})
+        return "wanted"
 
 
 def _wanted_auto_send(row):
@@ -1038,21 +1075,25 @@ def _wanted_sync_list():
 
 
 def _wanted_due_rows():
-    """Rows that need (re)searching: never searched, or stale and still open."""
+    """Rows that need (re)searching: never searched, or past their cadence.
+    'wanted' rows (not yet successfully searched, incl. failed scrapes) retry on
+    the short WANTED_RETRY_TTL; successfully-searched rows use the daily TTL."""
     due = []
     now = datetime.now(timezone.utc)
     for row in _wanted_rows():
-        if row.get("status") in ("sent", "owned"):
+        status = row.get("status") or "wanted"
+        if status in ("sent", "owned"):
             continue
         searched = row.get("searched_at")
         if not searched:
             due.append(row)
             continue
+        ttl = WANTED_RETRY_TTL if status == "wanted" else WANTED_RESEARCH_TTL
         try:
             age = (now - datetime.fromisoformat(searched)).total_seconds()
         except ValueError:
-            age = WANTED_RESEARCH_TTL + 1
-        if age > WANTED_RESEARCH_TTL:
+            age = ttl + 1
+        if age > ttl:
             due.append(row)
     return due
 
@@ -1072,7 +1113,7 @@ def _wanted_worker():
                     print(f"[WARNING] Hardcover sync failed: {e}")
             if tor_status() in ("ready", "unavailable"):  # don't scrape mid-bootstrap
                 for row in _wanted_due_rows()[:3]:
-                    status = _wanted_search_one(row)
+                    status = _wanted_search_one(row, sess=_wanted_session())
                     if status == "found" and WANTED_AUTO_DOWNLOAD:
                         fresh = next((r for r in _wanted_rows()
                                       if r["hc_id"] == row["hc_id"]), None)
@@ -1390,38 +1431,46 @@ def _parse_abb_page(html):
 
 
 def _fetch_abb_page(sess, headers, query, page):
-    """Fetch one ABB results page; returns parsed books ([] on any failure)."""
-    url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}"
+    """Fetch one ABB results page. Returns parsed books, [] when the page loads
+    but has no posts, or None when the fetch itself failed -- callers that need
+    to tell "nothing there" from "couldn't reach the mirror" rely on that."""
+    url = f"https://{ABB_HOSTNAME}/page/{page}/?s={quote_plus(query)}"
     try:
         response = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         if response.status_code != 200:
             print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
-            return []
+            return None
         return _parse_abb_page(response.text)
     except Exception as e:
         print(f"[ERROR] Error fetching page {page}: {e}")
-        return []
+        return None
 
 
-def search_audiobookbay(query, max_pages=5):
+def search_audiobookbay(query, max_pages=5, sess=None):
     """Scrape ABB search results. Page 1 is fetched first (it answers "are there
     any results at all?" and most queries fit on it); the remaining pages are
     fetched CONCURRENTLY so total latency is ~2 round-trips instead of
     max_pages, and one stalled Tor stream can't serialize the rest. Results
-    keep page order; pagination still stops at the first empty page."""
+    keep page order; pagination still stops at the first empty page.
+
+    Returns None when the mirror couldn't be reached at all (page 1 failed) --
+    distinct from [] meaning "reached it, nothing found". `sess` overrides the
+    per-request route session (used by the background wanted worker)."""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
     }
-    sess = scrape_session()
+    sess = sess or scrape_session()
     results = _fetch_abb_page(sess, headers, query, 1)
+    if results is None:
+        return None
     if not results or max_pages < 2:
         return results
     with ThreadPoolExecutor(max_workers=max_pages - 1) as pool:
         pages = pool.map(lambda p: _fetch_abb_page(sess, headers, query, p),
                          range(2, max_pages + 1))
     for page_results in pages:
-        if not page_results:
-            break  # first empty page ends the run, matching the old behaviour
+        if not page_results:  # a failed or empty later page just ends the run
+            break
         results.extend(page_results)
     return results
 
@@ -1887,7 +1936,7 @@ def search():
                                 'tor_status': tor_status()}), 503
             query, books = '', []  # GET deep link while Tor boots: render the page unsearched
         else:
-            books = search_audiobookbay(query)
+            books = search_audiobookbay(query) or []  # None = mirror unreachable
             # Float preferred results to the top: matching-language first (when a
             # PREFERRED_LANGUAGE is set), then M4B. Python's stable sort keeps the
             # mirror's original ordering within each group.
@@ -1955,7 +2004,8 @@ def wanted():
     for r in rows:
         counts[r.get("status") or "wanted"] = counts.get(r.get("status") or "wanted", 0) + 1
     return render_template('wanted.html', enabled=True, rows=rows, counts=counts,
-                           auto=WANTED_AUTO_DOWNLOAD, sync_error=_wanted_sync_error)
+                           auto=WANTED_AUTO_DOWNLOAD, sync_error=_wanted_sync_error,
+                           route_label=wanted_route_label())
 
 
 @app.route('/wanted/sync', methods=['POST'])

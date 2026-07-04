@@ -51,7 +51,8 @@
         {% endif %}
     </span>
     <span class="downloads-updated">
-        {% if auto %}auto-download is ON (M4B only){% else %}auto-download off — sends are manual{% endif %}
+        background searches via {{ route_label }} ·
+        {% if auto %}auto-download ON (M4B only){% else %}auto-download off{% endif %}
     </span>
 </div>
 
@@ -87,7 +88,7 @@
                     {% elif r.status == 'unmatched' %}
                     <span class="badge badge-neutral" title="{{ r.detail }}">Not available yet</span>
                     {% else %}
-                    <span class="badge badge-warning">Queued for search</span>
+                    <span class="badge badge-warning" title="{{ r.detail }}">Queued for search</span>
                     {% endif %}
                 </td>
                 <td class="wanted-match">

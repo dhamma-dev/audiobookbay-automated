@@ -301,7 +301,16 @@ are re-checked about once a day, so newly-uploaded books surface on their own.
 ```env
 HARDCOVER_API_KEY=your-hardcover-token   # hardcover.app → account settings → Hardcover API
 WANTED_AUTO_DOWNLOAD=false               # "true" auto-sends confident M4B matches
+WANTED_ROUTE=default                     # background search route: default | tor | direct
 ```
+
+> **Routing note:** background searches use the **server's default route**
+> (`USE_TOR`), not your browser's Tor/Direct toggle. If the mirror blocks Tor
+> exits, the dashboard can look empty while your own (Direct) searches work —
+> the toolbar shows which route the background is using, failed rows say so and
+> retry within ~30 minutes, and the per-row re-check button always uses *your*
+> browser's route, so it doubles as a diagnostic. Set `WANTED_ROUTE=direct` to
+> pin background searches to Direct (trades the Tor shield for reliability).
 
 With `WANTED_AUTO_DOWNLOAD=true` the app clears your wanted list for you:
 when a background search finds a **confident match** (strict title+author
