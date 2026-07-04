@@ -138,6 +138,31 @@
   font-weight: 600;
 }
 
+/* Shown when "Hide owned" leaves nothing on screen, so the empty page explains
+   itself. */
+.hide-owned-note {
+  margin: var(--space-5) 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+/* Tighter shelf rows on small screens. */
+@media (max-width: 639px) {
+  .book-card.in-series .book-cover-container {
+    width: 44px;
+    height: 66px;
+  }
+
+  .book-card.in-series .book-details {
+    padding: var(--space-2);
+  }
+
+  .book-card.in-series .metadata-grid {
+    gap: var(--space-1) var(--space-3);
+  }
+}
+
 .btn-smart-sort {
   flex-shrink: 0;
 }
@@ -343,13 +368,19 @@
 .series-entries {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .series-entry {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
+}
+
+/* Hairline dividers keep a long shelf scannable without re-boxing each row. */
+.series-entry + .series-entry {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
 }
 
 .series-entry-check {
@@ -372,6 +403,7 @@
   align-items: baseline;
   gap: var(--space-2);
   margin-bottom: var(--space-1);
+  min-width: 0; /* let the title ellipsis engage inside the flex row */
 }
 
 .series-seq {
@@ -384,8 +416,14 @@
 
 .series-entry-title {
   font-family: var(--font-display);
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--color-text);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .series-alts-toggle {
@@ -402,72 +440,105 @@
   border-left: 2px solid var(--color-border-strong);
 }
 
-/* Compact card variant used inside a series shelf. */
+/* Inside a shelf an entry is a row in a list, not a boxed card: strip the card
+   chrome so the shelf reads as one cohesive set, and let the clean caption
+   ("Book 1 · Shadeslinger") be the title instead of the card's messy one. */
 .book-card.in-series {
   flex-direction: row;
-  border-radius: var(--radius-md);
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  padding: var(--space-1) 0;
+}
+
+.book-card.in-series:hover {
+  transform: none;
+  box-shadow: none;
+  border: none;
+  background: var(--color-surface-2);
 }
 
 .book-card.in-series .book-cover-container {
-  width: 84px;
-  height: auto;
-  min-height: 100%;
+  width: 52px;
+  height: 78px;
+  min-height: 0;
+  flex-shrink: 0;
+  align-self: center;
+  border-radius: var(--radius-sm);
 }
 
-.book-card.in-series .book-details {
-  padding: var(--space-3) var(--space-4);
-  gap: var(--space-2);
+/* A plain cropped thumbnail reads better than the contain+blur treatment at
+   this small size. */
+.book-card.in-series .book-cover {
+  object-fit: cover;
+  filter: none;
+  transform: none;
+}
+.book-card.in-series .book-cover-bg { display: none; }
+
+/* The clean caption above the row is the title; drop the card's messy one, the
+   keywords, and the redundant M4B banner (the Format chip already says M4B).
+   Alternates and collections KEEP their raw title -- for an alt the upload
+   title is what distinguishes the edition, and a collection's caption only
+   says "Complete set", not which bundle it is. */
+.series-entry .book-card.in-series:not(.is-alt):not(.is-collection-card) .book-title {
+  display: none;
 }
 
-.book-card.in-series .book-title {
-  font-size: var(--text-base);
+.book-card.in-series.is-alt .book-title,
+.book-card.in-series.is-collection-card .book-title {
+  font-size: var(--text-sm);
   -webkit-line-clamp: 1;
 }
 
-.book-card.in-series .keywords-container {
+.book-card.in-series .keywords-container,
+.book-card.in-series .m4b-ribbon {
   display: none;
+}
+
+.book-card.in-series .book-details {
+  padding: var(--space-2) var(--space-3);
+  gap: var(--space-2);
+  justify-content: center;
 }
 
 .book-card.in-series .metadata-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-4);
 }
 
 .book-card.in-series .meta-chip {
   flex-direction: row;
   align-items: baseline;
   gap: 6px;
-  padding: 4px var(--space-2);
+  padding: 0;
+  background: transparent;
+  border: none;
 }
 
 .book-card.in-series .meta-chip-label {
   font-size: 0.6rem;
 }
 
-/* Keep the M4B marker as a compact badge in the tight layout, regardless of
-   viewport (the full-width banner would stretch down the row). */
-.book-card.in-series .m4b-ribbon {
-  position: absolute;
-  top: var(--space-2);
-  left: var(--space-2);
-  z-index: 1;
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  font-size: 0.62rem;
-  box-shadow: var(--shadow-sm);
+.book-card.in-series .book-actions {
+  gap: var(--space-2);
 }
 
-.book-card.in-series .m4b-ribbon-prefix {
-  display: none;
+.book-card.in-series .book-actions .btn {
+  padding: 4px var(--space-3);
+  font-size: var(--text-xs);
 }
 
+/* No card box, so the chosen edition just takes a faint accent wash. */
 .book-card.in-series.is-chosen {
-  border-color: var(--color-accent);
+  border: none;
+  background: var(--color-accent-muted);
 }
 
 .book-card.in-series.is-alt {
-  opacity: 0.9;
+  opacity: 0.85;
 }
 
 .book-card.series-send-failed {

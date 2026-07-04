@@ -171,6 +171,7 @@
         results.innerHTML = fresh.innerHTML;
         smartSortReset();  // new result set => any cached ranking is stale
         initSmartSort();   // opt-in prefetch for the new results
+        syncHideOwned();   // re-apply the session's hide-owned choice
       } else {
         results.innerHTML =
           '<div class="empty-state">' +
@@ -210,6 +211,13 @@
   }
 
   // One /api/rank call per (query, result set), de-duped: a background prefetch
+  // A hung request should never leave the button stuck on "Preparing…" —
+  // abort client-side after a generous cap (the server call is ~10s normally).
+  function fetchTimeout(ms) {
+    return (typeof AbortSignal !== 'undefined' && AbortSignal.timeout)
+      ? { signal: AbortSignal.timeout(ms) } : {};
+  }
+
   // and a click share the same in-flight promise, so clicking while it's still
   // preparing simply attaches and applies the moment it lands.
   function fetchRanking(query) {
@@ -221,11 +229,11 @@
     if (!Array.isArray(results) || results.length === 0) {
       return Promise.reject(new Error('No results to sort.'));
     }
-    const p = fetch('/api/rank', {
+    const p = fetch('/api/rank', Object.assign({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, results }),
-    }).then(async (res) => {
+    }, fetchTimeout(120000))).then(async (res) => {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message || 'Smart sort failed');
       smartSortCache.set(query, data);
@@ -495,7 +503,42 @@
         '<input type="checkbox" data-action="toggle-owned">' +
         '<i data-lucide="eye-off" aria-hidden="true"></i> Hide owned';
       tools.insertBefore(label, tools.firstChild);
+      syncHideOwned();
     }
+  }
+
+  // Hide-owned: one place applies the class and explains an emptied list
+  // instead of leaving it silently blank. (Persistence happens in the change
+  // handler only -- re-applying on render must not overwrite the saved choice.)
+  function applyHideOwned(on) {
+    const results = document.getElementById('search-results');
+    if (!results) return;
+    results.classList.toggle('hide-owned', on);
+    const cards = results.querySelectorAll('.book-card[data-result-id]');
+    let visible = 0;
+    cards.forEach((c) => { if (c.offsetParent !== null) visible++; });
+    let note = document.getElementById('hide-owned-note');
+    if (on && cards.length > 0 && visible === 0) {
+      if (!note) {
+        note = document.createElement('p');
+        note.id = 'hide-owned-note';
+        note.className = 'hide-owned-note';
+        results.appendChild(note);
+      }
+      note.textContent = 'Everything here is already in your library — untick “Hide owned” to show it.';
+    } else if (note) {
+      note.remove();
+    }
+  }
+
+  // Re-apply the session's hide-owned choice to the current toggle/results
+  // (fresh search renders a new unchecked box; the poll can newly empty a list).
+  function syncHideOwned() {
+    const cb = document.querySelector('[data-action="toggle-owned"]');
+    let saved = false;
+    try { saved = sessionStorage.getItem('abb.hideOwned') === '1'; } catch (e) { /* ignore */ }
+    if (cb) cb.checked = saved || cb.checked;
+    applyHideOwned(cb ? cb.checked : false);
   }
 
   function refreshOwnershipCounts() {
@@ -506,6 +549,7 @@
       updateSeriesOwnedNote(group);
     });
     updateOwnedSummary();
+    syncHideOwned();
     refreshIcons();
   }
 
@@ -571,11 +615,11 @@
     if (!items.length) return;
     let data;
     try {
-      const res = await fetch('/api/ownership', {
+      const res = await fetch('/api/ownership', Object.assign({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items }),
-      });
+      }, fetchTimeout(30000)));
       if (!res.ok) return;
       data = await res.json();
     } catch (e) { return; }
@@ -1358,8 +1402,8 @@
 
     const ownedToggle = e.target.closest('[data-action="toggle-owned"]');
     if (ownedToggle) {
-      const results = document.getElementById('search-results');
-      if (results) results.classList.toggle('hide-owned', ownedToggle.checked);
+      try { sessionStorage.setItem('abb.hideOwned', ownedToggle.checked ? '1' : ''); } catch (err) { /* ignore */ }
+      applyHideOwned(ownedToggle.checked);
       return;
     }
 
@@ -1420,8 +1464,10 @@
     // function no-ops unless ABS matching is on and un-owned cards are present.
     setInterval(pollOwnership, 90000);
 
-    // If the page loaded already showing results, honour the prefetch preference.
+    // If the page loaded already showing results, honour the prefetch
+    // preference and the session's hide-owned choice.
     initSmartSort();
+    syncHideOwned();
   }
 
   if (document.readyState === 'loading') {
