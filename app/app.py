@@ -973,6 +973,50 @@ def _wanted_session():
     return None  # "default": scrape_session() resolves it (server default)
 
 
+def _wanted_route_is_tor():
+    if WANTED_ROUTE == "tor":
+        return True
+    if WANTED_ROUTE == "direct":
+        return False
+    return USE_TOR and _tor_available
+
+
+# Self-healing for a starved/blocked Tor exit: after a few consecutive
+# unreachable scrapes on the Tor route, ask for a fresh circuit (rate-limited --
+# renewal swaps the exit for everyone on the instance) and put the failed rows
+# straight back in the queue instead of waiting out the retry TTL.
+_WANTED_RENEW_AFTER = 3      # consecutive unreachable searches
+_WANTED_RENEW_COOLDOWN = 600  # seconds between automatic renewals
+_wanted_fail_streak = 0
+_wanted_last_renew = 0.0
+
+
+def _wanted_note_result(status):
+    global _wanted_fail_streak
+    _wanted_fail_streak = _wanted_fail_streak + 1 if status == "unreachable" else 0
+
+
+def _wanted_maybe_renew():
+    """Renew the Tor circuit when background searches keep failing on Tor.
+    Returns True when a renewal happened (so failed rows can be requeued)."""
+    global _wanted_fail_streak, _wanted_last_renew
+    if _wanted_fail_streak < _WANTED_RENEW_AFTER or not _wanted_route_is_tor():
+        return False
+    if not (_tor_available and _tor_managed):
+        return False
+    if time.monotonic() - _wanted_last_renew < _WANTED_RENEW_COOLDOWN:
+        return False
+    ok, message = renew_tor_circuit()
+    _wanted_last_renew = time.monotonic()
+    _wanted_fail_streak = 0
+    print(f"[WANTED] Tor exit looked blocked; circuit renewal: {message}")
+    if ok:
+        for row in _wanted_rows():
+            if row.get("status") == "wanted" and "didn't respond" in (row.get("detail") or ""):
+                _wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
+    return ok
+
+
 def wanted_route_label():
     if WANTED_ROUTE in ("tor", "direct"):
         return WANTED_ROUTE.capitalize()
@@ -1007,7 +1051,7 @@ def _wanted_search_one(row, sess=None):
             _wanted_upsert({"hc_id": row["hc_id"], "status": "wanted", "searched_at": now,
                             "detail": "AudioBook Bay didn't respond on the background "
                                       "route — retrying shortly"})
-            return "wanted"
+            return "unreachable"  # row status is 'wanted'; sentinel drives renewal
         best = _pick_best_wanted(_match_wanted_against(books, title, author))
         if best:
             meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
@@ -1114,11 +1158,15 @@ def _wanted_worker():
             if tor_status() in ("ready", "unavailable"):  # don't scrape mid-bootstrap
                 for row in _wanted_due_rows()[:3]:
                     status = _wanted_search_one(row, sess=_wanted_session())
+                    _wanted_note_result(status)
+                    if status == "unreachable":
+                        break  # this route is down right now; stop burning the tick
                     if status == "found" and WANTED_AUTO_DOWNLOAD:
                         fresh = next((r for r in _wanted_rows()
                                       if r["hc_id"] == row["hc_id"]), None)
                         if fresh:
                             _wanted_auto_send(fresh)
+                _wanted_maybe_renew()
         except Exception as e:
             print(f"[WARNING] wanted worker tick failed: {e}")
         time.sleep(60)

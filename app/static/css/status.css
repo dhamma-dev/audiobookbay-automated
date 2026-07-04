@@ -159,3 +159,9 @@
 .wanted-inline-form {
   display: inline-block;
 }
+
+/* A navigation/form button that has been clicked and is waiting on the server. */
+.is-busy {
+  pointer-events: none;
+  opacity: 0.75;
+}

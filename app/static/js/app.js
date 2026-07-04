@@ -1361,6 +1361,21 @@
      Wiring
      ---------------------------------------------------------- */
   document.addEventListener('click', (e) => {
+    // Generic affordance for full-page-navigation buttons (wanted/upgrades
+    // pages): the server does the work before responding, so without this the
+    // click looks dead. Swap in a spinner immediately; the navigation or form
+    // submit then proceeds as normal (disable only after the click completes
+    // so form submission isn't suppressed).
+    const busy = e.target.closest('[data-busy]');
+    if (busy && !busy.classList.contains('is-busy')) {
+      busy.classList.add('is-busy');
+      const label = busy.dataset.busy;
+      busy.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span>' +
+        (label ? ' ' + escapeHtml(label) : '');
+      if (busy.tagName === 'BUTTON') setTimeout(() => { busy.disabled = true; }, 0);
+      // fall through -- busy elements may still have a default action to run
+    }
+
     const dl = e.target.closest('[data-action="download"]');
     if (dl) { handleDownload(dl); return; }
 

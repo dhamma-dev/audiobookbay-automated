@@ -17,7 +17,7 @@
         </div>
         {% if enabled %}
         <form method="post" action="{{ url_for('wanted_sync') }}">
-            <button type="submit" class="btn btn-secondary">
+            <button type="submit" class="btn btn-secondary" data-busy="Syncing with Hardcover…">
                 <i data-lucide="refresh-cw" aria-hidden="true"></i>
                 Sync now
             </button>
@@ -110,12 +110,14 @@
                     </button>
                     {% endif %}
                     {% if r.status not in ('sent',) %}
-                    <a class="btn btn-secondary btn-upgrade-search" href="{{ url_for('search', q=(r.title ~ ' ' ~ (r.author.split(',')[0] if r.author else '')) | trim) }}">
+                    <a class="btn btn-secondary btn-upgrade-search" data-busy="Searching…"
+                       href="{{ url_for('search', q=(r.title ~ ' ' ~ (r.author.split(',')[0] if r.author else '')) | trim) }}">
                         <i data-lucide="search" aria-hidden="true"></i>
                         Search
                     </a>
                     <form method="post" action="{{ url_for('wanted_research', hc_id=r.hc_id) }}" class="wanted-inline-form">
-                        <button type="submit" class="btn btn-secondary btn-upgrade-search" title="Re-check AudioBook Bay for this book now">
+                        <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                title="Re-check AudioBook Bay for this book now (uses your browser's Tor/Direct route)">
                             <i data-lucide="rotate-cw" aria-hidden="true"></i>
                         </button>
                     </form>

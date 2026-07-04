@@ -305,12 +305,15 @@ WANTED_ROUTE=default                     # background search route: default | to
 ```
 
 > **Routing note:** background searches use the **server's default route**
-> (`USE_TOR`), not your browser's Tor/Direct toggle. If the mirror blocks Tor
-> exits, the dashboard can look empty while your own (Direct) searches work —
-> the toolbar shows which route the background is using, failed rows say so and
-> retry within ~30 minutes, and the per-row re-check button always uses *your*
-> browser's route, so it doubles as a diagnostic. Set `WANTED_ROUTE=direct` to
-> pin background searches to Direct (trades the Tor shield for reliability).
+> (`USE_TOR`), not your browser's Tor/Direct toggle — the toolbar shows which.
+> Failed rows say so and retry within ~30 minutes, and the per-row re-check
+> button always uses *your* browser's route, so it doubles as a diagnostic.
+> **On Tor, the worker self-heals:** after 3 consecutive unreachable searches
+> it automatically requests a fresh Tor circuit (at most once per 10 minutes —
+> renewal swaps the exit for everyone on the instance) and immediately requeues
+> the failed rows. Set `WANTED_ROUTE=direct` to pin background searches to
+> Direct instead (trades the Tor shield for whatever reliability your direct
+> path has).
 
 With `WANTED_AUTO_DOWNLOAD=true` the app clears your wanted list for you:
 when a background search finds a **confident match** (strict title+author
