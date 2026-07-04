@@ -1,4 +1,6 @@
 import os, re, json, requests, atexit, shutil, socket, sqlite3, subprocess, tempfile, threading, time, uuid
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from flask import Flask, request, render_template, jsonify, redirect, session, url_for
 from bs4 import BeautifulSoup
@@ -18,13 +20,12 @@ load_dotenv()
 
 ABB_HOSTNAME = os.getenv("ABB_HOSTNAME", "audiobookbay.lu")
 
-# Optional outbound request timeout in seconds (e.g. REQUEST_TIMEOUT="45").
-# Unset by default, which preserves the original behavior of waiting as long
-# as the mirror needs. The search UI shows a spinner and always clears it
-# when the response arrives, so a slow search can't leave the page "stuck".
-# Set this only if you want a hard cap on how long a mirror may take.
-_timeout_env = os.getenv("REQUEST_TIMEOUT")
-REQUEST_TIMEOUT = float(_timeout_env) if _timeout_env else None
+# Outbound request timeout in seconds for AudiobookBay fetches. Defaults to 45:
+# a stalled Tor circuit was observed hanging a single page fetch (and therefore
+# the whole search) for 16+ minutes, so "wait forever" is never what anyone
+# wants. Set REQUEST_TIMEOUT=0 (or "off") to restore the old unbounded wait.
+_timeout_env = (os.getenv("REQUEST_TIMEOUT") or "45").strip().lower()
+REQUEST_TIMEOUT = None if _timeout_env in ("0", "off", "none") else float(_timeout_env)
 
 # --- Tor ---------------------------------------------------------------------
 # AudiobookBay requests can be routed through Tor so the mirror only ever sees a
@@ -322,6 +323,41 @@ else:
     RANK_THINKING_BUDGET = None if _v < 0 else _v
 _thinking_supported = True  # flipped off if the model rejects a thinking budget
 
+# Completed rankings are cached briefly so re-running the same search (a second
+# tab, a page reload with prefetch on, a repeated query) doesn't pay Gemini --
+# or its latency -- again. Stores the raw response text so every hit
+# deserializes to a fresh object (resolve_ownership mutates its argument).
+RANK_CACHE_TTL = int(os.getenv("RANK_CACHE_TTL", "900"))
+_rank_cache = OrderedDict()  # key -> (expires_at, response_json_text)
+_rank_cache_lock = threading.Lock()
+_RANK_CACHE_MAX = 32
+
+
+def _rank_cache_key(query, results, want_ownership):
+    payload = json.dumps(results, sort_keys=True, ensure_ascii=False)
+    return (query, want_ownership, RANK_MODEL, RANK_THINKING_BUDGET, hash(payload))
+
+
+def _rank_cache_get(key):
+    with _rank_cache_lock:
+        hit = _rank_cache.get(key)
+        if not hit:
+            return None
+        expires_at, text = hit
+        if time.monotonic() > expires_at:
+            del _rank_cache[key]
+            return None
+        _rank_cache.move_to_end(key)
+        return text
+
+
+def _rank_cache_put(key, text):
+    with _rank_cache_lock:
+        _rank_cache[key] = (time.monotonic() + RANK_CACHE_TTL, text)
+        _rank_cache.move_to_end(key)
+        while len(_rank_cache) > _RANK_CACHE_MAX:
+            _rank_cache.popitem(last=False)
+
 # Preferred listening language (e.g. "English"). When set, wrong-language
 # editions are floated below matching ones in the default result order, and
 # Smart sort is told to rank other languages far lower. Unset = no preference.
@@ -448,6 +484,17 @@ def is_log_admin(user):
 def _infohash_from_magnet(magnet_link):
     m = re.search(r'btih:([0-9a-zA-Z]+)', magnet_link or '')
     return m.group(1).lower() if m else None
+
+
+def _is_abb_link(url):
+    """True only for links on the configured AudiobookBay host. The /send
+    endpoints take a URL from the client; without this check any authenticated
+    user could make the server fetch arbitrary URLs (SSRF) via the scrape
+    session -- which, in Direct mode, originates from the server's real IP."""
+    try:
+        return (urlparse(url).hostname or '').lower() == ABB_HOSTNAME.lower()
+    except ValueError:
+        return False
 
 
 # --- Audiobookshelf "in your library" matching -------------------------------
@@ -622,10 +669,15 @@ def resolve_ownership(ranking, index):
             seqs = _owned_seqs_for(block.get("label", ""), owned_series)
             # Series members: the shelf already carries each book's number, so we
             # join (series, seq) locally -- no per-result canonical card needed.
+            # Alternates are the same work as their entry, so they inherit its
+            # ownership (keeps the badge if the user swaps editions).
             for entry in block.get("entries") or []:
-                bid, eseq = entry.get("best_id"), entry.get("seq")
-                if bid is not None and eseq is not None and _norm_seq(eseq) in seqs:
-                    ownership[bid] = {"status": "owned"}
+                eseq = entry.get("seq")
+                if eseq is None or _norm_seq(eseq) not in seqs:
+                    continue
+                for rid in [entry.get("best_id")] + list(entry.get("alt_ids") or []):
+                    if rid is not None:
+                        ownership.setdefault(rid, {"status": "owned"})
             for col in block.get("collections") or []:
                 cid, covers = col.get("id"), col.get("covers") or []
                 if cid is None or not covers:
@@ -851,113 +903,131 @@ def putio_logout():
     return redirect(url_for('search'))
 
 
+def _parse_abb_page(html):
+    """Parse one ABB search-results page into a list of book dicts."""
+    soup = BeautifulSoup(html, 'html.parser')
+    posts = soup.select('.post')
+    results = []
+    for post in posts:
+        try:
+            # Extract basic information
+            title_element = post.select_one('.postTitle > h2 > a')
+            if not title_element:
+                continue
+                
+            title = title_element.text.strip()
+            link = f"https://{ABB_HOSTNAME}{title_element['href']}"
+            cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.svg"
+            
+            # Get post text and replace newlines with spaces to make regex easier
+            post_text = post.text.strip().replace('\n', ' ')
+            
+            # Extract file size
+            size = "Unknown"
+            size_pattern = r'Size: ([\d.]+\s*[KMGT]B)'
+            size_match = re.search(size_pattern, post_text)
+            if size_match:
+                size = size_match.group(1).strip()
+            
+            # Extract format information
+            format_info = "Unknown"
+            format_pattern = r'Format: ([^,]+)'
+            format_match = re.search(format_pattern, post_text)
+            if format_match:
+                format_info = format_match.group(1).strip()
+                # Check for MP3 / Bitrate format
+                if ' / ' in format_info:
+                    format_info = format_info.split(' / ')[0].strip()
+            
+            # Extract bitrate - simplified
+            bitrate = "Unknown"
+            bitrate_pattern = r'Bitrate: ([^,]+)'
+            bitrate_match = re.search(bitrate_pattern, post_text)
+            if bitrate_match:
+                bitrate = bitrate_match.group(1).strip()
+                # Remove file size information if it got included
+                if 'File Size:' in bitrate:
+                    bitrate = bitrate.split('File Size:')[0].strip()
+            
+            # Extract language information
+            language = "English"  # Default to English
+            language_pattern = r'Language: ([^,]+)'
+            language_match = re.search(language_pattern, post_text)
+            if language_match:
+                language = language_match.group(1).strip()
+                # Remove keywords if they got included
+                if 'Keywords:' in language:
+                    language = language.split('Keywords:')[0].strip()
+            
+            # Extract keywords
+            keywords = []
+            keywords_pattern = r'Keywords: ([^\.]+)'
+            keywords_match = re.search(keywords_pattern, post_text)
+            if keywords_match:
+                keywords_text = keywords_match.group(1).strip()
+                keywords = [kw.strip() for kw in keywords_text.split(',')]
+            
+            # Flag M4B (the preferred single-file audiobook format).
+            # Check format, title and keywords since posts aren't
+            # consistent about where they mention it.
+            haystack = f"{title} {format_info} {' '.join(keywords)}".lower()
+            is_m4b = 'm4b' in haystack
+
+            results.append({
+                'title': title,
+                'link': link,
+                'cover': cover,
+                'size': size,
+                'format': format_info,
+                'bitrate': bitrate,
+                'language': language,
+                'keywords': keywords,
+                'is_m4b': is_m4b
+            })
+            
+        except Exception as e:
+            print(f"[ERROR] Error parsing post: {e}")
+            continue
+    return results
+
+
+def _fetch_abb_page(sess, headers, query, page):
+    """Fetch one ABB results page; returns parsed books ([] on any failure)."""
+    url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}"
+    try:
+        response = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        if response.status_code != 200:
+            print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
+            return []
+        return _parse_abb_page(response.text)
+    except Exception as e:
+        print(f"[ERROR] Error fetching page {page}: {e}")
+        return []
+
+
 def search_audiobookbay(query, max_pages=5):
+    """Scrape ABB search results. Page 1 is fetched first (it answers "are there
+    any results at all?" and most queries fit on it); the remaining pages are
+    fetched CONCURRENTLY so total latency is ~2 round-trips instead of
+    max_pages, and one stalled Tor stream can't serialize the rest. Results
+    keep page order; pagination still stops at the first empty page."""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
     }
     sess = scrape_session()
-    results = []
-    for page in range(1, max_pages + 1):
-        url = f"https://{ABB_HOSTNAME}/page/{page}/?s={query.replace(' ', '+')}"
-        try:
-            response = sess.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-            if response.status_code != 200:
-                print(f"[ERROR] Failed to fetch page {page}. Status Code: {response.status_code}")
-                break
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            posts = soup.select('.post')
-            
-            # If no posts found on this page, stop pagination
-            if not posts:
-                break
-                
-            for post in posts:
-                try:
-                    # Extract basic information
-                    title_element = post.select_one('.postTitle > h2 > a')
-                    if not title_element:
-                        continue
-                        
-                    title = title_element.text.strip()
-                    link = f"https://{ABB_HOSTNAME}{title_element['href']}"
-                    cover = post.select_one('img')['src'] if post.select_one('img') else "/static/images/default-cover.svg"
-                    
-                    # Get post text and replace newlines with spaces to make regex easier
-                    post_text = post.text.strip().replace('\n', ' ')
-                    
-                    # Extract file size
-                    size = "Unknown"
-                    size_pattern = r'Size: ([\d.]+\s*[KMGT]B)'
-                    size_match = re.search(size_pattern, post_text)
-                    if size_match:
-                        size = size_match.group(1).strip()
-                    
-                    # Extract format information
-                    format_info = "Unknown"
-                    format_pattern = r'Format: ([^,]+)'
-                    format_match = re.search(format_pattern, post_text)
-                    if format_match:
-                        format_info = format_match.group(1).strip()
-                        # Check for MP3 / Bitrate format
-                        if ' / ' in format_info:
-                            format_info = format_info.split(' / ')[0].strip()
-                    
-                    # Extract bitrate - simplified
-                    bitrate = "Unknown"
-                    bitrate_pattern = r'Bitrate: ([^,]+)'
-                    bitrate_match = re.search(bitrate_pattern, post_text)
-                    if bitrate_match:
-                        bitrate = bitrate_match.group(1).strip()
-                        # Remove file size information if it got included
-                        if 'File Size:' in bitrate:
-                            bitrate = bitrate.split('File Size:')[0].strip()
-                    
-                    # Extract language information
-                    language = "English"  # Default to English
-                    language_pattern = r'Language: ([^,]+)'
-                    language_match = re.search(language_pattern, post_text)
-                    if language_match:
-                        language = language_match.group(1).strip()
-                        # Remove keywords if they got included
-                        if 'Keywords:' in language:
-                            language = language.split('Keywords:')[0].strip()
-                    
-                    # Extract keywords
-                    keywords = []
-                    keywords_pattern = r'Keywords: ([^\.]+)'
-                    keywords_match = re.search(keywords_pattern, post_text)
-                    if keywords_match:
-                        keywords_text = keywords_match.group(1).strip()
-                        keywords = [kw.strip() for kw in keywords_text.split(',')]
-                    
-                    # Flag M4B (the preferred single-file audiobook format).
-                    # Check format, title and keywords since posts aren't
-                    # consistent about where they mention it.
-                    haystack = f"{title} {format_info} {' '.join(keywords)}".lower()
-                    is_m4b = 'm4b' in haystack
-
-                    results.append({
-                        'title': title,
-                        'link': link,
-                        'cover': cover,
-                        'size': size,
-                        'format': format_info,
-                        'bitrate': bitrate,
-                        'language': language,
-                        'keywords': keywords,
-                        'is_m4b': is_m4b
-                    })
-                    
-                except Exception as e:
-                    print(f"[ERROR] Error parsing post: {e}")
-                    continue
-                    
-        except Exception as e:
-            print(f"[ERROR] Error fetching page {page}: {e}")
-            break
-            
+    results = _fetch_abb_page(sess, headers, query, 1)
+    if not results or max_pages < 2:
+        return results
+    with ThreadPoolExecutor(max_workers=max_pages - 1) as pool:
+        pages = pool.map(lambda p: _fetch_abb_page(sess, headers, query, p),
+                         range(2, max_pages + 1))
+    for page_results in pages:
+        if not page_results:
+            break  # first empty page ends the run, matching the old behaviour
+        results.extend(page_results)
     return results
+
+
 # Helper function to extract magnet link from details page
 def extract_magnet_link(details_url):
     headers = {
@@ -1269,6 +1339,12 @@ def rank_results(query, results, want_ownership=False):
     identity (for local library matching); the base behaviour is untouched
     otherwise."""
     global _thinking_supported
+    cache_key = _rank_cache_key(query, results, want_ownership)
+    cached = _rank_cache_get(cache_key)
+    if cached is not None:
+        print(f"[SMART SORT] cache hit for {query!r} ({len(results)} results)")
+        return json.loads(cached)
+
     from google import genai
     from google.genai import types
 
@@ -1320,7 +1396,9 @@ def rank_results(query, results, want_ownership=False):
         response = _generate(config_kwargs)
     print(f"[SMART SORT] {RANK_MODEL} thinking={RANK_THINKING_BUDGET} "
           f"{len(results)} results in {time.monotonic() - started:.1f}s")
-    return json.loads(response.text)
+    ranking = json.loads(response.text)  # validate before caching
+    _rank_cache_put(cache_key, response.text)
+    return ranking
 
 
 @app.route('/api/rank', methods=['POST'])
@@ -1543,6 +1621,9 @@ def send():
     user = current_user_label()
     if not details_url or not title:
         return jsonify({'message': 'Invalid request'}), 400
+    if not _is_abb_link(details_url):
+        record_download(user, title, details_url, None, 'error', 'Rejected: not an AudiobookBay link')
+        return jsonify({'message': 'Only AudiobookBay links can be sent.'}), 400
     if not CLIENT_OK:
         return jsonify({'message': CLIENT_CONFIG_ERROR}), 503
 
@@ -1585,6 +1666,11 @@ def send_batch():
         title = (item.get('title') or '').strip()
         if not link or not title:
             results.append({'link': link, 'title': title, 'ok': False, 'error': 'Missing link or title'})
+            continue
+        if not _is_abb_link(link):
+            record_download(user, title, link, None, 'error',
+                            'Rejected: not an AudiobookBay link', batch_id, batch_label)
+            results.append({'link': link, 'title': title, 'ok': False, 'error': 'Not an AudiobookBay link'})
             continue
         try:
             magnet_link = extract_magnet_link(link)

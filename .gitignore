@@ -183,3 +183,6 @@ memory/
 
 # Download log SQLite DB (runtime data, mounted via docker-compose ./data)
 data/
+
+# Local dev compose override (build-from-source; not for deploy)
+docker-compose.override.yml

@@ -131,7 +131,7 @@ All of the following are optional.
 
 ```env
 ABB_HOSTNAME=audiobookbay.lu   # AudioBook Bay mirror to use (default shown)
-REQUEST_TIMEOUT=45             # Hard cap (seconds) on outbound requests; unset = no cap
+REQUEST_TIMEOUT=45             # Cap (seconds) on AudiobookBay fetches (default 45; 0/off = no cap)
 PREFERRED_LANGUAGE=English     # Float this language's results up; unset = no preference
 
 # Add an extra link to the navigation bar (e.g. your audiobook player)

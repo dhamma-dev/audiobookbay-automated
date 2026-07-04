@@ -55,7 +55,10 @@ Key regions (search by name; line numbers drift):
 
 ### Search (`POST /`)
 1. `search_audiobookbay(query)` scrapes ABB (through Tor unless the user chose
-   Direct).
+   Direct). Page 1 is fetched first; pages 2..N are fetched **concurrently**
+   (results keep page order, first empty page still ends the run), and every
+   fetch is bounded by `REQUEST_TIMEOUT` (default 45s) so one stalled Tor
+   stream can't hang a search.
 2. Results are sorted (M4B and preferred-language float to the top), each gets a
    stable integer `id`.
 3. `annotate_library_matches(books)` adds `book['library_match']` for confidently
@@ -74,9 +77,10 @@ Client posts `{query, results}` (the slim payload). Server re-sanitizes to
 `id + RANK_FIELDS`, calls `rank_results`, returns a JSON verdict the client
 applies **without re-rendering** — it reorders/wraps the existing cards.
 
-`rank_results` (temperature 0, structured `RANK_RESPONSE_SCHEMA`; optional
-`RANK_THINKING_BUDGET` reasoning cap with a retry-without-it fallback; logs
-`[SMART SORT] … in Xs`) asks Gemini for:
+`rank_results` (temperature 0, structured `RANK_RESPONSE_SCHEMA`; reasoning
+capped by `RANK_THINKING_BUDGET` — default 0, with a retry-without-it fallback;
+completed rankings are cached server-side for `RANK_CACHE_TTL` so re-searches
+and second tabs are instant; logs `[SMART SORT] … in Xs`) asks Gemini for:
 - `ordering` + `buckets` (strong/possible/unlikely) — relevance sort + filtering.
 - `ambiguous` + `interpretations` — clickable "did you mean" chips.
 - `series` — ordered entries (seq/title/best_id/alt_ids), `collections`
