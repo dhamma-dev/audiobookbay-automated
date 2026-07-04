@@ -93,8 +93,16 @@
                 </td>
                 <td class="wanted-match">
                     {% if r.best_title %}
-                    <span class="wanted-match-title" title="{{ r.best_title }}">{{ r.best_title }}</span>
+                    <span class="wanted-match-title" title="{{ r.best_title }}">
+                        {% if 'M4B' in (r.best_meta or '') %}<span class="badge badge-accent">M4B</span> {% endif %}{{ r.best_title }}
+                    </span>
                     {% if r.best_meta %}<span class="wanted-match-meta">{{ r.best_meta }}</span>{% endif %}
+                    {% if r.alts %}
+                    <button type="button" class="wanted-alts-toggle" data-action="wanted-alts"
+                            data-target="wanted-alts-{{ r.hc_id }}" aria-expanded="false">
+                        +{{ r.alts | length }} alternative{{ 's' if r.alts | length != 1 }}
+                    </button>
+                    {% endif %}
                     {% elif r.status == 'unmatched' %}
                     <span class="wanted-match-meta">will re-check automatically</span>
                     {% endif %}
@@ -124,6 +132,33 @@
                     {% endif %}
                 </td>
             </tr>
+            {% if r.alts %}
+            <tr id="wanted-alts-{{ r.hc_id }}" class="wanted-alts-row" hidden>
+                <td colspan="4">
+                    {% for a in r.alts %}
+                    <div class="wanted-alt">
+                        {% if a.is_m4b %}<span class="badge badge-accent">M4B</span>{% endif %}
+                        <span class="wanted-alt-title" title="{{ a.title }}">{{ a.title }}</span>
+                        {% if a.meta %}<span class="wanted-alt-meta">{{ a.meta }}</span>{% endif %}
+                        <span class="wanted-alt-actions">
+                            <a class="btn btn-secondary btn-upgrade-search" href="{{ a.link }}"
+                               target="_blank" rel="noopener noreferrer">
+                                <i data-lucide="external-link" aria-hidden="true"></i>
+                                View
+                            </a>
+                            <button type="button" class="btn btn-primary btn-upgrade-search"
+                                    data-action="download"
+                                    data-link="{{ a.link | e }}"
+                                    data-title="{{ a.title | e }}">
+                                <i data-lucide="download" aria-hidden="true"></i>
+                                Send
+                            </button>
+                        </span>
+                    </div>
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endif %}
             {% endfor %}
         </tbody>
     </table>

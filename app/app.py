@@ -439,6 +439,9 @@ def init_download_log():
                     detail TEXT
                 )
             """)
+            existing = {r["name"] for r in conn.execute("PRAGMA table_info(wanted)")}
+            if "candidates" not in existing:  # added later: all STRONG matches, as JSON
+                conn.execute("ALTER TABLE wanted ADD COLUMN candidates TEXT")
         admins = ', '.join(sorted(LOG_ADMIN_USERS)) if LOG_ADMIN_USERS else None
         print(f"Download log: {LOG_DB_PATH}" + (f" (admins: {admins})" if admins else " (viewable by everyone)"))
     except Exception as e:
@@ -899,7 +902,7 @@ def _wanted_upsert(row):
             _wanted_mem[row["hc_id"]] = {**_wanted_mem.get(row["hc_id"], {}), **row}
         return
     cols = ("hc_id", "title", "author", "slug", "status", "best_link", "best_title",
-            "best_meta", "searched_at", "detail")
+            "best_meta", "searched_at", "detail", "candidates")
     with _log_lock, _log_connect() as conn:
         existing = conn.execute("SELECT * FROM wanted WHERE hc_id = ?", (row["hc_id"],)).fetchone()
         merged = {**(dict(existing) if existing else {}), **row}
@@ -923,14 +926,22 @@ def _wanted_delete_missing(keep_ids):
 
 
 def _wanted_mark_sent_by_link(link):
-    """Called after a successful /send: if that link was a wanted book's best
-    match, advance its status so the dashboard follows the user's action."""
+    """Called after a successful /send: if that link is a wanted book's pick OR
+    any of its stored alternatives, advance the row so the dashboard follows
+    the user's action whichever edition they chose."""
     if not (WANTED_ENABLED and link):
         return
     try:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for row in _wanted_rows():
-            if row.get("best_link") == link and row.get("status") in ("found", "wanted"):
+            if row.get("status") not in ("found", "wanted"):
+                continue
+            links = {row.get("best_link")}
+            try:
+                links.update(c.get("link") for c in json.loads(row.get("candidates") or "[]"))
+            except ValueError:
+                pass
+            if link in links:
                 _wanted_upsert({"hc_id": row["hc_id"], "status": "sent",
                                 "detail": f"sent {now}"})
     except Exception as e:
@@ -959,6 +970,11 @@ def _wanted_queries(title, author):
     return out
 
 
+# ABB "request" posts describe a book somebody is ASKING for -- there's no
+# torrent behind them, so they must never become a pick.
+_ABB_REQUEST_RE = re.compile(r"\(\s*REQ", re.IGNORECASE)
+
+
 def _match_wanted_against(books, title, author):
     """STRONG-only matches of scraped ABB results against one clean wanted
     identity. Returns the matching book dicts (the wanted book acts as a
@@ -966,8 +982,11 @@ def _match_wanted_against(books, title, author):
     target = [{"title": title, "author": author, "series": [], "language": ""}]
     hits = []
     for b in books:
-        rt, ra = abs_match.split_title_author(b.get("title", ""))
-        abb = {"raw": b.get("title", ""), "title": rt, "author": ra,
+        raw = b.get("title", "")
+        if _ABB_REQUEST_RE.search(raw):
+            continue
+        rt, ra = abs_match.split_title_author(raw)
+        abb = {"raw": raw, "title": rt, "author": ra,
                "language": b.get("language", "")}
         tier, _s, _i, _r = abs_match.best_match(abb, target)
         if tier == abs_match.STRONG:
@@ -975,13 +994,22 @@ def _match_wanted_against(books, title, author):
     return hits
 
 
-def _pick_best_wanted(hits):
-    """Best edition among STRONG matches: M4B first, preferred language, then
-    stated bitrate. Deterministic counterpart of smart sort's edition rules."""
+def _rank_wanted_candidates(hits):
+    """STRONG matches ordered best-first: M4B first, preferred language, then
+    stated bitrate. Deterministic counterpart of smart sort's edition rules;
+    element 0 is the pick, the rest are the row's expandable alternatives."""
     def key(b):
         return (bool(b.get("is_m4b")), _language_matches(b),
                 _parse_kbps(b.get("bitrate")) or 0)
-    return max(hits, key=key) if hits else None
+    return sorted(hits, key=key, reverse=True)
+
+
+def _candidate_payload(b):
+    """The slim, render-ready slice of a matched result stored on the row."""
+    return {"title": b.get("title"), "link": b.get("link"),
+            "format": b.get("format"), "bitrate": b.get("bitrate"),
+            "size": b.get("size"), "language": b.get("language"),
+            "is_m4b": bool(b.get("is_m4b"))}
 
 
 def _wanted_session():
@@ -1077,14 +1105,18 @@ def _wanted_search_one(row, sess=None):
                                           "route — retrying shortly"})
                 return "unreachable"  # row status is 'wanted'; sentinel drives renewal
             considered += len(books)
-            best = _pick_best_wanted(_match_wanted_against(books, title, author))
-            if best:
+            ranked = _rank_wanted_candidates(_match_wanted_against(books, title, author))
+            if ranked:
+                best = ranked[0]
                 meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
                                               best.get("size")) if x and x != "Unknown")
                 _wanted_upsert({"hc_id": row["hc_id"], "status": "found",
                                 "best_link": best.get("link"), "best_title": best.get("title"),
-                                "best_meta": meta, "searched_at": now, "detail": ""})
-                print(f"[WANTED] {title!r}: found via {q!r} ({meta})")
+                                "best_meta": meta, "searched_at": now, "detail": "",
+                                "candidates": json.dumps([_candidate_payload(b)
+                                                          for b in ranked[:8]])})
+                print(f"[WANTED] {title!r}: found via {q!r} ({meta}; "
+                      f"{len(ranked)} candidate(s))")
                 return "found"
         _wanted_upsert({"hc_id": row["hc_id"], "status": "unmatched", "searched_at": now,
                         "detail": f"no confident match ({tried} searches, "
@@ -1182,7 +1214,11 @@ def _wanted_worker():
                     _wanted_sync_error = str(e)
                     print(f"[WARNING] Hardcover sync failed: {e}")
             if tor_status() in ("ready", "unavailable"):  # don't scrape mid-bootstrap
-                for row in _wanted_due_rows()[:3]:
+                due = _wanted_due_rows()
+                if due:
+                    print(f"[WANTED] {len(due)} book(s) due; searching up to 3 "
+                          f"via {wanted_route_label()}", flush=True)
+                for row in due[:3]:
                     status = _wanted_search_one(row, sess=_wanted_session())
                     _wanted_note_result(status)
                     if status == "unreachable":
@@ -1198,13 +1234,32 @@ def _wanted_worker():
         time.sleep(60)
 
 
+def _wanted_requeue_open():
+    """Mark every open row due for a fresh search. Run at boot so a restart
+    always sweeps the list -- otherwise rows stamped by an older (possibly
+    buggier) build sit out their whole retry backoff before anything visible
+    happens. Sent/owned rows are settled and stay put."""
+    n = 0
+    for row in _wanted_rows():
+        if row.get("status") not in ("sent", "owned") and row.get("searched_at"):
+            _wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
+            n += 1
+    return n
+
+
 def init_wanted():
     if not WANTED_ENABLED:
         print("Hardcover wanted list: disabled (no HARDCOVER_API_KEY)")
         return
+    try:
+        requeued = _wanted_requeue_open()
+    except Exception as e:
+        requeued = 0
+        print(f"[WARNING] wanted requeue at boot failed: {e}")
     threading.Thread(target=_wanted_worker, daemon=True, name="wanted-worker").start()
     print("Hardcover wanted list: enabled"
-          + (", auto-download ON (M4B-only)" if WANTED_AUTO_DOWNLOAD else ", dashboard only"))
+          + (", auto-download ON (M4B-only)" if WANTED_AUTO_DOWNLOAD else ", dashboard only")
+          + (f"; requeued {requeued} open books for a fresh sweep" if requeued else ""))
 
 # Fields we are willing to forward to Gemini. Everything else (link, cover,
 # is_m4b, etc.) is dropped before the request is built.
@@ -2076,6 +2131,15 @@ def wanted():
     rows.sort(key=lambda r: order.get(r.get("status") or "wanted", 1))
     for r in rows:  # manual Search uses the same broad primary query as the worker
         r["search_q"] = _wanted_queries(r.get("title") or "", r.get("author") or "")[0]
+        try:  # stored candidates beyond the pick become the expandable tray
+            alts = json.loads(r.get("candidates") or "[]")[1:]
+        except ValueError:
+            alts = []
+        for a in alts:
+            a["meta"] = " · ".join(x for x in (a.get("format"), a.get("bitrate"),
+                                               a.get("size"), a.get("language"))
+                                   if x and x not in ("Unknown", "?"))
+        r["alts"] = alts
     counts = {}
     for r in rows:
         counts[r.get("status") or "wanted"] = counts.get(r.get("status") or "wanted", 0) + 1

@@ -1,6 +1,11 @@
 # Use an official Python runtime as a parent image
 FROM python:3.10-slim
 
+# Stream prints to `docker logs` immediately. Without this, stdout is
+# block-buffered in containers and diagnostic lines (e.g. the wanted worker's
+# [WANTED] output) lag far behind the request log or never appear.
+ENV PYTHONUNBUFFERED=1
+
 # Set the working directory in the container
 WORKDIR /app
 

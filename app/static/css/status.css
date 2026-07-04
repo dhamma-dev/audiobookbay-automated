@@ -165,3 +165,62 @@
   pointer-events: none;
   opacity: 0.75;
 }
+
+/* Expandable alternatives tray on a wanted row. */
+.wanted-alts-toggle {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--color-accent);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wanted-alts-toggle:hover {
+  text-decoration: underline;
+}
+
+.wanted-alts-toggle.is-open::after {
+  content: " ▴";
+}
+
+.wanted-alts-row td {
+  background: var(--color-surface-2);
+  padding: var(--space-2) var(--space-4);
+}
+
+.wanted-alt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.wanted-alt + .wanted-alt {
+  border-top: 1px solid var(--color-border);
+}
+
+.wanted-alt-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-sm);
+}
+
+.wanted-alt-meta {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.wanted-alt-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}

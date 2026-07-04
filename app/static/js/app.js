@@ -1388,6 +1388,19 @@
     const toggleFiltered = e.target.closest('[data-action="toggle-filtered"]');
     if (toggleFiltered) { handleToggleFiltered(); return; }
 
+    // Wanted dashboard: expand/collapse a row's stored alternatives tray.
+    const wantedAlts = e.target.closest('[data-action="wanted-alts"]');
+    if (wantedAlts) {
+      const tray = document.getElementById(wantedAlts.dataset.target);
+      if (tray) {
+        tray.hidden = !tray.hidden;
+        wantedAlts.setAttribute('aria-expanded', String(!tray.hidden));
+        wantedAlts.classList.toggle('is-open', !tray.hidden);
+        refreshIcons();
+      }
+      return;
+    }
+
     const seriesSend = e.target.closest('[data-action="series-send"]');
     if (seriesSend) { handleSeriesSend(seriesSend); return; }
 
