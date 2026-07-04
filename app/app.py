@@ -620,6 +620,12 @@ def resolve_ownership(ranking, index):
                 ownership[rid] = {"status": "owned"}
         for block in ranking.get("series") or []:
             seqs = _owned_seqs_for(block.get("label", ""), owned_series)
+            # Series members: the shelf already carries each book's number, so we
+            # join (series, seq) locally -- no per-result canonical card needed.
+            for entry in block.get("entries") or []:
+                bid, eseq = entry.get("best_id"), entry.get("seq")
+                if bid is not None and eseq is not None and _norm_seq(eseq) in seqs:
+                    ownership[bid] = {"status": "owned"}
             for col in block.get("collections") or []:
                 cid, covers = col.get("id"), col.get("covers") or []
                 if cid is None or not covers:
@@ -1220,14 +1226,16 @@ RANK_RESPONSE_SCHEMA = {
 # library data is ever put in the prompt.
 RANK_CANONICALIZE_INSTRUCTION = (
     "\nCanonicalize (for local library matching):\n"
-    "- Also return a 'canonical' array with one object per candidate id: the "
-    "work's canonical book title, its primary author, and -- when the book is "
-    "part of a series -- the series name and the book's number (seq). Use your "
-    "own knowledge to resolve variant, bare, or non-obvious titles to the right "
-    "series and number (e.g. a book titled only 'Waybound' is Cradle #12; "
-    "'Dreadgod' is Cradle #11). Include every candidate id exactly once. This is "
-    "matched against the user's library on our server -- you are NOT given the "
-    "user's library and must not guess what they own."
+    "- Return a 'canonical' array of clean identities used to match results "
+    "against the user's library. Include an entry ONLY for candidates you did "
+    "NOT place in a 'series' block above -- i.e. standalone books, and lone "
+    "series books with too few results to form a shelf. For books already in a "
+    "series block we read the series and number straight from the shelf, so "
+    "listing them here too is redundant work. For each included id give the "
+    "work's canonical title, its primary author, and -- if it belongs to a "
+    "series -- the series name and number (seq), using your knowledge to resolve "
+    "variant/bare titles (e.g. a lone 'Dreadgod' is Cradle #11). You are NOT "
+    "given the user's library and must not guess what they own."
 )
 
 
