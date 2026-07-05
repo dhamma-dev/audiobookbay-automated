@@ -118,6 +118,7 @@ class WantedService:
         self.sync_error = ""     # last sync failure, surfaced on the dashboard
         self._fail_streak = 0
         self._last_renew = 0.0
+        self._stop = threading.Event()  # set when settings rebuild retires this instance
 
     # --- Hardcover -------------------------------------------------------------
     def _gql(self, query, variables=None):
@@ -435,8 +436,9 @@ class WantedService:
     def _worker(self):
         """Background loop: keep the wanted list synced and searched.
         Deliberately gentle — at most 3 ABB searches per minute-tick and a
-        couple of Hardcover calls per sync TTL."""
-        while True:
+        couple of Hardcover calls per sync TTL. Exits when stop() is called
+        (a settings change rebuilt the service with a fresh worker)."""
+        while not self._stop.is_set():
             try:
                 if time.monotonic() - self.last_sync > self.config.hardcover_sync_ttl \
                         or self.last_sync == 0:
@@ -463,7 +465,10 @@ class WantedService:
                     self._maybe_renew()
             except Exception as e:
                 log.warning("wanted worker tick failed: %s", e)
-            time.sleep(60)
+            self._stop.wait(60)
+
+    def stop(self):
+        self._stop.set()
 
     def start(self):
         if not self.enabled:

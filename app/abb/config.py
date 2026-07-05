@@ -31,6 +31,29 @@ CLIENT_REQUIRED_ENV = {
 }
 
 
+# Feature-tier settings editable on the in-app Settings page (see
+# abb/settings.py). Deployment plumbing (DOWNLOAD_CLIENT/DL_*/PUTIO_* creds,
+# Tor, LOG_*, PORT) is deliberately NOT here: it describes container wiring
+# and belongs to the stack alone. LOG_ADMIN_USERS is also excluded on purpose
+# — the list that gates the settings page must not be editable from it.
+# Shape: env var -> (Config field, kind). kind "secret" renders write-only.
+FEATURE_SETTINGS = {
+    "GEMINI_API_KEY": ("gemini_api_key", "secret"),
+    "RANK_MODEL": ("rank_model", "str"),
+    "PREFERRED_LANGUAGE": ("preferred_language", "str"),
+    "ABS_URL": ("abs_url", "str"),
+    "ABS_TOKEN": ("abs_token", "secret"),
+    "ABS_LIBRARY_ID": ("abs_library_id", "str"),
+    "ABS_LOW_KBPS": ("abs_low_kbps", "float"),
+    "HARDCOVER_API_KEY": ("hardcover_api_key", "secret"),
+    "WANTED_AUTO_DOWNLOAD": ("wanted_auto_download", "bool"),
+    "WANTED_LLM": ("wanted_llm", "bool"),
+    "WANTED_ROUTE": ("wanted_route", "choice"),
+}
+
+WANTED_ROUTE_CHOICES = ("default", "tor", "direct")
+
+
 def is_truthy(value: str | None) -> bool:
     return (value or "").lower() not in ("0", "false", "no", "off", "")
 
@@ -120,6 +143,11 @@ class Config:
     cookie_secure: bool = False             # set true when served over HTTPS
     cover_proxy: bool = False               # proxy covers through the route session
 
+    # Raw env strings for the FEATURE_SETTINGS keys, captured at boot so the
+    # in-app settings layer can tell "the operator changed this env var since
+    # the override was saved" (most-recently-set-wins). Not config itself.
+    raw_env: dict = field(default_factory=dict, repr=False, compare=False)
+
     @classmethod
     def from_env(cls, env=None) -> "Config":
         env = os.environ if env is None else env
@@ -186,6 +214,7 @@ class Config:
             log_level=(g("LOG_LEVEL") or "INFO").upper(),
             cookie_secure=is_truthy(g("COOKIE_SECURE", "false")),
             cover_proxy=is_truthy(g("COVER_PROXY", "false")),
+            raw_env={k: env.get(k) for k in FEATURE_SETTINGS},
         )
 
     # --- Derived flags -------------------------------------------------------

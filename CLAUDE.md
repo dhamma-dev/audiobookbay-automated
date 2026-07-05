@@ -40,6 +40,7 @@ why v2 looks like this.
 | `app/abb/wanted.py` | `WantedService`: Hardcover sync, query ladder, worker thread, auto-download. |
 | `app/abb/clients.py` | Download-client registry (add/list per client) + put.io token logic. |
 | `app/abb/identity.py`, `security.py` | Proxy-header identity; CSRF, security headers, persisted secret key. |
+| `app/abb/settings.py` | In-app settings overlay: `FEATURE_SETTINGS` overrides from SQLite, most-recently-set-wins vs env (snapshot comparison). UI in `web/admin.py`. |
 | `app/abb/web/` | Blueprints: `pages` (HTML), `actions` (send/settings/wanted POSTs), `api` (JSON + `/healthz`), `putio` (OAuth). |
 | `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**). |
 | `app/tests/` | pytest suite; CI gates image builds on it. |
@@ -57,6 +58,7 @@ why v2 looks like this.
 - **Hardcover wanted list** — `/wanted` dashboard syncs "Want to Read" (GraphQL), background-searches ABB (worker thread, broad query ladder). Found rows are **AI-rated once, then settled** (`WANTED_LLM=false` → deterministic). Optional strict auto-download (`WANTED_AUTO_DOWNLOAD`, M4B-only).
 - **Auth deployment** — behind Authentik forward-auth via Nginx Proxy Manager; `X-authentik-username` etc. arrive as request headers.
 - **Security layer (v2)** — CSRF on all form POSTs (`X-CSRF-Token` header on fetches), CSP/security headers, SameSite=Lax cookies, secret key persisted under `/data`.
+- **In-app settings (v2.1)** — `/settings` (gated like `/log`) edits the *feature* keys (Gemini/ABS/Hardcover/wanted) live, no restart; env vs app precedence = whichever was set most recently (see `abb/settings.py`). Deployment plumbing stays env-only, and `LOG_ADMIN_USERS` is deliberately not editable from the page it gates.
 
 ## Dev workflow (important)
 

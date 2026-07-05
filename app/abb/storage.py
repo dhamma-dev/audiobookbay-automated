@@ -76,6 +76,18 @@ class Store:
                     )
                 """)
                 self._migrate(conn, "wanted", ("candidates", "verdict"))
+                # In-app feature settings (see abb/settings.py). env_snapshot
+                # is the env value seen at save time — the key to the
+                # most-recently-set-wins precedence.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        env_snapshot TEXT,
+                        updated_at TEXT,
+                        updated_by TEXT
+                    )
+                """)
             log.info("download log at %s", self.config.log_db_path)
         except Exception as e:
             self.enabled = False
@@ -151,6 +163,36 @@ class Store:
                 f"INSERT OR REPLACE INTO wanted ({', '.join(cols)})"
                 f" VALUES ({', '.join('?' * len(cols))})",
                 tuple(merged.get(c) for c in cols))
+
+    # --- in-app settings ----------------------------------------------------------
+    def settings_all(self):
+        """{key: row dict} of stored overrides. {} when the store is disabled
+        or not yet initialized — settings then simply don't apply."""
+        if not self.enabled:
+            return {}
+        try:
+            with self._lock, self._connect() as conn:
+                return {r["key"]: dict(r)
+                        for r in conn.execute("SELECT * FROM settings").fetchall()}
+        except Exception as e:
+            log.warning("failed to read settings: %s", e)
+            return {}
+
+    def settings_set(self, key, value, env_snapshot, user):
+        if not self.enabled:
+            return
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value, env_snapshot, updated_at, updated_by)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (key, value, env_snapshot,
+                 datetime.now(timezone.utc).isoformat(timespec="seconds"), user))
+
+    def settings_delete(self, key):
+        if not self.enabled:
+            return
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
 
     def wanted_delete_missing(self, keep_ids):
         """Drop rows the user removed from their Hardcover list."""

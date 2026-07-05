@@ -50,6 +50,12 @@
                     Log
                 </a>
                 {% endif %}
+                {% if is_settings_admin %}
+                <a href="{{ url_for('admin.settings_page') }}" class="{% if request.endpoint in ('admin.settings_page', 'admin.settings_save') %}active{% endif %}">
+                    <i data-lucide="settings" aria-hidden="true"></i>
+                    Settings
+                </a>
+                {% endif %}
                 {% if nav_link_name and nav_link_url %}
                 <a href="{{ nav_link_url }}" target="_blank" rel="noopener noreferrer">
                     <i data-lucide="external-link" aria-hidden="true"></i>

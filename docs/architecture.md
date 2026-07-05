@@ -136,6 +136,20 @@ Defense-in-depth behind the Authentik proxy (which remains the actual gate):
 - **put.io OAuth** — `state` parameter verified in the callback; logout is a
   POST.
 
+## In-app settings (v2.1)
+
+`/settings` (blueprint `web/admin.py`, gated like `/log`) edits the
+feature-tier keys — `config.FEATURE_SETTINGS`: Gemini, ABS, Hardcover, the
+wanted toggles — without a redeploy. Overrides live in the `settings` table;
+precedence is **most-recently-set-wins**, made deterministic by snapshotting
+the env value at save time: if the env var changed since, env wins and the
+override shows as "superseded" (`abb/settings.py`). Saving calls
+`Services.reload_settings()`, which recomputes the effective config and
+rebuilds the rank/library/wanted services (the retired wanted worker exits at
+its next tick). Deployment plumbing (client creds, Tor, LOG_*, PORT) is
+deliberately env-only, secrets are write-only in the UI, and `LOG_ADMIN_USERS`
+cannot be edited from the page it gates.
+
 ## Frontend model (`app/abb/static/js/app.js`)
 
 One IIFE. Global event delegation: a single `click`/`change`/`submit` listener

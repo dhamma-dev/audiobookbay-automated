@@ -150,6 +150,21 @@ COVER_PROXY=false              # stream result cover art through the server's
 
 There's a ready-to-copy [`.env.example`](.env.example) with every setting.
 
+#### In-app settings
+
+The feature keys — Smart sort (Gemini), Audiobookshelf matching, and the
+Hardcover wanted list — can also be managed on the **Settings** page inside the
+app (no redeploy needed; changes apply immediately). Environment variables and
+in-app settings combine, and **whichever was set most recently wins**: change a
+value in the app and it overrides the env var; later change the env var in your
+stack and *it* takes back over (the page marks the old override as inactive).
+Every field shows where its active value came from. Secrets are write-only —
+the page never displays a stored key, only "set"/"not set".
+
+The page is gated by `LOG_ADMIN_USERS` (everyone, if unset — same rule as
+`/log`), and requires the `/data` volume, where overrides persist. Connection,
+download-client, and logging settings deliberately stay environment-only.
+
 > `PREFERRED_LANGUAGE` floats matching-language results above others in the
 > normal result order, and (when Smart sort is enabled) tells Gemini to rank
 > other-language editions far lower. Leave it unset to treat all languages

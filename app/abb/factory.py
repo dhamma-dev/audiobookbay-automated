@@ -11,6 +11,7 @@ from flask import Flask, session
 
 from .clients import ClientRegistry
 from .config import CLIENT_LABELS, Config
+from .identity import current_user_label, is_log_admin
 from .library import AbsLibrary
 from .outbound import Outbound
 from .scraper import Scraper
@@ -28,7 +29,11 @@ class Services:
     at it via current_app.extensions['abb']."""
 
     def __init__(self, config: Config):
+        # base_config is the env-derived truth; config is the *effective* one
+        # after in-app settings overlay (reload_settings). They start equal.
+        self.base_config = config
         self.config = config
+        self._started = False
         self.store = Store(config)
         self.tor = TorManager(config)
         self.outbound = Outbound(config, self.tor)
@@ -39,12 +44,34 @@ class Services:
         self.wanted = WantedService(config, self.store, self.scraper, self.library,
                                     self.rank, self.clients, self.outbound, self.tor)
 
+    def reload_settings(self):
+        """Recompute the effective config from env + stored overrides and
+        rebuild the services those settings feed. Called at boot (after the
+        store opens) and after every settings-page save, so changes apply
+        without a restart. Deployment-tier services (tor/outbound/scraper/
+        store/clients) bind env-only settings and are left alone."""
+        from .settings import effective_config
+
+        cfg, _prov = effective_config(self.base_config, self.store)
+        self.config = cfg
+        self.rank = RankService(cfg)
+        self.library = AbsLibrary(cfg)
+        old_wanted = self.wanted
+        self.wanted = WantedService(cfg, self.store, self.scraper, self.library,
+                                    self.rank, self.clients, self.outbound, self.tor)
+        if self._started:
+            old_wanted.stop()       # the retired worker exits at its next tick
+            self.wanted.start()
+
     def start(self):
-        """The side effects, in dependency order: database, Tor (background
-        bootstrap — serving starts immediately), then the wanted worker."""
+        """The side effects, in dependency order: database, settings overlay,
+        Tor (background bootstrap — serving starts immediately), then the
+        wanted worker."""
         self.store.init()
+        self.reload_settings()      # not yet _started: rebuild only, no threads
         self.tor.start()
         self.wanted.start()
+        self._started = True
 
 
 def _setup_logging(level_name: str):
@@ -70,11 +97,12 @@ def create_app(config: Config | None = None, start: bool = True) -> Flask:
     services = Services(config)
     app.extensions["abb"] = services
 
-    from .web import actions, api, pages, putio
+    from .web import actions, admin, api, pages, putio
     app.register_blueprint(pages.bp)
     app.register_blueprint(actions.bp)
     app.register_blueprint(api.bp)
     app.register_blueprint(putio.bp)
+    app.register_blueprint(admin.bp)
 
     @app.context_processor
     def inject_app_config():
@@ -106,6 +134,8 @@ def create_app(config: Config | None = None, start: bool = True) -> Flask:
             "tor_renewable": services.tor.renewable,
             "tor_status": services.tor.status(),
             "route_mode": services.outbound.route_mode(),
+            # The Settings nav entry follows the same gate as the page itself.
+            "is_settings_admin": is_log_admin(current_user_label(), c),
             "page_title_suffix": "AudiobookBay",
         }
 
