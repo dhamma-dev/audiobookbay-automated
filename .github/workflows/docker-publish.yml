@@ -66,8 +66,11 @@ jobs:
       - name: Compute image tags
         id: image
         run: |
-          name=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/audiobookbay-automated
-          slug=$(echo '${{ github.ref_name }}' | tr '/' '-' | tr -c 'a-zA-Z0-9._-' '-')
+          name=ghcr.io/$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/audiobookbay-automated
+          # printf, not echo: echo's trailing newline used to get translated
+          # into a trailing dash by tr -c, so branch tags published as "dev-"
+          # instead of "dev" from the first release until July 2026.
+          slug=$(printf '%s' '${{ github.ref_name }}' | tr '/' '-' | tr -c 'a-zA-Z0-9._-' '-')
           tags="$name:$slug"
           if [ '${{ github.ref_name }}' = 'main' ]; then
             tags="$tags"$'\n'"$name:latest"
