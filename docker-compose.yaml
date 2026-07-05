@@ -1,13 +1,12 @@
-version: '3.8'
-
 services:
   audiobookbay-automated:
     image: ghcr.io/dhamma-dev/audiobookbay-automated:latest
     ports:
       - "5078:5078"
     container_name: audiobookbay-automated
-    # Persists the download log (who added what) across restarts. Maps to
-    # LOG_DB_PATH's directory below.
+    # Persists the download log (who added what) and the app's session secret
+    # key across restarts. Maps to LOG_DB_PATH's directory below. The v2 image
+    # runs as uid 1000 — make this dir writable by it (chown -R 1000:1000).
     volumes:
       - ./data:/data
     environment:
@@ -58,5 +57,12 @@ services:
       # WANTED_AUTO_DOWNLOAD=true additionally auto-sends STRONG M4B matches.
       - HARDCOVER_API_KEY=${HARDCOVER_API_KEY}
       - WANTED_AUTO_DOWNLOAD=${WANTED_AUTO_DOWNLOAD:-false}
+      # v2 knobs (all optional — see .env.example): LOG_LEVEL, COOKIE_SECURE
+      # (set true when served over HTTPS), COVER_PROXY (stream result covers
+      # through the server's Tor/Direct route instead of hotlinking), and
+      # FLASK_SECRET_KEY (else one is generated and persisted under /data).
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      - COVER_PROXY=${COVER_PROXY:-false}
     env_file:
       - .env

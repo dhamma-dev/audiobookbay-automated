@@ -10,6 +10,18 @@
   /* ----------------------------------------------------------
      Utilities
      ---------------------------------------------------------- */
+  // Every state-changing request carries the session's CSRF token (v2). The
+  // server also accepts plain JSON without it (scripts), but the browser
+  // always sends it — belt and braces.
+  function csrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.content : '';
+  }
+
+  function jsonHeaders() {
+    return { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() };
+  }
+
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text == null ? '' : String(text);
@@ -85,7 +97,7 @@
     try {
       const res = await fetch('/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify({ link, title }),
       });
       const data = await res.json().catch(() => ({}));
@@ -231,7 +243,7 @@
     }
     const p = fetch('/api/rank', Object.assign({
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonHeaders(),
       body: JSON.stringify({ query, results }),
     }, fetchTimeout(120000))).then(async (res) => {
       const data = await res.json().catch(() => ({}));
@@ -298,7 +310,7 @@
     try {
       await fetch('/settings/prefetch', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify({ mode }),
       });
     } catch (e) { /* best-effort persistence */ }
@@ -619,7 +631,7 @@
     try {
       const res = await fetch('/api/ownership', Object.assign({
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify({ items }),
       }, fetchTimeout(30000)));
       if (!res.ok) return;
@@ -1111,7 +1123,7 @@
     try {
       const res = await fetch('/send/batch', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify({ items, batch_label: label }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1256,7 +1268,7 @@
     try {
       const res = await fetch('/settings/route', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify({ mode }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1285,7 +1297,7 @@
     const original = btn.innerHTML;
     btn.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span> Renewing…';
     try {
-      const res = await fetch('/tor/renew', { method: 'POST' });
+      const res = await fetch('/tor/renew', { method: 'POST', headers: { 'X-CSRF-Token': csrfToken() } });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message || 'Could not renew circuit');
       showToast(data.message || 'Requested a new Tor circuit.', 'success');
@@ -1338,7 +1350,7 @@
     try {
       const res = await fetch('/settings/route', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders(),
         body: JSON.stringify({ mode: 'direct' }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1462,6 +1474,14 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeConnPopover();
+    // "/" jumps to the search box from anywhere on the page (v2 nicety).
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const tag = document.activeElement && document.activeElement.tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+        const input = document.getElementById('search-input');
+        if (input) { e.preventDefault(); input.focus(); input.select(); }
+      }
+    }
   });
 
   document.addEventListener('submit', (e) => {

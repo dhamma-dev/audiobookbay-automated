@@ -26,7 +26,7 @@
 {% if is_admin and user_filter %}
 <div class="downloads-toolbar">
     <span class="downloads-count">Showing additions by <strong>{{ user_filter }}</strong></span>
-    <a href="{{ url_for('download_log') }}" class="btn btn-secondary">
+    <a href="{{ url_for('pages.download_log') }}" class="btn btn-secondary">
         <i data-lucide="x" aria-hidden="true"></i>
         Clear filter
     </a>
@@ -51,7 +51,7 @@
                 <td class="log-when">{{ entry.ts | replace('T', ' ') | replace('+00:00', '') }} UTC</td>
                 {% if is_admin %}
                 <td>
-                    <a class="log-user" href="{{ url_for('download_log', user=entry.user) }}">{{ entry.user }}</a>
+                    <a class="log-user" href="{{ url_for('pages.download_log', user=entry.user) }}">{{ entry.user }}</a>
                 </td>
                 {% endif %}
                 <td class="log-book">

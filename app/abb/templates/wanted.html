@@ -17,7 +17,8 @@
                no repeat lookups unless you force a re-check.</p>
         </div>
         {% if enabled %}
-        <form method="post" action="{{ url_for('wanted_sync') }}">
+        <form method="post" action="{{ url_for('actions.wanted_sync') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-secondary" data-busy="Syncing with Hardcover…">
                 <i data-lucide="refresh-cw" aria-hidden="true"></i>
                 Sync now
@@ -125,11 +126,12 @@
                     {% endif %}
                     {% if r.status not in ('sent',) %}
                     <a class="btn btn-secondary btn-upgrade-search" data-busy="Searching…"
-                       href="{{ url_for('search', q=r.search_q) }}">
+                       href="{{ url_for('pages.search', q=r.search_q) }}">
                         <i data-lucide="search" aria-hidden="true"></i>
                         Search
                     </a>
-                    <form method="post" action="{{ url_for('wanted_research', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                    <form method="post" action="{{ url_for('actions.wanted_research', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
                                 title="Re-check AudioBook Bay for this book now (uses your browser's Tor/Direct route)">
                             <i data-lucide="rotate-cw" aria-hidden="true"></i>

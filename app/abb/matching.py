@@ -1,8 +1,8 @@
 """
-Audiobookshelf match scoring -- EXPERIMENTAL SPIKE.
+Audiobookshelf match scoring.
 
-Pure, dependency-free (stdlib only) matching logic shared by the spike CLI and,
-if the feature graduates, the app. Nothing here has import side effects.
+Pure, dependency-free (stdlib only) matching logic shared by the app, the
+tests, and the eval spike (``abs_match_spike.py``). No import side effects.
 
 Design principle (see the README discussion): we only ever assert a *positive*
 ("you already own this") and only when confident. Everything else is UNKNOWN,
@@ -17,8 +17,8 @@ Precision is protected by *gating title similarity on the author*: a strong
 title match with a mismatched author is rejected (the "same title, different
 book" case). A strong title match with no author to check is capped at MAYBE.
 
-Thresholds are deliberately module-level constants -- the point of the spike is
-to look at real scores and move these.
+Thresholds are deliberately module-level constants so the eval spike can show
+real scores against them and they can be tuned in one place.
 """
 
 import re

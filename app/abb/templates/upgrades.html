@@ -71,7 +71,7 @@
                 <td class="log-when">{{ f.size_h }} · {{ f.duration_h }}</td>
                 <td>
                     <a class="btn btn-secondary btn-upgrade-search" data-busy="Searching…"
-                       href="{{ url_for('search', q=f.query) }}">
+                       href="{{ url_for('pages.search', q=f.query) }}">
                         <i data-lucide="search" aria-hidden="true"></i>
                         Find better
                     </a>

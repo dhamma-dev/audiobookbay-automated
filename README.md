@@ -137,7 +137,18 @@ PREFERRED_LANGUAGE=English     # Float this language's results up; unset = no pr
 # Add an extra link to the navigation bar (e.g. your audiobook player)
 NAV_LINK_NAME=Open Audiobook Player
 NAV_LINK_URL=https://audiobooks.yourdomain.com/
+
+# Server (v2 — all optional)
+FLASK_SECRET_KEY=              # session signing key; else one is generated and
+                               # persisted under /data so sessions survive restarts
+LOG_LEVEL=INFO                 # DEBUG for chatty logs
+COOKIE_SECURE=false            # set true when the app is served over HTTPS
+COVER_PROXY=false              # stream result cover art through the server's
+                               # Tor/Direct route instead of your browser
+                               # hotlinking it (privacy vs. slower covers)
 ```
+
+There's a ready-to-copy [`.env.example`](.env.example) with every setting.
 
 > `PREFERRED_LANGUAGE` floats matching-language results above others in the
 > normal result order, and (when Smart sort is enabled) tells Gemini to rank
@@ -247,7 +258,7 @@ ABS_TOKEN=your-abs-api-token                 # Settings → Users → (you) → 
 # ABS_CACHE_TTL=900                          # optional; library cache lifetime (seconds)
 ```
 
-The matcher (`app/abs_match.py`) is **precision-first**: it only ever asserts a
+The matcher (`app/abb/matching.py`) is **precision-first**: it only ever asserts a
 positive, and only when confident. A strong title match is *gated on the author*
 (so a same-title / wrong-author result is rejected), foreign-language editions
 and bundles matched against a single owned volume are held back, and a match it
@@ -358,7 +369,7 @@ docker compose exec audiobookbay-automated \
 ```
 
 `STRONG` rows are what become a badge; `maybe`/`none` are shown only to gauge
-recall. Thresholds live at the top of `app/abs_match.py`.
+recall. Thresholds live at the top of `app/abb/matching.py`.
 
 ### Tor
 
@@ -407,8 +418,6 @@ Example `docker-compose.yml` (qBittorrent shown; swap the client block for
 Transmission, Deluge, or Put.io as above):
 
 ```yaml
-version: '3.8'
-
 services:
   audiobookbay-automated:
     image: ghcr.io/dhamma-dev/audiobookbay-automated:latest
@@ -416,7 +425,7 @@ services:
       - "5078:5078"
     container_name: audiobookbay-automated
     volumes:
-      - ./data:/data                             # persists the download log
+      - ./data:/data                             # download log + session secret key
     environment:
       - DOWNLOAD_CLIENT=qbittorrent
       - DL_SCHEME=http
@@ -448,6 +457,12 @@ docker-compose up -d
 
 The app is then available on `http://<your-host>:5078`.
 
+> **v2 note:** the container now runs as a non-root user (uid 1000) and reports
+> health at `/healthz`. If you're upgrading and mounted `./data` while running
+> as root, make it writable once: `chown -R 1000:1000 data`. If it isn't
+> writable, the app still runs — the download log and the persisted session key
+> just disable themselves with a warning in the logs.
+
 ---
 
 ## Running locally
@@ -460,8 +475,12 @@ The app is then available on `http://<your-host>:5078`.
    matching settings from above (plus any optional Tor/Smart sort/nav vars).
 3. Start the app:
    ```bash
-   cd app && python app.py
+   cd app && python main.py        # waitress on port 5078 (PORT=5178 to move it)
    ```
+
+Working on the code? `cd app && python -m pytest -q` runs the test suite
+(install `requirements-dev.txt` first) — CI won't publish an image without it
+passing.
 
 ---
 

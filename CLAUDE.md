@@ -17,37 +17,51 @@ Tor routing for the ABB scrape, a shared-instance download log, and
 
 Single-user or small trusted group (family/friends behind Authentik).
 
-## Shape of the code
+## Shape of the code (v2)
 
-No build step, no framework beyond Flask, no ORM. Server-rendered Jinja +
-progressive-enhancement vanilla JS.
+The backend is a package (`app/abb/`) built by an **app factory** — importing
+any module has **zero side effects**; `create_app()` (and only it) wires config,
+services, and blueprints, and `create_app(start=False)` skips the side effects
+entirely (what tests use). Frontend is server-rendered Jinja + one vanilla-JS
+IIFE; no build step, no ORM. See [`docs/v2-review.md`](docs/v2-review.md) for
+why v2 looks like this.
 
 | Path | What it is |
 |---|---|
-| `app/app.py` | The entire backend: config, ABB scraping, download-client registry, Tor management, smart sort (Gemini), ABS matching, download log, all routes. One big module by design. |
-| `app/abs_match.py` | **Pure, stdlib-only** library matcher (no import side effects). Shared by the app and the spike. |
-| `app/abs_match_spike.py` | Standalone CLI to eval/tune the matcher against a real library. Imports `abs_match`, **never** `app.py`. |
-| `app/templates/` | Jinja: `base.html` (nav/shell), `search.html`, `status.html`, `log.html`, `macros/` (card, row, etc.). |
-| `app/static/js/app.js` | All client JS in one IIFE. Central `document.addEventListener` delegation on `[data-action="…"]`. No modules/bundler. |
-| `app/static/css/` | Design system: `tokens.css` (CSS vars — always use these), then `base`/`components`/`layout`/`search`/`status`. |
-| `Dockerfile`, `docker-compose.yaml` | Deploy. Image installs Tor; app manages the tor process itself. |
-| `.github/workflows/docker-publish.yml` | CI: multi-arch image per push. See workflow below. |
-| `docs/` | Deep dives (architecture, library matching, development). |
+| `app/main.py` | Entrypoint: `load_dotenv()` → `create_app()` → waitress (one process + threads — required by the caches/Tor/worker; never run multi-worker). |
+| `app/abb/config.py` | Typed `Config.from_env()`: every env var, defaults, validation, masked startup report. |
+| `app/abb/factory.py` | `create_app()` + the `Services` container (config/store/tor/outbound/scraper/library/rank/clients/wanted). |
+| `app/abb/tor.py`, `outbound.py` | `TorManager` (launch/bootstrap/renew) and `Outbound` (direct+tor sessions, per-browser route mode). |
+| `app/abb/scraper.py` | ABB search parse (pure `parse_search_page`) + magnet extraction. |
+| `app/abb/storage.py` | SQLite (WAL): download log + wanted rows; v1 schema, self-migrating. |
+| `app/abb/matching.py` | **Pure, stdlib-only** library matcher (v1 `abs_match.py`, unchanged logic). |
+| `app/abb/library.py` | `AbsLibrary`: ABS index cache, ownership joins, Upgrade Radar. |
+| `app/abb/smart_sort.py` | `RankService`: Gemini schemas/instructions, rank cache, wanted verdict. `RANK_FIELDS` is the privacy allowlist. |
+| `app/abb/wanted.py` | `WantedService`: Hardcover sync, query ladder, worker thread, auto-download. |
+| `app/abb/clients.py` | Download-client registry (add/list per client) + put.io token logic. |
+| `app/abb/identity.py`, `security.py` | Proxy-header identity; CSRF, security headers, persisted secret key. |
+| `app/abb/web/` | Blueprints: `pages` (HTML), `actions` (send/settings/wanted POSTs), `api` (JSON + `/healthz`), `putio` (OAuth). |
+| `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**). |
+| `app/tests/` | pytest suite; CI gates image builds on it. |
+| `app/abs_match_spike.py` | Standalone matcher eval CLI; imports `abb.matching` only. |
+| `Dockerfile`, `docker-compose.yaml` | python:3.12-slim + tor, non-root (uid 1000), `HEALTHCHECK` → `/healthz`. |
+| `docs/` | Deep dives (architecture, library matching, development, v2 review). |
 
 ## Core subsystems (one line each — details in docs)
 
-- **Download clients** — `DOWNLOAD_BACKENDS` registry in `app.py`; one client per deploy via `DOWNLOAD_CLIENT`. Adding a client = one table entry (`add`/`list`).
-- **Tor routing** — the app starts/manages its own `tor` process; ABB scrape + magnet lookup go through it, toggleable per browser (`session['route_mode']`). Everything else (Gemini, ABS, the download client) goes direct.
-- **Smart sort** — optional Gemini call (`/api/rank`) that re-ranks results and groups series/editions. Only public result metadata (`RANK_FIELDS`) is sent. See [`docs/architecture.md`](docs/architecture.md).
-- **ABS library matching** — flags results you already own; deterministic baseline + LLM-canonicalized local join + a live re-check poll. **Precision-first, and your library never leaves the box.** See [`docs/library-matching.md`](docs/library-matching.md).
+- **Download clients** — registry in `clients.py`; one client per deploy via `DOWNLOAD_CLIENT`. Adding a client = one backends entry + `CLIENT_REQUIRED_ENV`.
+- **Tor routing** — the app starts/manages its own `tor`; ABB scrape + magnet lookup go through it, toggleable per browser (`session['route_mode']`). Everything else (Gemini, ABS, Hardcover, the download client) goes direct.
+- **Smart sort** — optional Gemini call (`/api/rank`) re-ranking results, grouping series/editions. Only public result metadata (`RANK_FIELDS`) is sent. See [`docs/architecture.md`](docs/architecture.md).
+- **ABS library matching** — deterministic baseline + LLM-canonicalized local join + live re-check poll. **Precision-first; the library never leaves the box.** See [`docs/library-matching.md`](docs/library-matching.md).
 - **Download log** — SQLite audit of who sent what; identity from reverse-proxy auth headers (Authentik). `/log` gated by `LOG_ADMIN_USERS`.
-- **Hardcover wanted list** — `/wanted` dashboard syncs the user's Hardcover "Want to Read" list (GraphQL, `HARDCOVER_API_KEY`), background-searches ABB per book (worker thread, broad query ladder). Results are **AI-rated once at find time** (`_wanted_llm_verdict`; ~one call per book ever; `WANTED_LLM=false` → deterministic fallback), then persisted — found rows are settled until the user forces a re-check. Optional strict auto-download (`WANTED_AUTO_DOWNLOAD`, M4B-only). State in the log SQLite (`wanted` table).
-- **Auth deployment** — runs behind Authentik forward-auth via Nginx Proxy Manager; `X-authentik-username` etc. arrive as request headers.
+- **Hardcover wanted list** — `/wanted` dashboard syncs "Want to Read" (GraphQL), background-searches ABB (worker thread, broad query ladder). Found rows are **AI-rated once, then settled** (`WANTED_LLM=false` → deterministic). Optional strict auto-download (`WANTED_AUTO_DOWNLOAD`, M4B-only).
+- **Auth deployment** — behind Authentik forward-auth via Nginx Proxy Manager; `X-authentik-username` etc. arrive as request headers.
+- **Security layer (v2)** — CSRF on all form POSTs (`X-CSRF-Token` header on fetches), CSP/security headers, SameSite=Lax cookies, secret key persisted under `/data`.
 
 ## Dev workflow (important)
 
 - **Branch:** do work on **`dev`** and push there; open a PR to **`main`** to release. Don't commit straight to `main` unless the user explicitly says so.
-- **CI / images:** every push to `main`/`dev` builds a multi-arch image tagged `:<branch-slug>` (e.g. `:dev`). **Only `main` also moves `:latest`.** `docker-compose.yaml` pins `:latest`, so to run dev work the user pulls the `:dev` tag.
+- **CI / images:** every push to `main`/`dev` runs the **test job first**, then builds a multi-arch image tagged `:<branch-slug>` (e.g. `:dev`). **Only `main` also moves `:latest`.** `docker-compose.yaml` pins `:latest`, so to run dev work the user pulls the `:dev` tag.
 - **Commits:** end messages with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. Commit/push only when asked.
 - Use the session scratchpad dir for temp files, not the repo.
 
@@ -55,27 +69,48 @@ progressive-enhancement vanilla JS.
 
 ```bash
 # Run (Docker): docker compose up -d   → http://<host>:5078
-# Run (local):  cd app && python app.py   (needs a running/reachable tor for ABB)
+# Run (local):  cd app && python main.py    (waitress; PORT=5178 to move it)
 
-# Fast checks before committing (there is no test framework):
-python3 -m py_compile app/app.py app/abs_match.py app/abs_match_spike.py
-node --check app/static/js/app.js
-python3 app/abs_match_spike.py --selftest    # 9 matcher regression cases, offline
+# Before committing:
+cd app && python -m pytest -q                 # the real gate (CI runs this)
+node --check app/abb/static/js/app.js
+python3 app/abs_match_spike.py --selftest     # matcher eval CLI, offline mode
 ```
 
 ## Conventions & guardrails
 
-- **Match the surrounding code.** `app.py` is intentionally one module with inline helpers and heavy explanatory comments; keep that style. JS is one IIFE with `data-action` delegation. CSS uses `tokens.css` variables — never hardcode colors/spacing.
-- **Best-effort side features never break core flow.** ABS matching, the log, and smart sort all swallow their own errors: a failure leaves the search working, just without that enrichment.
+- **Match the surrounding code.** Modules are focused, comments explain *why*.
+  JS is one IIFE with `data-action` delegation. CSS uses `tokens.css` variables —
+  never hardcode colors/spacing. **Never add a CDN script tag** — icons are
+  vendored (`static/images/icons.svg`); the CSP enforces `script-src 'self'`.
+- **No import side effects.** Anything that starts a process/thread or touches
+  disk/network belongs in a service's `init()`/`start()`, called from
+  `Services.start()`. Tests rely on `create_app(start=False)` staying clean.
+- **Best-effort side features never break core flow.** ABS matching, the log,
+  and smart sort all swallow their own errors: a failure leaves search working,
+  just without that enrichment.
 - **Privacy boundaries are deliberate — preserve them:**
-  - Tor shields **only** the ABB scrape. Gemini and ABS calls go direct.
-  - Smart sort sends **only** public result metadata (`RANK_FIELDS`), never links/covers/hostname.
-  - ABS matching **never** sends the user's library anywhere. The LLM canonicalizes *public* results; the ownership join runs locally. See the matching doc.
-- **Matching is precision-first:** only ever assert "you own this" when confident. A missing badge is never a claim you *don't* own something.
+  - Tor shields **only** the ABB scrape (plus covers when `COVER_PROXY=true`).
+    Gemini, ABS and Hardcover calls go direct.
+  - Smart sort sends **only** public result metadata (`RANK_FIELDS`), never
+    links/covers/hostname.
+  - ABS matching **never** sends the user's library anywhere. The LLM
+    canonicalizes *public* results; the ownership join runs locally.
+- **Matching is precision-first:** only ever assert "you own this" when
+  confident. A missing badge is never a claim you *don't* own something.
+- **Compatibility:** v1 env vars, URL paths, JSON shapes, and the SQLite schema
+  are a contract — don't break them casually.
 
 ## Gotchas
 
-- **`app.py` has import-time side effects** — `init_download_log()` and `init_outbound()` (which starts Tor) run at module load. So **never `import app` from a standalone script** (it would launch a second Tor). Scripts import `abs_match` (pure) only. This is why `abs_match_spike.py` reimplements a minimal ABB scrape instead of reusing the app's.
-- `app/.venv/` is a local virtualenv; `memory/` is agent-local notes (gitignored) — neither is project code.
-- `.DS_Store` files exist; ignore them.
-- The app trusts reverse-proxy auth headers, which is only safe because it's reachable exclusively through the proxy. Don't add features assuming the header is unforgeable outside that setup.
+- **Single process only.** Waitress runs one process with threads; the rank/ABS
+  caches, the wanted worker, and the managed Tor process all assume it. Don't
+  front this with multi-worker gunicorn.
+- The Docker image runs as **uid 1000**; a host-mounted `./data` must be
+  writable by it or the log + persisted secret key degrade (with warnings).
+- Templates use blueprint-qualified endpoints (`url_for('pages.search')`).
+- `app/.venv/` is a local virtualenv; `memory/` is agent-local notes
+  (gitignored) — neither is project code. `.DS_Store` files are noise.
+- The app trusts reverse-proxy auth headers, which is only safe because it's
+  reachable exclusively through the proxy. Don't add features assuming the
+  header is unforgeable outside that setup.
