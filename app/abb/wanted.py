@@ -118,8 +118,12 @@ class WantedService:
         self.last_sync = 0.0
         self.sync_error = ""     # last sync failure, surfaced on the dashboard
         self._fail_streak = 0
-        self._last_renew = 0.0
-        self._last_owned_sweep = 0.0
+        # None = never happened. Don't use 0.0 with time.monotonic(): its
+        # epoch is arbitrary (boot time on Linux), so on a freshly booted
+        # machine `monotonic() - 0.0` can sit inside the cooldown window and
+        # silently suppress the FIRST renewal/sweep.
+        self._last_renew = None
+        self._last_owned_sweep = None
         self._stop = threading.Event()  # set when settings rebuild retires this instance
 
     # --- Hardcover -------------------------------------------------------------
@@ -423,7 +427,7 @@ class WantedService:
             return False
         if not self.tor.renewable:
             return False
-        if time.monotonic() - self._last_renew < RENEW_COOLDOWN:
+        if self._last_renew is not None and time.monotonic() - self._last_renew < RENEW_COOLDOWN:
             return False
         ok, message = self.outbound.renew_tor_circuit()
         self._last_renew = time.monotonic()
@@ -446,7 +450,7 @@ class WantedService:
         if not self.library.enabled:
             return
         now = time.monotonic()
-        if now - self._last_owned_sweep < OWNED_SWEEP_TTL:
+        if self._last_owned_sweep is not None and now - self._last_owned_sweep < OWNED_SWEEP_TTL:
             return
         self._last_owned_sweep = now
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")

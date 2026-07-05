@@ -156,7 +156,7 @@ def test_owned_sweep_flips_rows_that_landed(tmp_path):
     library.owned_titles.add("Not Landed Yet")
     svc._sweep_owned()
     assert {r["hc_id"]: r for r in store.wanted_rows()}[2]["status"] == "sent"
-    svc._last_owned_sweep = 0.0                    # TTL elapsed
+    svc._last_owned_sweep = None                   # TTL elapsed (never-ran sentinel)
     svc._sweep_owned()
     assert {r["hc_id"]: r for r in store.wanted_rows()}[2]["status"] == "owned"
 
