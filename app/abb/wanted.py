@@ -43,6 +43,7 @@ ABB_REQUEST_RE = re.compile(r"\(\s*REQ", re.IGNORECASE)
 # straight back in the queue instead of waiting out the retry TTL.
 RENEW_AFTER = 3        # consecutive unreachable searches
 RENEW_COOLDOWN = 600   # seconds between automatic renewals
+OWNED_SWEEP_TTL = 300  # seconds between local "did it land in ABS yet?" sweeps
 
 
 def wanted_queries(title, author):
@@ -118,6 +119,7 @@ class WantedService:
         self.sync_error = ""     # last sync failure, surfaced on the dashboard
         self._fail_streak = 0
         self._last_renew = 0.0
+        self._last_owned_sweep = 0.0
         self._stop = threading.Event()  # set when settings rebuild retires this instance
 
     # --- Hardcover -------------------------------------------------------------
@@ -433,6 +435,30 @@ class WantedService:
                     self.store.wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
         return ok
 
+    def _sweep_owned(self):
+        """Flip rows whose book has since landed in the Audiobookshelf
+        library — a sent download completing is the main path, but manual
+        imports count too. Entirely local: the cached ABS index and the same
+        author-gated matcher as everywhere else, so precision-first still
+        holds (no confident match, no flip). This is what makes the
+        dashboard's promise — sent flips to "In your library" once the
+        download arrives — actually true."""
+        if not self.library.enabled:
+            return
+        now = time.monotonic()
+        if now - self._last_owned_sweep < OWNED_SWEEP_TTL:
+            return
+        self._last_owned_sweep = now
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for row in self.store.wanted_rows():
+            if row.get("status") == "owned":
+                continue
+            title, author = row.get("title") or "", row.get("author") or ""
+            if title and self.library.owns(title, author):
+                self.store.wanted_upsert({"hc_id": row["hc_id"], "status": "owned",
+                                          "detail": f"in your library {stamp}"})
+                log.info("%r is now in the library; row flipped to owned", title)
+
     def _worker(self):
         """Background loop: keep the wanted list synced and searched.
         Deliberately gentle — at most 3 ABB searches per minute-tick and a
@@ -447,6 +473,7 @@ class WantedService:
                     except Exception as e:
                         self.sync_error = str(e)
                         log.warning("Hardcover sync failed: %s", e)
+                self._sweep_owned()  # local only — needs no route, runs regardless of Tor
                 if self.tor.status() in ("ready", "unavailable"):  # don't scrape mid-bootstrap
                     due = self.due_rows()
                     if due:

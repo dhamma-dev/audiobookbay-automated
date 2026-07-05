@@ -122,3 +122,52 @@ def test_mark_sent_by_link_matches_pick_and_alternatives(tmp_path):
     svc.mark_sent_by_link("https://abb/alt")  # user chose the alternative
     (row,) = store.wanted_rows()
     assert row["status"] == "sent"
+
+
+class FakeLibrary:
+    def __init__(self, owned_titles, enabled=True):
+        self.enabled = enabled
+        self.owned_titles = set(owned_titles)
+
+    def owns(self, title, author):
+        return title in self.owned_titles
+
+
+def test_owned_sweep_flips_rows_that_landed(tmp_path):
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    library = FakeLibrary({"I Know Why the Caged Bird Sings"})
+    svc = WantedService(cfg, store, None, library, None, None, None, None)
+
+    store.wanted_upsert({"hc_id": 1, "title": "I Know Why the Caged Bird Sings",
+                         "author": "Maya Angelou", "status": "sent"})
+    store.wanted_upsert({"hc_id": 2, "title": "Not Landed Yet",
+                         "author": "Someone", "status": "sent"})
+    svc._sweep_owned()
+
+    rows = {r["hc_id"]: r for r in store.wanted_rows()}
+    assert rows[1]["status"] == "owned"            # the download arrived
+    assert "in your library" in rows[1]["detail"]
+    assert rows[2]["status"] == "sent"             # no match -> no flip
+
+    # The sweep is throttled: within its TTL a new arrival waits for the next pass.
+    library.owned_titles.add("Not Landed Yet")
+    svc._sweep_owned()
+    assert {r["hc_id"]: r for r in store.wanted_rows()}[2]["status"] == "sent"
+    svc._last_owned_sweep = 0.0                    # TTL elapsed
+    svc._sweep_owned()
+    assert {r["hc_id"]: r for r in store.wanted_rows()}[2]["status"] == "owned"
+
+
+def test_owned_sweep_noop_without_abs(tmp_path):
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    svc = WantedService(cfg, store, None, FakeLibrary({"X"}, enabled=False),
+                        None, None, None, None)
+    store.wanted_upsert({"hc_id": 1, "title": "X", "status": "sent"})
+    svc._sweep_owned()
+    assert store.wanted_rows()[0]["status"] == "sent"  # matching is off -> no claims
