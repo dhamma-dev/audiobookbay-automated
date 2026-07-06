@@ -172,6 +172,30 @@ def wanted_sync():
     return redirect(url_for("pages.wanted"))
 
 
+@bp.route("/wanted/skip/<int:hc_id>", methods=["POST"])
+def wanted_skip(hc_id):
+    """Take an unfound book out of the search rotation until re-allowed."""
+    s = svc()
+    if not s.wanted.enabled:
+        return jsonify({"message": "Hardcover is not configured."}), 503
+    ok, message = s.wanted.skip(hc_id)
+    if not ok:
+        return jsonify({"message": message}), 409
+    return redirect(url_for("pages.wanted"))
+
+
+@bp.route("/wanted/unskip/<int:hc_id>", methods=["POST"])
+def wanted_unskip(hc_id):
+    """Put a skipped book back in the queue (due immediately)."""
+    s = svc()
+    if not s.wanted.enabled:
+        return jsonify({"message": "Hardcover is not configured."}), 503
+    ok, message = s.wanted.unskip(hc_id)
+    if not ok:
+        return jsonify({"message": message}), 409
+    return redirect(url_for("pages.wanted"))
+
+
 @bp.route("/wanted/research/<int:hc_id>", methods=["POST"])
 def wanted_research(hc_id):
     """Re-search one wanted book right now (synchronous — it's one scrape,

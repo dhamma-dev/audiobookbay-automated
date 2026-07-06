@@ -151,12 +151,19 @@ def wanted():
     pipeline status and, when found, the best ABB match ready to send."""
     s = svc()
     if not s.wanted.enabled:
-        return render_template("wanted.html", enabled=False, rows=[], counts={},
+        return render_template("wanted.html", enabled=False, active=[], owned=[],
+                               skipped=[], counts={},
                                auto=s.config.wanted_auto_download, sync_error="")
     rows = sorted(s.store.wanted_rows(), key=lambda r: (r.get("title") or "").lower())
-    order = {"found": 0, "wanted": 1, "unmatched": 2, "sent": 3, "owned": 4}
-    rows.sort(key=lambda r: order.get(r.get("status") or "wanted", 1))
-    for r in rows:  # manual Search uses the same broad primary query as the worker
+    # Three shelves: the ACTIVE pipeline (still doing or awaiting something),
+    # books that are DONE (in the library — nothing left to do), and books
+    # the user SKIPPED (out of the search rotation until re-allowed).
+    order = {"found": 0, "wanted": 1, "unmatched": 2, "sent": 3}
+    active = [r for r in rows if (r.get("status") or "wanted") in order]
+    active.sort(key=lambda r: order[r.get("status") or "wanted"])
+    owned = [r for r in rows if r.get("status") == "owned"]
+    skipped = [r for r in rows if r.get("status") == "skipped"]
+    for r in active:  # manual Search uses the same broad primary query as the worker
         r["search_q"] = wanted_queries(r.get("title") or "", r.get("author") or "")[0]
         try:  # stored candidates beyond the pick become the expandable tray
             alts = json.loads(r.get("candidates") or "[]")[1:]
@@ -170,7 +177,8 @@ def wanted():
     counts = {}
     for r in rows:
         counts[r.get("status") or "wanted"] = counts.get(r.get("status") or "wanted", 0) + 1
-    return render_template("wanted.html", enabled=True, rows=rows, counts=counts,
+    return render_template("wanted.html", enabled=True, active=active, owned=owned,
+                           skipped=skipped, counts=counts,
                            auto=s.config.wanted_auto_download,
                            sync_error=s.wanted.sync_error,
                            route_label=s.wanted.route_label())

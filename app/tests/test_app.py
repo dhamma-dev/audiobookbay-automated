@@ -184,3 +184,39 @@ def test_search_post_renders_result_cards(client):
     assert body.index("Nice M4B") < body.index("Plain MP3")
     assert 'data-result-id="0"' in body and 'data-result-id="1"' in body
     assert 'id="search-results-data"' not in body  # no Gemini key -> no payload blob
+
+
+def test_wanted_page_shelves_and_skip_flow(tmp_path):
+    """Owned and skipped rows leave the active table for their own collapsed
+    shelves; skip/unskip round-trips through the real endpoints."""
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    store = app.extensions["abb"].store
+    store.init()
+    store.wanted_upsert({"hc_id": 1, "title": "Queued Book", "author": "A",
+                         "status": "wanted"})
+    store.wanted_upsert({"hc_id": 2, "title": "Owned Book", "author": "B",
+                         "status": "owned"})
+
+    c = app.test_client()
+    page = c.get("/wanted").data.decode()
+    assert "1 in the pipeline" in page and "1 in library" in page
+    assert 'id="wanted-owned-list"' in page          # done shelf, collapsed
+    assert "/wanted/skip/1" in page                  # skip on the queued row
+    assert "/wanted/skip/2" not in page              # no actions on done rows
+    assert "/wanted/research/2" not in page
+
+    token = page.split('name="csrf-token" content="')[1].split('"')[0]
+    r = c.post("/wanted/skip/1", data={"csrf_token": token})
+    assert r.status_code == 302
+    page = c.get("/wanted").data.decode()
+    assert "0 in the pipeline" in page and "1 skipped" in page
+    assert 'id="wanted-skipped-list"' in page and "/wanted/unskip/1" in page
+
+    r = c.post("/wanted/unskip/1", data={"csrf_token": token})
+    assert r.status_code == 302
+    assert "1 in the pipeline" in c.get("/wanted").data.decode()
+
+    # Guard surfaces as a conflict, not a silent success.
+    assert c.post("/wanted/skip/2", data={"csrf_token": token}).status_code == 409

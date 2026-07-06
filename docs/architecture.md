@@ -60,8 +60,11 @@ One module per subsystem; each service class owns its own state and locks:
   ladder (`wanted_queries`), the worker loop (≤3 searches/minute-tick,
   auto circuit renewal after repeated unreachable scrapes), settled found
   rows, strict auto-download, and a local ownership sweep (every ~5 min,
-  cached ABS index only) that flips sent/found rows to "In your library"
-  once the book actually lands in Audiobookshelf.
+  cached ABS index only) that flips rows to "In your library" once the book
+  actually lands in Audiobookshelf. The dashboard shows three shelves:
+  the active pipeline, owned books (done — collapsed, no actions, never
+  touched again), and skipped books (user-curated out of the search rotation
+  via `skip`/`unskip` until re-allowed; sync and requeues leave them alone).
 - **`clients.py`** — the download-client registry; `identity.py` — proxy-header
   identity; `security.py` — CSRF/headers/secret key (see below).
 - **`web/`** — blueprints: `pages` (HTML pages + the optional `/covers`

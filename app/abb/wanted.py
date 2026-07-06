@@ -370,6 +370,34 @@ class WantedService:
                                        row.get("best_link"), None, "error", str(e),
                                        route=self.outbound.route_mode())
 
+    # --- user curation -----------------------------------------------------------------
+    def skip(self, hc_id):
+        """Take an unfound book out of the search rotation entirely: no
+        background searches, no daily re-checks, until the user allows it
+        again. The row stays (Hardcover remains the source of truth for list
+        membership) and the ownership sweep still applies — a skipped book
+        that later lands in the library flips to owned like anything else."""
+        row = next((r for r in self.store.wanted_rows() if r["hc_id"] == hc_id), None)
+        if not row:
+            return False, "Unknown wanted book."
+        if (row.get("status") or "wanted") not in ("wanted", "unmatched"):
+            return False, "Only books still being searched can be skipped."
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.store.wanted_upsert({"hc_id": hc_id, "status": "skipped",
+                                  "detail": f"skipped {now}"})
+        return True, ""
+
+    def unskip(self, hc_id):
+        """Put a skipped book back in the queue, due immediately."""
+        row = next((r for r in self.store.wanted_rows() if r["hc_id"] == hc_id), None)
+        if not row:
+            return False, "Unknown wanted book."
+        if row.get("status") != "skipped":
+            return False, "This book isn't skipped."
+        self.store.wanted_upsert({"hc_id": hc_id, "status": "wanted",
+                                  "searched_at": None, "detail": ""})
+        return True, ""
+
     # --- scheduling ------------------------------------------------------------------
     def due_rows(self):
         """Rows that need (re)searching: never searched, or past their cadence.
@@ -381,7 +409,7 @@ class WantedService:
         now = datetime.now(timezone.utc)
         for row in self.store.wanted_rows():
             status = row.get("status") or "wanted"
-            if status in ("found", "sent", "owned"):
+            if status in ("found", "sent", "owned", "skipped"):
                 continue
             searched = row.get("searched_at")
             if not searched:
@@ -404,7 +432,8 @@ class WantedService:
         anything visible happens. Found/sent/owned rows stay put."""
         n = 0
         for row in self.store.wanted_rows():
-            if row.get("status") not in ("found", "sent", "owned") and row.get("searched_at"):
+            if row.get("status") not in ("found", "sent", "owned", "skipped") \
+                    and row.get("searched_at"):
                 self.store.wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
                 n += 1
         return n
@@ -414,7 +443,7 @@ class WantedService:
         worker drains them a few per minute. Found rows are settled (rated +
         stored); re-rating one is the per-row re-check's job."""
         for row in self.store.wanted_rows():
-            if row.get("status") not in ("found", "sent", "owned"):
+            if row.get("status") not in ("found", "sent", "owned", "skipped"):
                 self.store.wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
 
     def _note_result(self, status):
@@ -455,6 +484,8 @@ class WantedService:
         self._last_owned_sweep = now
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for row in self.store.wanted_rows():
+            # Everything non-owned is checked — including skipped rows, since
+            # a book you own is done regardless of how it got there.
             if row.get("status") == "owned":
                 continue
             title, author = row.get("title") or "", row.get("author") or ""

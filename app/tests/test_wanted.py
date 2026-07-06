@@ -171,3 +171,56 @@ def test_owned_sweep_noop_without_abs(tmp_path):
     store.wanted_upsert({"hc_id": 1, "title": "X", "status": "sent"})
     svc._sweep_owned()
     assert store.wanted_rows()[0]["status"] == "sent"  # matching is off -> no claims
+
+
+def test_skip_and_unskip_lifecycle(tmp_path):
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    svc = WantedService(cfg, store, None, None, None, None, None, None)
+
+    store.wanted_upsert({"hc_id": 1, "title": "Obscure Book", "status": "unmatched",
+                         "searched_at": "2026-01-01T00:00:00+00:00"})
+    store.wanted_upsert({"hc_id": 2, "title": "Found Book", "status": "found"})
+
+    ok, _ = svc.skip(1)
+    assert ok
+    (row,) = [r for r in store.wanted_rows() if r["hc_id"] == 1]
+    assert row["status"] == "skipped" and "skipped" in row["detail"]
+
+    # Out of every queue: not due, and neither sync-requeue nor boot-requeue
+    # touch it.
+    assert svc.due_rows() == []
+    svc.requeue_unresolved()
+    svc.requeue_open()
+    (row,) = [r for r in store.wanted_rows() if r["hc_id"] == 1]
+    assert row["status"] == "skipped" and row["searched_at"] is not None
+
+    # Guards: found rows can't be skipped; non-skipped rows can't be unskipped.
+    ok, msg = svc.skip(2)
+    assert not ok and "searched" in msg
+    ok, _ = svc.unskip(2)
+    assert not ok
+    ok, _ = svc.skip(99)
+    assert not ok
+
+    # Allowing again puts it back in the queue, due immediately.
+    ok, _ = svc.unskip(1)
+    assert ok
+    (row,) = [r for r in store.wanted_rows() if r["hc_id"] == 1]
+    assert row["status"] == "wanted" and row["searched_at"] is None
+    assert {r["hc_id"] for r in svc.due_rows()} == {1}
+
+
+def test_owned_sweep_covers_skipped_rows(tmp_path):
+    # A skipped book that lands in the library is done — ownership wins.
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    svc = WantedService(cfg, store, None, FakeLibrary({"Skipped But Owned"}),
+                        None, None, None, None)
+    store.wanted_upsert({"hc_id": 1, "title": "Skipped But Owned", "status": "skipped"})
+    svc._sweep_owned()
+    assert store.wanted_rows()[0]["status"] == "owned"

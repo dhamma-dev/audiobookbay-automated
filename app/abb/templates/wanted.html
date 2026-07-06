@@ -42,12 +42,13 @@
 
 <div class="downloads-toolbar">
     <span class="downloads-count">
-        {% if rows %}
-        {{ rows | length }} wanted
+        {% if active or owned or skipped %}
+        {{ active | length }} in the pipeline
         {%- if counts.found %} · <span class="wanted-note-found">{{ counts.found }} found</span>{% endif %}
         {%- if counts.sent %} · {{ counts.sent }} sent{% endif %}
-        {%- if counts.owned %} · {{ counts.owned }} already in library{% endif %}
         {%- if counts.unmatched %} · {{ counts.unmatched }} not available yet{% endif %}
+        {%- if owned %} · {{ owned | length }} in library{% endif %}
+        {%- if skipped %} · {{ skipped | length }} skipped{% endif %}
         {% else %}
         Nothing on your Want to Read list yet
         {% endif %}
@@ -58,7 +59,7 @@
     </span>
 </div>
 
-{% if rows %}
+{% if active %}
 <div class="log-table-wrap">
     <table class="log-table">
         <thead>
@@ -70,7 +71,7 @@
             </tr>
         </thead>
         <tbody>
-            {% for r in rows %}
+            {% for r in active %}
             <tr>
                 <td class="log-book">
                     {% if r.slug %}
@@ -85,8 +86,6 @@
                     <span class="badge badge-success"><i data-lucide="check" aria-hidden="true"></i> Found</span>
                     {% elif r.status == 'sent' %}
                     <span class="badge badge-info">Sent</span>
-                    {% elif r.status == 'owned' %}
-                    <span class="badge badge-neutral">In your library</span>
                     {% elif r.status == 'unmatched' %}
                     <span class="badge badge-neutral" title="{{ r.detail }}">Not available yet</span>
                     {% else %}
@@ -124,7 +123,7 @@
                         Send
                     </button>
                     {% endif %}
-                    {% if r.status not in ('sent',) %}
+                    {% if r.status != 'sent' %}
                     <a class="btn btn-secondary btn-upgrade-search" data-busy="Searching…"
                        href="{{ url_for('pages.search', q=r.search_q) }}">
                         <i data-lucide="search" aria-hidden="true"></i>
@@ -135,6 +134,15 @@
                         <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
                                 title="Re-check AudioBook Bay for this book now (uses your browser's Tor/Direct route)">
                             <i data-lucide="rotate-cw" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                    {% endif %}
+                    {% if (r.status or 'wanted') in ('wanted', 'unmatched') %}
+                    <form method="post" action="{{ url_for('actions.wanted_skip', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                title="Skip this book — take it out of the search rotation until you allow it again">
+                            <i data-lucide="x" aria-hidden="true"></i>
                         </button>
                     </form>
                     {% endif %}
@@ -172,15 +180,96 @@
         </tbody>
     </table>
 </div>
-<p class="upgrades-footnote">
-    “Not available yet” books are re-checked about once a day. Found books are settled — their
-    results and AI rating are stored and never looked up again unless you hit re-check (↻) on
-    that row. Sending (manually or auto) marks the row — and once the download lands in
-    Audiobookshelf, it flips to “In your library”.
-</p>
-{% else %}
+{% elif not owned and not skipped %}
 {{ empty_state('bookmark', 'No wanted books found',
                'Add books to your Want to Read list on Hardcover, then Sync now.') }}
 {% endif %}
+
+{# Done shelf: owned books are finished — collapsed out of the way, no
+   actions, and the worker never touches them again. #}
+{% if owned %}
+<section class="wanted-subsection">
+    <button type="button" class="wanted-section-toggle" data-action="wanted-alts"
+            data-target="wanted-owned-list" aria-expanded="false">
+        <i data-lucide="library-big" aria-hidden="true"></i>
+        In your library · {{ owned | length }}
+        <span class="wanted-section-note">done — never searched again</span>
+        <i data-lucide="chevron-down" class="wanted-section-chevron" aria-hidden="true"></i>
+    </button>
+    <div id="wanted-owned-list" hidden>
+        <div class="log-table-wrap">
+            <table class="log-table">
+                <tbody>
+                    {% for r in owned %}
+                    <tr>
+                        <td class="log-book">
+                            {% if r.slug %}
+                            <a href="https://hardcover.app/books/{{ r.slug }}" target="_blank" rel="noopener noreferrer"><strong>{{ r.title }}</strong></a>
+                            {% else %}
+                            <strong>{{ r.title }}</strong>
+                            {% endif %}
+                            {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
+                        </td>
+                        <td><span class="badge badge-neutral"><i data-lucide="library-big" aria-hidden="true"></i> In your library</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{# Skipped shelf: out of the rotation until re-allowed. #}
+{% if skipped %}
+<section class="wanted-subsection">
+    <button type="button" class="wanted-section-toggle" data-action="wanted-alts"
+            data-target="wanted-skipped-list" aria-expanded="false">
+        <i data-lucide="eye-off" aria-hidden="true"></i>
+        Skipped · {{ skipped | length }}
+        <span class="wanted-section-note">out of the search rotation until you allow them again</span>
+        <i data-lucide="chevron-down" class="wanted-section-chevron" aria-hidden="true"></i>
+    </button>
+    <div id="wanted-skipped-list" hidden>
+        <div class="log-table-wrap">
+            <table class="log-table">
+                <tbody>
+                    {% for r in skipped %}
+                    <tr>
+                        <td class="log-book">
+                            {% if r.slug %}
+                            <a href="https://hardcover.app/books/{{ r.slug }}" target="_blank" rel="noopener noreferrer"><strong>{{ r.title }}</strong></a>
+                            {% else %}
+                            <strong>{{ r.title }}</strong>
+                            {% endif %}
+                            {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
+                        </td>
+                        <td><span class="badge badge-neutral" title="{{ r.detail }}">Skipped</span></td>
+                        <td class="wanted-actions">
+                            <form method="post" action="{{ url_for('actions.wanted_unskip', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                        title="Put this book back in the search queue (due immediately)">
+                                    <i data-lucide="rotate-cw" aria-hidden="true"></i>
+                                    Allow again
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+<p class="upgrades-footnote">
+    “Not available yet” books are re-checked about once a day; skip (✕) takes one out of the
+    rotation entirely until you allow it again. Found books are settled — their results and AI
+    rating are stored and never looked up again unless you hit re-check (↻) on that row.
+    Sending (manually or auto) marks the row — and once the download lands in Audiobookshelf,
+    it moves to “In your library”, where nothing more will ever happen to it.
+</p>
 {% endif %}
 {% endblock %}
