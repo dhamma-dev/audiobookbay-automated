@@ -103,6 +103,9 @@
                         <i data-lucide="sparkles" aria-hidden="true"></i> {{ r.verdict }}
                     </span>
                     {% endif %}
+                    {% if r.status == 'found' and r.detail %}
+                    <span class="wanted-match-meta">{{ r.detail }}</span>
+                    {% endif %}
                     {% if r.alts %}
                     <button type="button" class="wanted-alts-toggle" data-action="wanted-alts"
                             data-target="wanted-alts-{{ r.hc_id }}" aria-expanded="false">

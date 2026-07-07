@@ -206,5 +206,6 @@ def wanted_research(hc_id):
     row = next((r for r in s.store.wanted_rows() if r["hc_id"] == hc_id), None)
     if not row:
         return jsonify({"message": "Unknown wanted book."}), 404
-    s.wanted.search_one(row)
+    # Same path as the worker: a find here auto-downloads too (when enabled).
+    s.wanted.search_and_autodownload(row)
     return redirect(url_for("pages.wanted"))

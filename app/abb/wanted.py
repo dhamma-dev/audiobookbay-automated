@@ -343,18 +343,29 @@ class WantedService:
 
     def auto_send(self, row):
         """Auto-download a found match under the strictest gate: the pick must
-        be M4B (auto only ever grabs the recommended single-file format)."""
+        be M4B (auto only ever grabs the recommended single-file format).
+        When the gate skips or the send fails, the reason lands in the row's
+        detail — "auto-download on but nothing happened" must never be a
+        mystery on the dashboard."""
         try:
             link, title = row.get("best_link"), row.get("best_title") or row["title"]
             if not (link and self.clients.ok):
                 return
             if "m4b" not in (row.get("best_meta") or "").lower():
+                self.store.wanted_upsert({"hc_id": row["hc_id"],
+                                          "detail": "auto-download skipped — the best "
+                                                    "match isn't M4B; send it manually "
+                                                    "if you want it"})
+                log.info("auto-download skipped for %r: best match isn't M4B", title)
                 return
             magnet = self.scraper.extract_magnet_link(link)
             route = self.outbound.route_mode()
             if not magnet:
                 self.store.record_download("hardcover-auto", title, link, None, "error",
                                            "Failed to extract magnet link", route=route)
+                self.store.wanted_upsert({"hc_id": row["hc_id"],
+                                          "detail": "auto-download failed — couldn't "
+                                                    "extract a magnet link"})
                 return
             self.clients.add(magnet, title)
             self.store.record_download("hardcover-auto", title, link,
@@ -369,6 +380,21 @@ class WantedService:
                                        row.get("best_title") or row["title"],
                                        row.get("best_link"), None, "error", str(e),
                                        route=self.outbound.route_mode())
+            self.store.wanted_upsert({"hc_id": row["hc_id"],
+                                      "detail": f"auto-download failed — {e}"})
+
+    def search_and_autodownload(self, row, sess=None):
+        """search_one plus the auto-download step when it's enabled. BOTH
+        discovery paths go through this — the background worker and the manual
+        per-row re-check — so "auto-download on" means on, regardless of who
+        triggered the search that found the book."""
+        status = self.search_one(row, sess=sess)
+        if status == "found" and self.config.wanted_auto_download:
+            fresh = next((r for r in self.store.wanted_rows()
+                          if r["hc_id"] == row["hc_id"]), None)
+            if fresh:
+                self.auto_send(fresh)
+        return status
 
     # --- user curation -----------------------------------------------------------------
     def skip(self, hc_id):
@@ -515,15 +541,10 @@ class WantedService:
                         log.info("%d book(s) due; searching up to 3 via %s",
                                  len(due), self.route_label())
                     for row in due[:3]:
-                        status = self.search_one(row, sess=self._session())
+                        status = self.search_and_autodownload(row, sess=self._session())
                         self._note_result(status)
                         if status == "unreachable":
                             break  # this route is down right now; stop burning the tick
-                        if status == "found" and self.config.wanted_auto_download:
-                            fresh = next((r for r in self.store.wanted_rows()
-                                          if r["hc_id"] == row["hc_id"]), None)
-                            if fresh:
-                                self.auto_send(fresh)
                     self._maybe_renew()
             except Exception as e:
                 log.warning("wanted worker tick failed: %s", e)

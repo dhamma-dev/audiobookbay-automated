@@ -224,3 +224,91 @@ def test_owned_sweep_covers_skipped_rows(tmp_path):
     store.wanted_upsert({"hc_id": 1, "title": "Skipped But Owned", "status": "skipped"})
     svc._sweep_owned()
     assert store.wanted_rows()[0]["status"] == "owned"
+
+
+class FakeScraper:
+    def __init__(self, books):
+        self.books = books
+
+    def search(self, query, max_pages=5, sess=None):
+        return [dict(b) for b in self.books]
+
+    def extract_magnet_link(self, link):
+        return "magnet:?xt=urn:btih:abc123&tr=x"
+
+
+class FakeRank:
+    enabled = False
+
+    def wanted_verdict(self, title, author, listings):
+        return None  # force the deterministic pick
+
+
+class FakeClients:
+    ok = True
+
+    def __init__(self):
+        self.added = []
+
+    def add(self, magnet, title):
+        self.added.append((magnet, title))
+
+
+class FakeOutbound:
+    def route_mode(self):
+        return "direct"
+
+
+def autodownload_service(tmp_path, book):
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k",
+                      wanted_auto_download=True)
+    store = Store(cfg)
+    store.init()
+    clients = FakeClients()
+    svc = WantedService(cfg, store, FakeScraper([book]), FakeLibrary(set()),
+                        FakeRank(), clients, FakeOutbound(), None)
+    store.wanted_upsert({"hc_id": 1, "title": "Dune", "author": "Frank Herbert",
+                         "status": "wanted"})
+    return svc, store, clients
+
+
+M4B_BOOK = {"title": "Dune - Frank Herbert", "link": "https://audiobookbay.lu/abss/dune/",
+            "format": "M4B", "bitrate": "128 kbps", "size": "500 MB",
+            "language": "English", "keywords": [], "is_m4b": True}
+
+
+def test_autodownload_fires_from_any_discovery_path(tmp_path):
+    """The manual re-check uses the same search_and_autodownload as the
+    worker — 'auto-download on' means on regardless of who found the book."""
+    svc, store, clients = autodownload_service(tmp_path, M4B_BOOK)
+    row = store.wanted_rows()[0]
+    status = svc.search_and_autodownload(row)   # what /wanted/research/<id> calls
+    assert status == "found"
+
+    (magnet, title) = clients.added[0]          # the transfer actually went out
+    assert magnet.startswith("magnet:") and "Dune" in title
+    (fresh,) = store.wanted_rows()
+    assert fresh["status"] == "sent" and fresh["detail"] == "auto-downloaded"
+    (log_row,) = store.fetch_download_log()
+    assert log_row["user"] == "hardcover-auto" and log_row["status"] == "ok"
+
+
+def test_autodownload_skip_is_explained_not_silent(tmp_path):
+    mp3 = dict(M4B_BOOK, format="MP3", is_m4b=False)
+    svc, store, clients = autodownload_service(tmp_path, mp3)
+    svc.search_and_autodownload(store.wanted_rows()[0])
+
+    assert clients.added == []                   # gate held: not M4B
+    (row,) = store.wanted_rows()
+    assert row["status"] == "found"              # still ready for a manual Send
+    assert "isn't M4B" in row["detail"]          # ...and the row says why
+
+
+def test_autodownload_off_leaves_found_alone(tmp_path):
+    svc, store, clients = autodownload_service(tmp_path, M4B_BOOK)
+    svc.config = make_config(log_db_path=svc.config.log_db_path,
+                             hardcover_api_key="k", wanted_auto_download=False)
+    svc.search_and_autodownload(store.wanted_rows()[0])
+    assert clients.added == []
+    assert store.wanted_rows()[0]["status"] == "found"

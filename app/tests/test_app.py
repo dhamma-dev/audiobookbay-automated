@@ -220,3 +220,21 @@ def test_wanted_page_shelves_and_skip_flow(tmp_path):
 
     # Guard surfaces as a conflict, not a silent success.
     assert c.post("/wanted/skip/2", data={"csrf_token": token}).status_code == 409
+
+
+def test_manual_recheck_routes_through_autodownload(tmp_path):
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    svc.store.wanted_upsert({"hc_id": 1, "title": "Dune", "status": "wanted"})
+
+    calls = []
+    svc.wanted.search_and_autodownload = lambda row, sess=None: calls.append(row["hc_id"]) or "found"
+
+    c = app.test_client()
+    token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()
+    r = c.post("/wanted/research/1", data={"csrf_token": token})
+    assert r.status_code == 302
+    assert calls == [1]   # the re-check uses the auto-download-aware path
