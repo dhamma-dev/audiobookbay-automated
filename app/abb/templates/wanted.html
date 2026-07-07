@@ -40,6 +40,63 @@
 </div>
 {% endif %}
 
+{% set added = request.args.get('added') %}
+{% set added_t = request.args.get('t', '') %}
+{% if added == 'owned' %}
+<div class="alert alert-success" role="status">
+    <i data-lucide="library-big" aria-hidden="true"></i>
+    <span>“{{ added_t }}” is already in your Audiobookshelf library — nothing to add.</span>
+</div>
+{% elif added == 'duplicate' %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="info" aria-hidden="true"></i>
+    <span>“{{ added_t }}” is already on the wanted list.</span>
+</div>
+{% elif added == 'sent' %}
+<div class="alert alert-success" role="status">
+    <i data-lucide="check-circle" aria-hidden="true"></i>
+    <span>Found and sent — “{{ added_t }}” will appear in Audiobookshelf when the download completes. You're done.</span>
+</div>
+{% elif added == 'found' %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="alert-triangle" aria-hidden="true"></i>
+    <span>Found a match for “{{ added_t }}”, but it couldn't be sent automatically — the row below says why.</span>
+</div>
+{% elif added == 'unmatched' %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="info" aria-hidden="true"></i>
+    <span>“{{ added_t }}” isn't available yet — it's on the list and will be re-checked about once a day. Nothing more to do.</span>
+</div>
+{% elif added in ('unreachable', 'wanted') %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="info" aria-hidden="true"></i>
+    <span>“{{ added_t }}” is queued — AudioBook Bay wasn't reachable just now; it'll retry automatically. Nothing more to do.</span>
+</div>
+{% elif added == 'invalid' %}
+<div class="alert alert-error" role="alert">
+    <i data-lucide="alert-circle" aria-hidden="true"></i>
+    <span>Enter at least a title to add a book.</span>
+</div>
+{% endif %}
+
+{# Quick add: check the library, search immediately, auto-download the best
+   match on the requester's behalf — fire and forget. #}
+<form method="post" action="{{ url_for('actions.wanted_add') }}" class="wanted-add-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="sr-only" for="wanted-add-title">Book title</label>
+    <input type="text" id="wanted-add-title" name="title" class="wanted-add-input"
+           placeholder="Add a book by title…" required maxlength="300" autocomplete="off">
+    <label class="sr-only" for="wanted-add-author">Author</label>
+    <input type="text" id="wanted-add-author" name="author" class="wanted-add-input wanted-add-input--author"
+           placeholder="Author (optional)" maxlength="200" autocomplete="off">
+    <button type="submit" class="btn btn-primary" data-busy="Checking library & searching…">
+        <i data-lucide="plus" aria-hidden="true"></i>
+        Add &amp; fetch
+    </button>
+</form>
+<p class="wanted-add-note">Your library is checked first; otherwise the book is searched right away and the best
+   match downloads automatically on your behalf — no need to come back and choose.</p>
+
 <div class="downloads-toolbar">
     <span class="downloads-count">
         {% if active or owned or skipped %}
@@ -80,6 +137,7 @@
                     <strong>{{ r.title }}</strong>
                     {% endif %}
                     {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
+                    {% if r.hc_id < 0 %}<span class="wanted-manual-note" title="Added in the app{% if r.added_by %} by {{ r.added_by }}{% endif %}">app add{% if r.added_by %} · {{ r.added_by }}{% endif %}</span>{% endif %}
                 </td>
                 <td>
                     {% if r.status == 'found' %}
@@ -149,6 +207,15 @@
                         </button>
                     </form>
                     {% endif %}
+                    {% if r.hc_id < 0 %}
+                    <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                title="Remove this app-added book from the wanted list">
+                            <i data-lucide="trash-2" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                    {% endif %}
                 </td>
             </tr>
             {% if r.alts %}
@@ -214,6 +281,17 @@
                             {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
                         </td>
                         <td><span class="badge badge-neutral"><i data-lucide="library-big" aria-hidden="true"></i> In your library</span></td>
+                        <td class="wanted-actions">
+                            {% if r.hc_id < 0 %}
+                            <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                        title="Remove this app-added book from the list">
+                                    <i data-lucide="trash-2" aria-hidden="true"></i>
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -257,6 +335,15 @@
                                     Allow again
                                 </button>
                             </form>
+                            {% if r.hc_id < 0 %}
+                            <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                        title="Remove this app-added book from the list">
+                                    <i data-lucide="trash-2" aria-hidden="true"></i>
+                                </button>
+                            </form>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -268,7 +355,9 @@
 {% endif %}
 
 <p class="upgrades-footnote">
-    “Not available yet” books are re-checked about once a day; skip (✕) takes one out of the
+    Books added here in the app auto-download their best match as soon as one is found —
+    Hardcover-synced books follow the auto-download setting instead. “Not available yet”
+    books are re-checked about once a day; skip (✕) takes one out of the
     rotation entirely until you allow it again. Found books are settled — their results and AI
     rating are stored and never looked up again unless you hit re-check (↻) on that row.
     Sending (manually or auto) marks the row — and once the download lands in Audiobookshelf,

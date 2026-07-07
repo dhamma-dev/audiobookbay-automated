@@ -238,3 +238,42 @@ def test_manual_recheck_routes_through_autodownload(tmp_path):
     r = c.post("/wanted/research/1", data={"csrf_token": token})
     assert r.status_code == 302
     assert calls == [1]   # the re-check uses the auto-download-aware path
+
+
+def test_wanted_add_endpoint_owned_and_queued(tmp_path):
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    svc.library.enabled = True
+    svc.library.owns = lambda title, author: title == "Owned Book"
+    svc.wanted.library = svc.library
+    # No real scrape in tests: the immediate search comes back unreachable.
+    svc.wanted.search_one = lambda row, sess=None: "unreachable"
+
+    c = app.test_client()
+    token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()
+
+    r = c.post("/wanted/add", data={"csrf_token": token, "title": "Owned Book"},
+               follow_redirects=True)
+    assert "already in your Audiobookshelf library" in r.data.decode()
+    assert svc.store.wanted_rows() == []                 # told, not queued
+
+    r = c.post("/wanted/add", data={"csrf_token": token, "title": "New Book",
+                                    "author": "New Author"}, follow_redirects=True)
+    page = r.data.decode()
+    assert "queued" in page and "retry" in page          # honest about the miss
+    (row,) = svc.store.wanted_rows()
+    assert row["hc_id"] == -1 and row["added_by"]        # negative id, credited
+    assert "app add" in page                             # marked in the table
+    assert "/wanted/remove/-1" in page                   # manual rows removable
+
+    # Signed converters: per-row actions work on negative ids.
+    assert c.post("/wanted/skip/-1", data={"csrf_token": token}).status_code == 302
+    assert c.post("/wanted/unskip/-1", data={"csrf_token": token}).status_code == 302
+    # Hardcover rows refuse in-app removal.
+    svc.store.wanted_upsert({"hc_id": 9, "title": "HC", "status": "wanted"})
+    assert c.post("/wanted/remove/9", data={"csrf_token": token}).status_code == 409
+    assert c.post("/wanted/remove/-1", data={"csrf_token": token}).status_code == 302
+    assert {r["hc_id"] for r in svc.store.wanted_rows()} == {9}

@@ -172,7 +172,47 @@ def wanted_sync():
     return redirect(url_for("pages.wanted"))
 
 
-@bp.route("/wanted/skip/<int:hc_id>", methods=["POST"])
+@bp.route("/wanted/add", methods=["POST"])
+def wanted_add():
+    """Quick-add a book by hand: library check first (instant "you already
+    have this"), then an immediate search over the requester's route; a find
+    auto-downloads on their behalf, otherwise the row joins the normal queue.
+    Fire and forget."""
+    s = svc()
+    if not s.wanted.enabled:
+        return jsonify({"message": "The wanted list is not configured."}), 503
+    title = (request.form.get("title") or "").strip()[:300]
+    author = (request.form.get("author") or "").strip()[:200]
+    if not title:
+        return redirect(url_for("pages.wanted", added="invalid"))
+    user = current_user_label()
+    outcome, hc_id = s.wanted.add_manual(title, author, user)
+    if outcome != "added":
+        return redirect(url_for("pages.wanted", added=outcome, t=title))
+    row = next((r for r in s.store.wanted_rows() if r["hc_id"] == hc_id), None)
+    status = s.wanted.search_and_autodownload(row)
+    if status == "unreachable":
+        return redirect(url_for("pages.wanted", added="unreachable", t=title))
+    # Report where the row actually ended up (auto-send may have flipped
+    # found -> sent already).
+    fresh = next((r for r in s.store.wanted_rows() if r["hc_id"] == hc_id), None)
+    return redirect(url_for("pages.wanted",
+                            added=(fresh or {}).get("status") or status, t=title))
+
+
+@bp.route("/wanted/remove/<int(signed=True):hc_id>", methods=["POST"])
+def wanted_remove(hc_id):
+    """Delete a manually-added book (Hardcover rows are removed on Hardcover)."""
+    s = svc()
+    if not s.wanted.enabled:
+        return jsonify({"message": "The wanted list is not configured."}), 503
+    ok, message = s.wanted.remove_manual(hc_id)
+    if not ok:
+        return jsonify({"message": message}), 409
+    return redirect(url_for("pages.wanted"))
+
+
+@bp.route("/wanted/skip/<int(signed=True):hc_id>", methods=["POST"])
 def wanted_skip(hc_id):
     """Take an unfound book out of the search rotation until re-allowed."""
     s = svc()
@@ -184,7 +224,7 @@ def wanted_skip(hc_id):
     return redirect(url_for("pages.wanted"))
 
 
-@bp.route("/wanted/unskip/<int:hc_id>", methods=["POST"])
+@bp.route("/wanted/unskip/<int(signed=True):hc_id>", methods=["POST"])
 def wanted_unskip(hc_id):
     """Put a skipped book back in the queue (due immediately)."""
     s = svc()
@@ -196,7 +236,7 @@ def wanted_unskip(hc_id):
     return redirect(url_for("pages.wanted"))
 
 
-@bp.route("/wanted/research/<int:hc_id>", methods=["POST"])
+@bp.route("/wanted/research/<int(signed=True):hc_id>", methods=["POST"])
 def wanted_research(hc_id):
     """Re-search one wanted book right now (synchronous — it's one scrape,
     over the requesting browser's route)."""

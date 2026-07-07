@@ -312,3 +312,85 @@ def test_autodownload_off_leaves_found_alone(tmp_path):
     svc.search_and_autodownload(store.wanted_rows()[0])
     assert clients.added == []
     assert store.wanted_rows()[0]["status"] == "found"
+
+
+def test_add_manual_checks_library_and_duplicates(tmp_path):
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    svc = WantedService(cfg, store, None, FakeLibrary({"Owned Already"}),
+                        None, None, None, None)
+
+    # Owned -> told immediately, nothing stored.
+    assert svc.add_manual("Owned Already", "Someone", "alice") == ("owned", None)
+    assert store.wanted_rows() == []
+
+    # Fresh add -> negative id, credited, queued.
+    outcome, hc_id = svc.add_manual("New Book", "New Author", "alice")
+    assert outcome == "added" and hc_id == -1
+    (row,) = store.wanted_rows()
+    assert row["status"] == "wanted" and row["added_by"] == "alice"
+
+    # Duplicate (case/punctuation-insensitive) -> refused; ids keep descending.
+    assert svc.add_manual("new book!", "New Author", "bob") == ("duplicate", None)
+    outcome, hc_id = svc.add_manual("Another Book", "", "bob")
+    assert outcome == "added" and hc_id == -2
+
+    # A Hardcover row with the same title also counts as a duplicate.
+    store.wanted_upsert({"hc_id": 500, "title": "From Hardcover", "author": "X",
+                         "status": "wanted"})
+    assert svc.add_manual("From Hardcover", "X", "alice") == ("duplicate", None)
+
+
+def test_manual_add_autodownloads_any_format_as_the_user(tmp_path):
+    """Fire-and-forget: manual rows auto-send their best pick even when it
+    isn't M4B, and the download log credits the requesting user."""
+    mp3 = dict(M4B_BOOK, format="MP3", is_m4b=False,
+               title="Dune - Frank Herbert")
+    svc, store, clients = autodownload_service(tmp_path, mp3)
+    svc.config = make_config(log_db_path=svc.config.log_db_path,
+                             hardcover_api_key="k", wanted_auto_download=False)
+    store.wanted_delete_missing(set())  # drop the fixture's hc_id=1 row
+    outcome, hc_id = svc.add_manual("Dune", "Frank Herbert", "alice")
+    assert outcome == "added"
+
+    row = next(r for r in store.wanted_rows() if r["hc_id"] == hc_id)
+    status = svc.search_and_autodownload(row)   # what /wanted/add runs inline
+    assert status == "found"
+    assert len(clients.added) == 1              # sent despite MP3 + global auto OFF
+    fresh = next(r for r in store.wanted_rows() if r["hc_id"] == hc_id)
+    assert fresh["status"] == "sent"
+    (log_row,) = store.fetch_download_log()
+    assert log_row["user"] == "alice"           # on behalf of the requester
+
+
+def test_sync_never_deletes_manual_rows(tmp_path):
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    svc = WantedService(cfg, store, None, FakeLibrary(set()), None, None, None, None)
+    svc.add_manual("Manual Book", "A", "alice")
+    store.wanted_upsert({"hc_id": 7, "title": "HC Book", "status": "wanted"})
+
+    svc._fetch_wanted = lambda: []   # Hardcover list emptied
+    svc.sync_list()
+    titles = {r["title"] for r in store.wanted_rows()}
+    assert titles == {"Manual Book"}  # HC row gone, manual row untouched
+
+
+def test_remove_manual_only(tmp_path):
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    svc = WantedService(cfg, store, None, FakeLibrary(set()), None, None, None, None)
+    _, hc_id = svc.add_manual("Mistake", "", "alice")
+    store.wanted_upsert({"hc_id": 7, "title": "HC Book", "status": "wanted"})
+
+    ok, msg = svc.remove_manual(7)
+    assert not ok and "Hardcover" in msg
+    ok, _ = svc.remove_manual(hc_id)
+    assert ok
+    assert {r["title"] for r in store.wanted_rows()} == {"HC Book"}

@@ -65,6 +65,13 @@ One module per subsystem; each service class owns its own state and locks:
   the active pipeline, owned books (done — collapsed, no actions, never
   touched again), and skipped books (user-curated out of the search rotation
   via `skip`/`unskip` until re-allowed; sync and requeues leave them alone).
+  Quick add (`add_manual` + `POST /wanted/add`): manually-added books get
+  **negative ids** (Hardcover ids are positive, so every mechanism works on
+  both and the v1 schema holds; per-row routes use signed int converters),
+  are library- and duplicate-checked at add time, searched immediately over
+  the requester's route, and — being fire-and-forget — always auto-download
+  their best pick regardless of format, logged under the requesting user
+  (`added_by`). Sync never deletes them; `remove_manual` does.
 - **`clients.py`** — the download-client registry; `identity.py` — proxy-header
   identity; `security.py` — CSRF/headers/secret key (see below).
 - **`web/`** — blueprints: `pages` (HTML pages + the optional `/covers`

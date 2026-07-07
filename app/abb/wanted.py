@@ -170,6 +170,8 @@ class WantedService:
         for row in self.store.wanted_rows():
             if row["hc_id"] in keep and not row.get("status"):
                 self.store.wanted_upsert({"hc_id": row["hc_id"], "status": "wanted"})
+            if row["hc_id"] < 0:
+                keep.add(row["hc_id"])  # manual rows aren't Hardcover's to delete
         self.store.wanted_delete_missing(keep)
         self.last_sync = time.monotonic()
         self.sync_error = ""
@@ -341,17 +343,23 @@ class WantedService:
         except Exception as e:
             log.warning("wanted mark-sent failed: %s", e)
 
-    def auto_send(self, row):
-        """Auto-download a found match under the strictest gate: the pick must
-        be M4B (auto only ever grabs the recommended single-file format).
+    def auto_send(self, row, m4b_only=True):
+        """Auto-download a found match. Hardcover-synced rows keep the
+        strictest gate — the pick must be M4B (auto only ever grabs the
+        recommended single-file format). Manually-added rows pass
+        m4b_only=False: the user explicitly asked for the book and won't be
+        coming back to choose, so the best AI-rated pick goes out whatever
+        its format (M4B still wins the ranking when one exists). Downloads
+        are logged under the requesting user for manual rows.
         When the gate skips or the send fails, the reason lands in the row's
         detail — "auto-download on but nothing happened" must never be a
         mystery on the dashboard."""
         try:
             link, title = row.get("best_link"), row.get("best_title") or row["title"]
+            log_user = row.get("added_by") or "hardcover-auto"
             if not (link and self.clients.ok):
                 return
-            if "m4b" not in (row.get("best_meta") or "").lower():
+            if m4b_only and "m4b" not in (row.get("best_meta") or "").lower():
                 self.store.wanted_upsert({"hc_id": row["hc_id"],
                                           "detail": "auto-download skipped — the best "
                                                     "match isn't M4B; send it manually "
@@ -361,14 +369,14 @@ class WantedService:
             magnet = self.scraper.extract_magnet_link(link)
             route = self.outbound.route_mode()
             if not magnet:
-                self.store.record_download("hardcover-auto", title, link, None, "error",
+                self.store.record_download(log_user, title, link, None, "error",
                                            "Failed to extract magnet link", route=route)
                 self.store.wanted_upsert({"hc_id": row["hc_id"],
                                           "detail": "auto-download failed — couldn't "
                                                     "extract a magnet link"})
                 return
             self.clients.add(magnet, title)
-            self.store.record_download("hardcover-auto", title, link,
+            self.store.record_download(log_user, title, link,
                                        infohash_from_magnet(magnet), "ok",
                                        "Wanted-list auto-download", route=route)
             self.store.wanted_upsert({"hc_id": row["hc_id"], "status": "sent",
@@ -376,7 +384,7 @@ class WantedService:
             log.info("auto-sent %r", title)
         except Exception as e:
             log.warning("wanted auto-send failed for %r: %s", row.get("title"), e)
-            self.store.record_download("hardcover-auto",
+            self.store.record_download(row.get("added_by") or "hardcover-auto",
                                        row.get("best_title") or row["title"],
                                        row.get("best_link"), None, "error", str(e),
                                        route=self.outbound.route_mode())
@@ -389,14 +397,49 @@ class WantedService:
         per-row re-check — so "auto-download on" means on, regardless of who
         triggered the search that found the book."""
         status = self.search_one(row, sess=sess)
-        if status == "found" and self.config.wanted_auto_download:
+        if status == "found":
             fresh = next((r for r in self.store.wanted_rows()
                           if r["hc_id"] == row["hc_id"]), None)
             if fresh:
-                self.auto_send(fresh)
+                manual = self.is_manual(fresh)
+                # Manual adds are fire-and-forget by definition: they always
+                # auto-send, best pick regardless of format. Hardcover rows
+                # follow the global setting with the strict M4B gate.
+                if manual or self.config.wanted_auto_download:
+                    self.auto_send(fresh, m4b_only=not manual)
         return status
 
     # --- user curation -----------------------------------------------------------------
+    @staticmethod
+    def is_manual(row):
+        """Manually-added books carry negative ids — Hardcover ids are always
+        positive, so the two populations can never collide and every existing
+        mechanism (skip, re-check, sweep, shelves) works on both."""
+        return (row.get("hc_id") or 0) < 0
+
+    def add_manual(self, title, author, user):
+        """Quick-add a book by hand: check the library first (the whole point
+        is telling the user immediately when there's nothing to do), then
+        check for a duplicate row, then create a manual row credited to the
+        requesting user. Returns (outcome, hc_id): outcome is 'owned',
+        'duplicate', or 'added' (hc_id set only when added)."""
+        title, author = title.strip(), (author or "").strip()
+        norm_t, norm_a = matching.normalize(title), matching.normalize(author)
+        rows = self.store.wanted_rows()
+        for r in rows:
+            if matching.normalize(r.get("title") or "") != norm_t:
+                continue
+            other_a = matching.normalize(r.get("author") or "")
+            if not norm_a or not other_a or norm_a == other_a:
+                return "duplicate", None
+        if self.library.owns(title, author):
+            return "owned", None
+        hc_id = min([r["hc_id"] for r in rows if r["hc_id"] < 0], default=0) - 1
+        self.store.wanted_upsert({"hc_id": hc_id, "title": title, "author": author,
+                                  "slug": "", "status": "wanted", "added_by": user})
+        log.info("%r added manually by %s (id %d)", title, user, hc_id)
+        return "added", hc_id
+
     def skip(self, hc_id):
         """Take an unfound book out of the search rotation entirely: no
         background searches, no daily re-checks, until the user allows it
@@ -422,6 +465,18 @@ class WantedService:
             return False, "This book isn't skipped."
         self.store.wanted_upsert({"hc_id": hc_id, "status": "wanted",
                                   "searched_at": None, "detail": ""})
+        return True, ""
+
+    def remove_manual(self, hc_id):
+        """Delete a manually-added row. Hardcover rows are managed on
+        Hardcover — removing them there removes them here on the next sync."""
+        row = next((r for r in self.store.wanted_rows() if r["hc_id"] == hc_id), None)
+        if not row:
+            return False, "Unknown wanted book."
+        if not self.is_manual(row):
+            return False, ("This book comes from your Hardcover list — remove it "
+                           "there and it disappears on the next sync.")
+        self.store.wanted_delete(hc_id)
         return True, ""
 
     # --- scheduling ------------------------------------------------------------------

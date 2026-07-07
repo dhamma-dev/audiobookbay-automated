@@ -321,6 +321,16 @@ every wanted book is pre-searched on AudioBook Bay in the background and moves
 through a pipeline — *Queued → Found → Sent → In your library* (books you
 already own in Audiobookshelf are marked instead of searched).
 
+**Quick add.** The `/wanted` page also has an "Add & fetch" box for books that
+aren't on your Hardcover list: type a title (author optional) and dip out. Your
+Audiobookshelf library is checked first — if you already own it, the page says
+so and nothing is added. Otherwise the book is searched immediately and, since
+you won't be coming back to choose, its best match downloads automatically on
+your behalf (any format — M4B still wins when available), credited to your user
+in the download log. Misses join the normal daily re-check queue. App-added
+books show a trash button to remove them; Hardcover books are removed on
+Hardcover.
+
 When a search turns up results, they are **AI-rated once** (same Gemini model
 as Smart sort): the model verifies each listing really is that exact work,
 ranks the editions (M4B preferred, your language, healthy bitrate), flags red

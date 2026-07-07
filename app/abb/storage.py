@@ -75,7 +75,7 @@ class Store:
                         detail TEXT
                     )
                 """)
-                self._migrate(conn, "wanted", ("candidates", "verdict"))
+                self._migrate(conn, "wanted", ("candidates", "verdict", "added_by"))
                 # In-app feature settings (see abb/settings.py). env_snapshot
                 # is the env value seen at save time — the key to the
                 # most-recently-set-wins precedence.
@@ -154,7 +154,7 @@ class Store:
                 self._wanted_mem[row["hc_id"]] = {**self._wanted_mem.get(row["hc_id"], {}), **row}
             return
         cols = ("hc_id", "title", "author", "slug", "status", "best_link", "best_title",
-                "best_meta", "searched_at", "detail", "candidates", "verdict")
+                "best_meta", "searched_at", "detail", "candidates", "verdict", "added_by")
         with self._lock, self._connect() as conn:
             existing = conn.execute("SELECT * FROM wanted WHERE hc_id = ?",
                                     (row["hc_id"],)).fetchone()
@@ -193,6 +193,15 @@ class Store:
             return
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+    def wanted_delete(self, hc_id):
+        """Drop one row (used for removing manually-added books)."""
+        if not self.enabled:
+            with self._lock:
+                self._wanted_mem.pop(hc_id, None)
+            return
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM wanted WHERE hc_id = ?", (hc_id,))
 
     def wanted_delete_missing(self, keep_ids):
         """Drop rows the user removed from their Hardcover list."""
