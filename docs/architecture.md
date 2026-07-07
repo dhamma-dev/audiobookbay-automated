@@ -69,9 +69,14 @@ One module per subsystem; each service class owns its own state and locks:
   **negative ids** (Hardcover ids are positive, so every mechanism works on
   both and the v1 schema holds; per-row routes use signed int converters),
   are library- and duplicate-checked at add time, searched immediately over
-  the requester's route, and — being fire-and-forget — always auto-download
-  their best pick regardless of format, logged under the requesting user
-  (`added_by`). Sync never deletes them; `remove_manual` does.
+  the requester's route, and — being fire-and-forget — always attempt
+  auto-download, logged under the requesting user (`added_by`). Sync never
+  deletes them; `remove_manual` does. Auto-download **requirements are one
+  universal server policy** (`_auto_gate_reason`, configurable in Settings):
+  `WANTED_AUTO_FORMAT` (m4b | any) and `WANTED_AUTO_MIN_KBPS` apply
+  identically to Hardcover and app-added rows; only the master switch
+  differs (manual rows always attempt, Hardcover rows need
+  `WANTED_AUTO_DOWNLOAD`). Held picks say why on the row.
 - **`clients.py`** — the download-client registry; `identity.py` — proxy-header
   identity; `security.py` — CSRF/headers/secret key (see below).
 - **`web/`** — blueprints: `pages` (HTML pages + the optional `/covers`

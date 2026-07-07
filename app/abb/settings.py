@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .config import FEATURE_SETTINGS, WANTED_ROUTE_CHOICES, Config, is_truthy
+from .config import FEATURE_SETTINGS, SETTING_CHOICES, Config, is_truthy
 
 
 def coerce(env_key: str, raw: str | None, fallback):
@@ -38,7 +38,8 @@ def coerce(env_key: str, raw: str | None, fallback):
         except ValueError:
             return fallback
     if kind == "choice":
-        return raw if raw in WANTED_ROUTE_CHOICES else "default"
+        choices = SETTING_CHOICES[env_key]
+        return raw if raw in choices else choices[0]
     if env_key == "ABS_URL":
         return raw.rstrip("/")
     if env_key == "GEMINI_API_KEY":

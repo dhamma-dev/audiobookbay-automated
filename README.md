@@ -325,9 +325,12 @@ already own in Audiobookshelf are marked instead of searched).
 aren't on your Hardcover list: type a title (author optional) and dip out. Your
 Audiobookshelf library is checked first — if you already own it, the page says
 so and nothing is added. Otherwise the book is searched immediately and, since
-you won't be coming back to choose, its best match downloads automatically on
-your behalf (any format — M4B still wins when available), credited to your user
-in the download log. Misses join the normal daily re-check queue. App-added
+you won't be coming back to choose, a match meeting the server's auto-download
+requirements downloads automatically on your behalf, credited to your user in
+the download log. The requirements — format (`WANTED_AUTO_FORMAT`: `m4b` or
+`any`) and an optional minimum bitrate (`WANTED_AUTO_MIN_KBPS`) — are one
+universal policy for Hardcover-synced and app-added books alike, editable on
+the Settings page; held picks say why on their row. Misses join the normal daily re-check queue. App-added
 books show a trash button to remove them; Hardcover books are removed on
 Hardcover.
 

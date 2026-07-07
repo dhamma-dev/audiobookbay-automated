@@ -28,6 +28,12 @@
                     <i data-lucide="search" aria-hidden="true"></i>
                     Search
                 </a>
+                {% if wanted_enabled %}
+                <a href="{{ url_for('pages.wanted') }}" class="{% if request.endpoint == 'pages.wanted' %}active{% endif %}">
+                    <i data-lucide="bookmark" aria-hidden="true"></i>
+                    Wanted
+                </a>
+                {% endif %}
                 <a href="{{ url_for('pages.status') }}" class="{% if request.endpoint == 'pages.status' %}active{% endif %}">
                     <i data-lucide="download" aria-hidden="true"></i>
                     Downloads
@@ -36,12 +42,6 @@
                 <a href="{{ url_for('pages.upgrades') }}" class="{% if request.endpoint == 'pages.upgrades' %}active{% endif %}">
                     <i data-lucide="arrow-up-circle" aria-hidden="true"></i>
                     Upgrades
-                </a>
-                {% endif %}
-                {% if wanted_enabled %}
-                <a href="{{ url_for('pages.wanted') }}" class="{% if request.endpoint == 'pages.wanted' %}active{% endif %}">
-                    <i data-lucide="bookmark" aria-hidden="true"></i>
-                    Wanted
                 </a>
                 {% endif %}
                 {% if log_enabled %}

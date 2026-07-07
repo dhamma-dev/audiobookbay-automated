@@ -343,28 +343,44 @@ class WantedService:
         except Exception as e:
             log.warning("wanted mark-sent failed: %s", e)
 
-    def auto_send(self, row, m4b_only=True):
-        """Auto-download a found match. Hardcover-synced rows keep the
-        strictest gate — the pick must be M4B (auto only ever grabs the
-        recommended single-file format). Manually-added rows pass
-        m4b_only=False: the user explicitly asked for the book and won't be
-        coming back to choose, so the best AI-rated pick goes out whatever
-        its format (M4B still wins the ranking when one exists). Downloads
-        are logged under the requesting user for manual rows.
-        When the gate skips or the send fails, the reason lands in the row's
-        detail — "auto-download on but nothing happened" must never be a
-        mystery on the dashboard."""
+    def _auto_gate_reason(self, row):
+        """Why the server's auto-download requirements block this pick, or
+        None when it passes. ONE universal policy (configurable in Settings)
+        — Hardcover-synced and app-added books are judged identically:
+
+        - WANTED_AUTO_FORMAT "m4b": only the single-file format auto-sends.
+        - WANTED_AUTO_MIN_KBPS: a pick whose STATED bitrate is below the
+          minimum is held; listings that don't state one pass (blocking on
+          missing metadata would strand too many legitimate picks)."""
+        meta = row.get("best_meta") or ""
+        if self.config.wanted_auto_format == "m4b" and "m4b" not in meta.lower():
+            return "isn't M4B"
+        if self.config.wanted_auto_min_kbps:
+            kbps = parse_kbps(meta)
+            if kbps is not None and kbps < self.config.wanted_auto_min_kbps:
+                return (f"{kbps:g} kbps is below the "
+                        f"{self.config.wanted_auto_min_kbps:g} kbps minimum")
+        return None
+
+    def auto_send(self, row):
+        """Auto-download a found match, subject to the universal requirements
+        (_auto_gate_reason). Downloads are logged under the requesting user
+        for app-added rows, "hardcover-auto" otherwise. When the gate holds
+        or the send fails, the reason lands in the row's detail —
+        "auto-download on but nothing happened" must never be a mystery on
+        the dashboard."""
         try:
             link, title = row.get("best_link"), row.get("best_title") or row["title"]
             log_user = row.get("added_by") or "hardcover-auto"
             if not (link and self.clients.ok):
                 return
-            if m4b_only and "m4b" not in (row.get("best_meta") or "").lower():
+            reason = self._auto_gate_reason(row)
+            if reason:
                 self.store.wanted_upsert({"hc_id": row["hc_id"],
-                                          "detail": "auto-download skipped — the best "
-                                                    "match isn't M4B; send it manually "
-                                                    "if you want it"})
-                log.info("auto-download skipped for %r: best match isn't M4B", title)
+                                          "detail": f"auto-download skipped — the best "
+                                                    f"match {reason} (server policy; "
+                                                    f"send it manually if you want it)"})
+                log.info("auto-download skipped for %r: best match %s", title, reason)
                 return
             magnet = self.scraper.extract_magnet_link(link)
             route = self.outbound.route_mode()
@@ -401,12 +417,12 @@ class WantedService:
             fresh = next((r for r in self.store.wanted_rows()
                           if r["hc_id"] == row["hc_id"]), None)
             if fresh:
-                manual = self.is_manual(fresh)
-                # Manual adds are fire-and-forget by definition: they always
-                # auto-send, best pick regardless of format. Hardcover rows
-                # follow the global setting with the strict M4B gate.
-                if manual or self.config.wanted_auto_download:
-                    self.auto_send(fresh, m4b_only=not manual)
+                # Manual adds are fire-and-forget by definition, so they
+                # always attempt auto-send; Hardcover rows follow the master
+                # switch. The QUALITY requirements are one universal server
+                # policy either way (see _auto_gate_reason).
+                if self.is_manual(fresh) or self.config.wanted_auto_download:
+                    self.auto_send(fresh)
         return status
 
     # --- user curation -----------------------------------------------------------------

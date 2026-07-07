@@ -47,11 +47,19 @@ FEATURE_SETTINGS = {
     "ABS_LOW_KBPS": ("abs_low_kbps", "float"),
     "HARDCOVER_API_KEY": ("hardcover_api_key", "secret"),
     "WANTED_AUTO_DOWNLOAD": ("wanted_auto_download", "bool"),
+    "WANTED_AUTO_FORMAT": ("wanted_auto_format", "choice"),
+    "WANTED_AUTO_MIN_KBPS": ("wanted_auto_min_kbps", "float"),
     "WANTED_LLM": ("wanted_llm", "bool"),
     "WANTED_ROUTE": ("wanted_route", "choice"),
 }
 
-WANTED_ROUTE_CHOICES = ("default", "tor", "direct")
+# Valid values per "choice"-kind setting (first entry is the default).
+SETTING_CHOICES = {
+    "WANTED_ROUTE": ("default", "tor", "direct"),
+    "WANTED_AUTO_FORMAT": ("m4b", "any"),
+}
+
+WANTED_ROUTE_CHOICES = SETTING_CHOICES["WANTED_ROUTE"]
 
 
 def is_truthy(value: str | None) -> bool:
@@ -134,6 +142,11 @@ class Config:
     wanted_research_ttl: int = 86400
     wanted_retry_ttl: int = 1800
     wanted_auto_download: bool = False
+    # Universal auto-download requirements — ONE server policy, applied the
+    # same to Hardcover-synced and app-added books (only the master switch
+    # differs: manual adds always attempt auto-send).
+    wanted_auto_format: str = "m4b"         # "m4b" (strict) | "any"
+    wanted_auto_min_kbps: float = 0.0       # 0 = no minimum; unknown bitrate passes
     wanted_route: str = "default"           # "default" | "tor" | "direct"
     wanted_llm: bool = True
 
@@ -208,6 +221,9 @@ class Config:
             wanted_research_ttl=int(g("WANTED_RESEARCH_TTL", "86400")),
             wanted_retry_ttl=int(g("WANTED_RETRY_TTL", "1800")),
             wanted_auto_download=is_truthy(g("WANTED_AUTO_DOWNLOAD", "false")),
+            wanted_auto_format=(lambda v: v if v in SETTING_CHOICES["WANTED_AUTO_FORMAT"]
+                                else "m4b")((g("WANTED_AUTO_FORMAT") or "m4b").strip().lower()),
+            wanted_auto_min_kbps=float(g("WANTED_AUTO_MIN_KBPS", "0")),
             wanted_route=(g("WANTED_ROUTE") or "default").strip().lower(),
             wanted_llm=is_truthy(g("WANTED_LLM", "true")),
             secret_key=g("FLASK_SECRET_KEY") or None,

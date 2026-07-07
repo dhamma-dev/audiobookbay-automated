@@ -259,10 +259,12 @@ class FakeOutbound:
         return "direct"
 
 
-def autodownload_service(tmp_path, book):
+def autodownload_service(tmp_path, book, **overrides):
     from abb.storage import Store
-    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k",
-                      wanted_auto_download=True)
+    kwargs = dict(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k",
+                  wanted_auto_download=True)
+    kwargs.update(overrides)
+    cfg = make_config(**kwargs)
     store = Store(cfg)
     store.init()
     clients = FakeClients()
@@ -343,14 +345,16 @@ def test_add_manual_checks_library_and_duplicates(tmp_path):
     assert svc.add_manual("From Hardcover", "X", "alice") == ("duplicate", None)
 
 
-def test_manual_add_autodownloads_any_format_as_the_user(tmp_path):
-    """Fire-and-forget: manual rows auto-send their best pick even when it
-    isn't M4B, and the download log credits the requesting user."""
+def test_manual_add_autodownloads_as_the_user(tmp_path):
+    """Fire-and-forget: manual rows auto-send even with the master switch
+    OFF, and the download log credits the requesting user. (Format allowed
+    here by the server policy — the gate itself is universal, tested below.)"""
     mp3 = dict(M4B_BOOK, format="MP3", is_m4b=False,
                title="Dune - Frank Herbert")
     svc, store, clients = autodownload_service(tmp_path, mp3)
     svc.config = make_config(log_db_path=svc.config.log_db_path,
-                             hardcover_api_key="k", wanted_auto_download=False)
+                             hardcover_api_key="k", wanted_auto_download=False,
+                             wanted_auto_format="any")
     store.wanted_delete_missing(set())  # drop the fixture's hc_id=1 row
     outcome, hc_id = svc.add_manual("Dune", "Frank Herbert", "alice")
     assert outcome == "added"
@@ -394,3 +398,49 @@ def test_remove_manual_only(tmp_path):
     ok, _ = svc.remove_manual(hc_id)
     assert ok
     assert {r["title"] for r in store.wanted_rows()} == {"HC Book"}
+
+
+def test_auto_gate_is_universal_manual_rows_included(tmp_path):
+    """One server policy: with the default m4b requirement, a manual add whose
+    best pick is MP3 is held for review — same rule as Hardcover rows."""
+    mp3 = dict(M4B_BOOK, format="MP3", is_m4b=False)
+    svc, store, clients = autodownload_service(tmp_path, mp3,
+                                               wanted_auto_download=False)
+    store.wanted_delete(1)  # drop the fixture's default row (same title)
+    _, hc_id = svc.add_manual("Dune", "Frank Herbert", "alice")
+    row = next(r for r in store.wanted_rows() if r["hc_id"] == hc_id)
+    svc.search_and_autodownload(row)
+
+    assert clients.added == []
+    fresh = next(r for r in store.wanted_rows() if r["hc_id"] == hc_id)
+    assert fresh["status"] == "found" and "isn't M4B" in fresh["detail"]
+
+
+def test_auto_gate_minimum_bitrate(tmp_path):
+    # 64 kbps M4B pick vs a 100 kbps minimum -> held, with the numbers named.
+    low = dict(M4B_BOOK, bitrate="64 Kbps")
+    svc, store, clients = autodownload_service(tmp_path, low,
+                                               wanted_auto_min_kbps=100.0)
+    svc.search_and_autodownload(store.wanted_rows()[0])
+    assert clients.added == []
+    (row,) = store.wanted_rows()
+    assert row["status"] == "found" and "below the 100 kbps minimum" in row["detail"]
+
+    # An unknown bitrate passes — blocking on missing metadata would strand
+    # too many legitimate picks.
+    unknown = dict(M4B_BOOK, bitrate="Unknown")
+    svc2, store2, clients2 = autodownload_service(tmp_path.joinpath("u"), unknown,
+                                                  wanted_auto_min_kbps=100.0)
+    svc2.search_and_autodownload(store2.wanted_rows()[0])
+    assert len(clients2.added) == 1
+    assert store2.wanted_rows()[0]["status"] == "sent"
+
+
+def test_auto_format_config_parsing():
+    from abb.config import Config
+    from abb.settings import coerce
+    assert Config.from_env({}).wanted_auto_format == "m4b"
+    assert Config.from_env({"WANTED_AUTO_FORMAT": "ANY"}).wanted_auto_format == "any"
+    assert Config.from_env({"WANTED_AUTO_FORMAT": "flac"}).wanted_auto_format == "m4b"
+    assert coerce("WANTED_AUTO_FORMAT", "any", "m4b") == "any"
+    assert coerce("WANTED_AUTO_FORMAT", "nonsense", "m4b") == "m4b"

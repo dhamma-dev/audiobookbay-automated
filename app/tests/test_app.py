@@ -277,3 +277,33 @@ def test_wanted_add_endpoint_owned_and_queued(tmp_path):
     assert c.post("/wanted/remove/9", data={"csrf_token": token}).status_code == 409
     assert c.post("/wanted/remove/-1", data={"csrf_token": token}).status_code == 302
     assert {r["hc_id"] for r in svc.store.wanted_rows()} == {9}
+
+
+def _nav_positions(page, labels):
+    import re
+    nav = page[:page.index("conn-control")]
+    positions = []
+    for label in labels:
+        m = re.search(r">\s*%s\s*</a>" % re.escape(label), nav)
+        assert m, f"nav is missing {label}"
+        positions.append(m.start())
+    return positions
+
+
+def test_nav_order(client):
+    # Features (and the log) off here: Search, Downloads, Settings remain.
+    page = client.get("/").data.decode()
+    order = _nav_positions(page, ("Search", "Downloads", "Settings"))
+    assert order == sorted(order)
+
+
+def test_nav_order_with_all_features(tmp_path):
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k",
+                      abs_url="http://abs.local", abs_token="t")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    app.extensions["abb"].library.get_index = lambda max_age=None: []  # no network
+    page = app.test_client().get("/").data.decode()
+    order = _nav_positions(page, ("Search", "Wanted", "Downloads",
+                                  "Upgrades", "Log", "Settings"))
+    assert order == sorted(order)

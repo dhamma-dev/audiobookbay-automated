@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from flask import Blueprint, redirect, render_template, request, url_for
 
-from ..config import FEATURE_SETTINGS, WANTED_ROUTE_CHOICES
+from ..config import FEATURE_SETTINGS, SETTING_CHOICES
 from ..identity import current_user_label, is_log_admin
 from ..settings import effective_config
 from . import svc
@@ -42,7 +42,15 @@ SECTIONS = [
         ("HARDCOVER_API_KEY", "Hardcover API key",
          "From hardcover.app account settings. Tokens expire every January 1st."),
         ("WANTED_AUTO_DOWNLOAD", "Auto-download found books",
-         "Strictest gate only: confident match AND M4B."),
+         "Master switch for Hardcover-synced books. Books added in the app always "
+         "auto-download — both obey the requirements below."),
+        ("WANTED_AUTO_FORMAT", "Auto-download format requirement",
+         "m4b: only the recommended single-file format is ever auto-sent (default). "
+         "any: the best-rated pick goes out whatever its format. One server-wide "
+         "policy for Hardcover and app-added books alike."),
+        ("WANTED_AUTO_MIN_KBPS", "Auto-download minimum bitrate (kbps)",
+         "Picks with a stated bitrate below this are held for manual review "
+         "(0 = no minimum). Listings that don't state a bitrate pass."),
         ("WANTED_LLM", "AI verdict on found results",
          "One small Gemini call per found book, ever. Off = deterministic matching."),
         ("WANTED_ROUTE", "Background search route",
@@ -77,6 +85,7 @@ def _view_model(s):
                 "provenance_label": PROVENANCE_LABELS.get(provenance.get(env_key), ""),
                 # Secrets are write-only: the template gets set/not-set, never the value.
                 "is_set": bool(value) if kind == "secret" else None,
+                "choices": SETTING_CHOICES.get(env_key, ()),
                 "value": ("" if kind == "secret"
                           else ("%g" % value) if kind == "float"
                           else bool(value) if kind == "bool"
@@ -91,13 +100,12 @@ def settings_page():
     s = svc()
     if not _allowed():
         return render_template("settings.html", allowed=False, sections=[],
-                               store_enabled=True, route_choices=WANTED_ROUTE_CHOICES), 403
+                               store_enabled=True), 403
     return render_template("settings.html", allowed=True,
                            sections=_view_model(s),
                            store_enabled=s.store.enabled,
                            saved=request.args.get("saved"),
-                           error=request.args.get("error"),
-                           route_choices=WANTED_ROUTE_CHOICES)
+                           error=request.args.get("error"))
 
 
 @bp.route("/settings", methods=["POST"])
@@ -105,7 +113,7 @@ def settings_save():
     s = svc()
     if not _allowed():
         return render_template("settings.html", allowed=False, sections=[],
-                               store_enabled=True, route_choices=WANTED_ROUTE_CHOICES), 403
+                               store_enabled=True), 403
     if not s.store.enabled:
         return redirect(url_for("admin.settings_page",
                                 error="Settings need the data volume (LOG_DB_PATH) to persist."))
@@ -147,7 +155,7 @@ def settings_save():
                 error = f"{env_key} must be a number — kept the previous value."
         elif kind == "choice":
             posted = request.form[env_key].strip().lower()
-            if posted in WANTED_ROUTE_CHOICES and posted != current:
+            if posted in SETTING_CHOICES[env_key] and posted != current:
                 s.store.settings_set(env_key, posted, snapshot, user)
         else:  # str
             posted = request.form[env_key].strip()
