@@ -1,5 +1,5 @@
 """
-Audiobookshelf match spike -- EXPERIMENTAL, safe to delete.
+Audiobookshelf match spike -- an eval CLI, safe to delete.
 
 Pulls your Audiobookshelf library, scrapes a real AudioBook Bay search, and
 prints how well each ABB result matches something you already own -- so we can
@@ -28,7 +28,7 @@ import sys
 import requests
 from bs4 import BeautifulSoup
 
-import abs_match
+from abb import matching as abs_match
 
 # .strip() guards against trailing spaces/newlines in .env values, which would
 # otherwise produce an invalid URL like "http://host:8080 /api/libraries".
@@ -215,7 +215,7 @@ def main():
     print(f"\nTOTAL across {len(queries)} query(ies): "
           f"{totals[0]} strong, {totals[1]} maybe, {totals[2]} none")
     print("Only STRONG would show as an 'In your library' badge. Tune thresholds "
-          "at the top of abs_match.py and re-run.")
+          "at the top of abb/matching.py and re-run.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% from "macros/book_card.html" import render as book_card %}
+{% from "macros/empty_state.html" import render as empty_state %}
+
+{% block title %}Search{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/search.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <span class="page-header-eyebrow">Library</span>
+    <h1>Find your next listen</h1>
+    <p>Search AudioBook Bay and send downloads straight to your server.</p>
+</div>
+
+{% if show_putio_banner %}
+<div class="alert alert-warning" role="alert">
+    <i data-lucide="alert-triangle" aria-hidden="true"></i>
+    {% if putio_oauth_available %}
+    <span>Connect your Put.io account to send downloads.</span>
+    <a href="{{ url_for('putio.putio_auth') }}" class="btn btn-primary">
+        <i data-lucide="log-in" aria-hidden="true"></i>
+        Log in with Put.io
+    </a>
+    {% else %}
+    <span>Put.io is not connected. Log in with Put.io (set <code>PUTIO_CLIENT_ID</code> / <code>PUTIO_CLIENT_SECRET</code>) or set a <code>PUTIO_ACCESS_TOKEN</code>.</span>
+    {% endif %}
+</div>
+{% endif %}
+
+<form method="post" id="search-form" class="search-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="search-input-wrapper">
+        <label for="search-input" class="sr-only">Search audiobooks</label>
+        <i data-lucide="search" class="search-input-icon" aria-hidden="true"></i>
+        <input
+            type="text"
+            name="query"
+            id="search-input"
+            class="search-input"
+            placeholder="Search by title, author, or narrator…"
+            autocomplete="off"
+            required
+            value="{{ query }}"
+        >
+    </div>
+    <button type="submit" id="search-submit" class="btn btn-primary"
+            {% if route_mode == 'tor' and tor_status == 'starting' %}disabled{% endif %}>
+        <i data-lucide="search" aria-hidden="true"></i>
+        Search
+    </button>
+</form>
+
+{% if route_mode == 'tor' and tor_status == 'starting' %}
+<div id="tor-booting" class="tor-booting" role="status">
+    <span class="spinner-icon" aria-hidden="true"></span>
+    <span class="tor-booting-text">Starting Tor — search will be ready in a moment.</span>
+    <button type="button" class="btn btn-secondary" data-action="search-direct">
+        <i data-lucide="zap" aria-hidden="true"></i>
+        Search directly instead
+    </button>
+</div>
+{% endif %}
+
+<div id="search-skeletons" class="search-skeletons" hidden aria-hidden="true">
+    {% for _ in range(3) %}
+    <div class="book-card skeleton skeleton-card">
+        <div class="book-cover-container skeleton-block"></div>
+        <div class="book-details">
+            <div class="skeleton-block skeleton-title"></div>
+            <div class="skeleton-block skeleton-meta"></div>
+            <div class="skeleton-block skeleton-actions"></div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<div id="search-results" class="search-results" role="region" aria-live="polite" aria-label="Search results">
+    {% if searched %}
+        {% if books %}
+        <div class="search-results-bar">
+            <p class="search-results-header">
+                {{ result_count }} result{{ 's' if result_count != 1 else '' }} for &ldquo;{{ query }}&rdquo;
+                {% if m4b_count %}<span class="results-m4b-note">· {{ m4b_count }} M4B {{ 'pick' if m4b_count == 1 else 'picks' }} up top</span>{% endif %}
+                {% if owned_count %}<span class="results-owned-note">· {{ owned_count }} in your library</span>{% endif %}
+            </p>
+            <div class="search-results-tools">
+                {% if owned_count %}
+                <label class="owned-filter" title="Hide results already in your Audiobookshelf library">
+                    <input type="checkbox" data-action="toggle-owned">
+                    <i data-lucide="eye-off" aria-hidden="true"></i>
+                    Hide owned
+                </label>
+                {% endif %}
+                {% if smart_sort_available and result_count > 1 %}
+                <button type="button" class="btn btn-secondary btn-smart-sort" data-action="smart-sort"
+                        data-query="{{ query | e }}">
+                    <i data-lucide="sparkles" aria-hidden="true"></i>
+                    Smart sort
+                </button>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if (smart_sort_available and result_count > 1) or abs_match_enabled %}
+        <script type="application/json" id="search-results-data"{% if abs_match_enabled %} data-abs-match="1"{% endif %}>{{ rank_payload | tojson }}</script>
+        {% endif %}
+        {% if smart_sort_available and result_count > 1 %}
+        <div id="smart-sort-ambiguity" class="smart-sort-ambiguity" hidden></div>
+        {% endif %}
+
+        {% for book in books %}
+        {{ book_card(book, download_client_label) }}
+        {% endfor %}
+
+        {% if smart_sort_available and result_count > 1 %}
+        <button type="button" id="smart-sort-show-filtered" class="btn btn-ghost smart-sort-show-filtered" hidden
+                data-action="toggle-filtered"></button>
+        {% endif %}
+        {% else %}
+        {{ empty_state('book-x', 'No results found', 'Try different keywords or check your spelling.') }}
+        {% endif %}
+    {% else %}
+    {{ empty_state('library', 'Search for audiobooks', 'Enter a title, author, or narrator above to begin.') }}
+    {% endif %}
+</div>
+{% endblock %}

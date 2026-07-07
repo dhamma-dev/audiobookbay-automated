@@ -1,0 +1,367 @@
+{% extends "base.html" %}
+{% from "macros/empty_state.html" import render as empty_state %}
+
+{% block title %}Wanted{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-header-row">
+        <div>
+            <span class="page-header-eyebrow">Hardcover</span>
+            <h1>Wanted books</h1>
+            <p>Your Hardcover “Want to Read” list, pre-searched on AudioBook Bay in the
+               background. Each book's results are AI-rated once when found, then kept —
+               no repeat lookups unless you force a re-check.</p>
+        </div>
+        {% if enabled %}
+        <form method="post" action="{{ url_for('actions.wanted_sync') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-secondary" data-busy="Syncing with Hardcover…">
+                <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                Sync now
+            </button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+{% if not enabled %}
+{{ empty_state('bookmark', 'Hardcover is not connected',
+               'Set HARDCOVER_API_KEY (from hardcover.app account settings) to sync your Want to Read list.') }}
+{% else %}
+
+{% if sync_error %}
+<div class="alert alert-error" role="alert">
+    <i data-lucide="alert-circle" aria-hidden="true"></i>
+    <span>Last Hardcover sync failed: {{ sync_error }}. Tokens expire every January 1st — a fresh one from your Hardcover account settings usually fixes this.</span>
+</div>
+{% endif %}
+
+{% set added = request.args.get('added') %}
+{% set added_t = request.args.get('t', '') %}
+{% if added == 'owned' %}
+<div class="alert alert-success" role="status">
+    <i data-lucide="library-big" aria-hidden="true"></i>
+    <span>“{{ added_t }}” is already in your Audiobookshelf library — nothing to add.</span>
+</div>
+{% elif added == 'duplicate' %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="info" aria-hidden="true"></i>
+    <span>“{{ added_t }}” is already on the wanted list.</span>
+</div>
+{% elif added == 'sent' %}
+<div class="alert alert-success" role="status">
+    <i data-lucide="check-circle" aria-hidden="true"></i>
+    <span>Found and sent — “{{ added_t }}” will appear in Audiobookshelf when the download completes. You're done.</span>
+</div>
+{% elif added == 'found' %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="alert-triangle" aria-hidden="true"></i>
+    <span>Found a match for “{{ added_t }}”, but it couldn't be sent automatically — the row below says why.</span>
+</div>
+{% elif added == 'unmatched' %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="info" aria-hidden="true"></i>
+    <span>“{{ added_t }}” isn't available yet — it's on the list and will be re-checked about once a day. Nothing more to do.</span>
+</div>
+{% elif added in ('unreachable', 'wanted') %}
+<div class="alert alert-warning" role="status">
+    <i data-lucide="info" aria-hidden="true"></i>
+    <span>“{{ added_t }}” is queued — AudioBook Bay wasn't reachable just now; it'll retry automatically. Nothing more to do.</span>
+</div>
+{% elif added == 'invalid' %}
+<div class="alert alert-error" role="alert">
+    <i data-lucide="alert-circle" aria-hidden="true"></i>
+    <span>Enter at least a title to add a book.</span>
+</div>
+{% endif %}
+
+{# Quick add: check the library, search immediately, auto-download the best
+   match on the requester's behalf — fire and forget. #}
+<form method="post" action="{{ url_for('actions.wanted_add') }}" class="wanted-add-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="sr-only" for="wanted-add-title">Book title</label>
+    <input type="text" id="wanted-add-title" name="title" class="wanted-add-input"
+           placeholder="Add a book by title…" required maxlength="300" autocomplete="off">
+    <label class="sr-only" for="wanted-add-author">Author</label>
+    <input type="text" id="wanted-add-author" name="author" class="wanted-add-input wanted-add-input--author"
+           placeholder="Author (optional)" maxlength="200" autocomplete="off">
+    <button type="submit" class="btn btn-primary" data-busy="Checking library & searching…">
+        <i data-lucide="plus" aria-hidden="true"></i>
+        Add &amp; fetch
+    </button>
+</form>
+<p class="wanted-add-note">Your library is checked first; otherwise the book is searched right away and the best
+   match downloads automatically on your behalf — no need to come back and choose.</p>
+
+<div class="downloads-toolbar">
+    <span class="downloads-count">
+        {% if active or owned or skipped %}
+        {{ active | length }} in the pipeline
+        {%- if counts.found %} · <span class="wanted-note-found">{{ counts.found }} found</span>{% endif %}
+        {%- if counts.sent %} · {{ counts.sent }} sent{% endif %}
+        {%- if counts.unmatched %} · {{ counts.unmatched }} not available yet{% endif %}
+        {%- if owned %} · {{ owned | length }} in library{% endif %}
+        {%- if skipped %} · {{ skipped | length }} skipped{% endif %}
+        {% else %}
+        Nothing on your Want to Read list yet
+        {% endif %}
+    </span>
+    <span class="downloads-updated">
+        background searches via {{ route_label }} ·
+        {% if auto %}auto-download ON (M4B only){% else %}auto-download off{% endif %}
+    </span>
+</div>
+
+{% if active %}
+<div class="log-table-wrap">
+    <table class="log-table">
+        <thead>
+            <tr>
+                <th>Book</th>
+                <th>Status</th>
+                <th>Best match</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in active %}
+            <tr>
+                <td class="log-book">
+                    {% if r.slug %}
+                    <a href="https://hardcover.app/books/{{ r.slug }}" target="_blank" rel="noopener noreferrer"><strong>{{ r.title }}</strong></a>
+                    {% else %}
+                    <strong>{{ r.title }}</strong>
+                    {% endif %}
+                    {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
+                    {% if r.hc_id < 0 %}<span class="wanted-manual-note" title="Added in the app{% if r.added_by %} by {{ r.added_by }}{% endif %}">app add{% if r.added_by %} · {{ r.added_by }}{% endif %}</span>{% endif %}
+                </td>
+                <td>
+                    {% if r.status == 'found' %}
+                    <span class="badge badge-success"><i data-lucide="check" aria-hidden="true"></i> Found</span>
+                    {% elif r.status == 'sent' %}
+                    <span class="badge badge-info">Sent</span>
+                    {% elif r.status == 'unmatched' %}
+                    <span class="badge badge-neutral" title="{{ r.detail }}">Not available yet</span>
+                    {% else %}
+                    <span class="badge badge-warning" title="{{ r.detail }}">Queued for search</span>
+                    {% endif %}
+                </td>
+                <td class="wanted-match">
+                    {% if r.best_title %}
+                    <span class="wanted-match-title" title="{{ r.best_title }}">
+                        {% if 'M4B' in (r.best_meta or '') %}<span class="badge badge-accent">M4B</span> {% endif %}{{ r.best_title }}
+                    </span>
+                    {% if r.best_meta %}<span class="wanted-match-meta">{{ r.best_meta }}</span>{% endif %}
+                    {% if r.verdict %}
+                    <span class="wanted-verdict" title="{{ r.verdict }}">
+                        <i data-lucide="sparkles" aria-hidden="true"></i> {{ r.verdict }}
+                    </span>
+                    {% endif %}
+                    {% if r.status == 'found' and r.detail %}
+                    <span class="wanted-match-meta">{{ r.detail }}</span>
+                    {% endif %}
+                    {% if r.alts %}
+                    <button type="button" class="wanted-alts-toggle" data-action="wanted-alts"
+                            data-target="wanted-alts-{{ r.hc_id }}" aria-expanded="false">
+                        +{{ r.alts | length }} alternative{{ 's' if r.alts | length != 1 }}
+                    </button>
+                    {% endif %}
+                    {% elif r.status == 'unmatched' %}
+                    <span class="wanted-match-meta">{{ r.detail or 'no confident match yet' }} · re-checks daily</span>
+                    {% endif %}
+                </td>
+                <td class="wanted-actions">
+                    {% if r.status == 'found' and r.best_link %}
+                    <button type="button" class="btn btn-primary btn-upgrade-search"
+                            data-action="download"
+                            data-link="{{ r.best_link | e }}"
+                            data-title="{{ (r.best_title or r.title) | e }}">
+                        <i data-lucide="download" aria-hidden="true"></i>
+                        Send
+                    </button>
+                    {% endif %}
+                    {% if r.status != 'sent' %}
+                    <a class="btn btn-secondary btn-upgrade-search" data-busy="Searching…"
+                       href="{{ url_for('pages.search', q=r.search_q) }}">
+                        <i data-lucide="search" aria-hidden="true"></i>
+                        Search
+                    </a>
+                    <form method="post" action="{{ url_for('actions.wanted_research', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                title="Re-check AudioBook Bay for this book now (uses your browser's Tor/Direct route)">
+                            <i data-lucide="rotate-cw" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                    {% endif %}
+                    {% if (r.status or 'wanted') in ('wanted', 'unmatched') %}
+                    <form method="post" action="{{ url_for('actions.wanted_skip', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                title="Skip this book — take it out of the search rotation until you allow it again">
+                            <i data-lucide="x" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                    {% endif %}
+                    {% if r.hc_id < 0 %}
+                    <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                title="Remove this app-added book from the wanted list">
+                            <i data-lucide="trash-2" aria-hidden="true"></i>
+                        </button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% if r.alts %}
+            <tr id="wanted-alts-{{ r.hc_id }}" class="wanted-alts-row" hidden>
+                <td colspan="4">
+                    {% for a in r.alts %}
+                    <div class="wanted-alt">
+                        {% if a.is_m4b %}<span class="badge badge-accent">M4B</span>{% endif %}
+                        {% if a.note %}<span class="badge badge-warning" title="AI note">{{ a.note }}</span>{% endif %}
+                        <span class="wanted-alt-title" title="{{ a.title }}">{{ a.title }}</span>
+                        {% if a.meta %}<span class="wanted-alt-meta">{{ a.meta }}</span>{% endif %}
+                        <span class="wanted-alt-actions">
+                            <a class="btn btn-secondary btn-upgrade-search" href="{{ a.link }}"
+                               target="_blank" rel="noopener noreferrer">
+                                <i data-lucide="external-link" aria-hidden="true"></i>
+                                View
+                            </a>
+                            <button type="button" class="btn btn-primary btn-upgrade-search"
+                                    data-action="download"
+                                    data-link="{{ a.link | e }}"
+                                    data-title="{{ a.title | e }}">
+                                <i data-lucide="download" aria-hidden="true"></i>
+                                Send
+                            </button>
+                        </span>
+                    </div>
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% elif not owned and not skipped %}
+{{ empty_state('bookmark', 'No wanted books found',
+               'Add books to your Want to Read list on Hardcover, then Sync now.') }}
+{% endif %}
+
+{# Done shelf: owned books are finished — collapsed out of the way, no
+   actions, and the worker never touches them again. #}
+{% if owned %}
+<section class="wanted-subsection">
+    <button type="button" class="wanted-section-toggle" data-action="wanted-alts"
+            data-target="wanted-owned-list" aria-expanded="false">
+        <i data-lucide="library-big" aria-hidden="true"></i>
+        In your library · {{ owned | length }}
+        <span class="wanted-section-note">done — never searched again</span>
+        <i data-lucide="chevron-down" class="wanted-section-chevron" aria-hidden="true"></i>
+    </button>
+    <div id="wanted-owned-list" hidden>
+        <div class="log-table-wrap">
+            <table class="log-table">
+                <tbody>
+                    {% for r in owned %}
+                    <tr>
+                        <td class="log-book">
+                            {% if r.slug %}
+                            <a href="https://hardcover.app/books/{{ r.slug }}" target="_blank" rel="noopener noreferrer"><strong>{{ r.title }}</strong></a>
+                            {% else %}
+                            <strong>{{ r.title }}</strong>
+                            {% endif %}
+                            {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
+                        </td>
+                        <td><span class="badge badge-neutral"><i data-lucide="library-big" aria-hidden="true"></i> In your library</span></td>
+                        <td class="wanted-actions">
+                            {% if r.hc_id < 0 %}
+                            <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                        title="Remove this app-added book from the list">
+                                    <i data-lucide="trash-2" aria-hidden="true"></i>
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{# Skipped shelf: out of the rotation until re-allowed. #}
+{% if skipped %}
+<section class="wanted-subsection">
+    <button type="button" class="wanted-section-toggle" data-action="wanted-alts"
+            data-target="wanted-skipped-list" aria-expanded="false">
+        <i data-lucide="eye-off" aria-hidden="true"></i>
+        Skipped · {{ skipped | length }}
+        <span class="wanted-section-note">out of the search rotation until you allow them again</span>
+        <i data-lucide="chevron-down" class="wanted-section-chevron" aria-hidden="true"></i>
+    </button>
+    <div id="wanted-skipped-list" hidden>
+        <div class="log-table-wrap">
+            <table class="log-table">
+                <tbody>
+                    {% for r in skipped %}
+                    <tr>
+                        <td class="log-book">
+                            {% if r.slug %}
+                            <a href="https://hardcover.app/books/{{ r.slug }}" target="_blank" rel="noopener noreferrer"><strong>{{ r.title }}</strong></a>
+                            {% else %}
+                            <strong>{{ r.title }}</strong>
+                            {% endif %}
+                            {% if r.author %}<span class="upgrade-author">— {{ r.author }}</span>{% endif %}
+                        </td>
+                        <td><span class="badge badge-neutral" title="{{ r.detail }}">Skipped</span></td>
+                        <td class="wanted-actions">
+                            <form method="post" action="{{ url_for('actions.wanted_unskip', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                        title="Put this book back in the search queue (due immediately)">
+                                    <i data-lucide="rotate-cw" aria-hidden="true"></i>
+                                    Allow again
+                                </button>
+                            </form>
+                            {% if r.hc_id < 0 %}
+                            <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
+                                        title="Remove this app-added book from the list">
+                                    <i data-lucide="trash-2" aria-hidden="true"></i>
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+<p class="upgrades-footnote">
+    Books added here in the app auto-download their best match as soon as one is found —
+    Hardcover-synced books follow the auto-download setting instead. “Not available yet”
+    books are re-checked about once a day; skip (✕) takes one out of the
+    rotation entirely until you allow it again. Found books are settled — their results and AI
+    rating are stored and never looked up again unless you hit re-check (↻) on that row.
+    Sending (manually or auto) marks the row — and once the download lands in Audiobookshelf,
+    it moves to “In your library”, where nothing more will ever happen to it.
+</p>
+{% endif %}
+{% endblock %}

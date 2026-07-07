@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% from "macros/empty_state.html" import render as empty_state %}
+
+{% block title %}Settings{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <span class="page-header-eyebrow">Admin</span>
+    <h1>Settings</h1>
+    <p>Feature configuration, editable without redeploying. Environment variables
+       and these settings combine — whichever was set most recently wins, and each
+       field says where its active value came from. Connection and download-client
+       settings stay in the deployment (the stack / <code>.env</code>).</p>
+</div>
+
+{% if not allowed %}
+{{ empty_state('shield', 'Admins only', 'Your user is not in LOG_ADMIN_USERS, which gates this page.') }}
+{% else %}
+
+{% if saved %}
+<div class="alert alert-success" role="status">
+    <i data-lucide="check-circle" aria-hidden="true"></i>
+    <span>Settings saved and applied — no restart needed.</span>
+</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-error" role="alert">
+    <i data-lucide="alert-circle" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+</div>
+{% endif %}
+{% if not store_enabled %}
+<div class="alert alert-warning" role="alert">
+    <i data-lucide="alert-triangle" aria-hidden="true"></i>
+    <span>Settings can't persist because the data volume is unavailable
+          (LOG_DB_PATH is empty or unwritable). Fix the <code>/data</code> mount to enable this page.</span>
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('admin.settings_save') }}" class="settings-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {% for section in sections %}
+    <section class="settings-section">
+        <h2>{{ section.title }}</h2>
+        <p class="settings-section-note">{{ section.note }}</p>
+
+        {% for item in section['items'] %}
+        <div class="settings-field">
+            <div class="settings-field-head">
+                <label for="set-{{ item.key }}">{{ item.label }}</label>
+                <span class="badge {{ 'badge-accent' if item.provenance == 'app'
+                                      else 'badge-warning' if item.provenance == 'superseded'
+                                      else 'badge-neutral' }}"
+                      title="env var: {{ item.key }}">{{ item.provenance_label }}</span>
+            </div>
+
+            {% if item.kind == 'secret' %}
+            <input type="password" id="set-{{ item.key }}" name="{{ item.key }}"
+                   autocomplete="new-password" {% if not store_enabled %}disabled{% endif %}
+                   placeholder="{{ '•••••• (set — leave blank to keep)' if item.is_set else '(not set)' }}">
+            <label class="settings-inline-check">
+                <input type="checkbox" name="clear_{{ item.key }}" {% if not store_enabled %}disabled{% endif %}>
+                Clear this key (turns the feature off)
+            </label>
+            {% elif item.kind == 'bool' %}
+            {# Unchecked checkboxes don't POST; the sentinel tells the server
+               this field was on the form at all. #}
+            <input type="hidden" name="present_{{ item.key }}" value="1">
+            <label class="settings-inline-check">
+                <input type="checkbox" id="set-{{ item.key }}" name="{{ item.key }}"
+                       {% if item.value %}checked{% endif %} {% if not store_enabled %}disabled{% endif %}>
+                Enabled
+            </label>
+            {% elif item.kind == 'choice' %}
+            <select id="set-{{ item.key }}" name="{{ item.key }}" {% if not store_enabled %}disabled{% endif %}>
+                {% for c in route_choices %}
+                <option value="{{ c }}" {% if item.value == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+            {% else %}
+            <input type="text" id="set-{{ item.key }}" name="{{ item.key }}"
+                   value="{{ item.value }}" {% if not store_enabled %}disabled{% endif %}>
+            {% endif %}
+
+            <p class="settings-help">{{ item.help }}</p>
+
+            {% if item.provenance in ('app', 'superseded') %}
+            <label class="settings-inline-check settings-reset">
+                <input type="checkbox" name="reset_{{ item.key }}" {% if not store_enabled %}disabled{% endif %}>
+                Remove the in-app override (go back to the environment value)
+            </label>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </section>
+    {% endfor %}
+
+    <div class="settings-actions">
+        <button type="submit" class="btn btn-primary" {% if not store_enabled %}disabled{% endif %}
+                data-busy="Applying…">
+            <i data-lucide="check" aria-hidden="true"></i>
+            Save &amp; apply
+        </button>
+        <p class="settings-help">Secrets are never displayed back — only replaced or cleared.</p>
+    </div>
+</form>
+{% endif %}
+{% endblock %}
