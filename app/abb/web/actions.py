@@ -169,6 +169,7 @@ def wanted_sync():
     except Exception as e:
         return jsonify({"message": f"Hardcover sync failed: {e}"}), 502
     s.wanted.requeue_unresolved()
+    s.wanted.sweep_owned_now()  # "Sync now" also answers "did my sends land?"
     return redirect(url_for("pages.wanted"))
 
 

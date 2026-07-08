@@ -1218,6 +1218,7 @@
       if (!res.ok) throw new Error(data.message || 'Failed to load downloads');
 
       const torrents = data.torrents || [];
+      delete list.dataset.loading;
       if (torrents.length === 0) {
         list.innerHTML =
           '<div class="empty-state">' +
@@ -1238,6 +1239,19 @@
       refreshIcons();
     } catch (err) {
       if (manual) showToast(err.message || "Couldn't refresh downloads", 'error');
+      // First load failed (e.g. the client API hiccuping right after an
+      // add): show a quiet retrying state instead of spinning forever —
+      // the 10s auto-refresh keeps trying.
+      if (list.dataset.loading) {
+        list.innerHTML =
+          '<div class="empty-state">' +
+          '<i data-lucide="wifi-off" class="empty-state-icon" aria-hidden="true"></i>' +
+          '<p class="empty-state-title">Couldn\'t reach the download client</p>' +
+          '<p class="empty-state-subtitle">' + escapeHtml(err.message || '') +
+          ' — retrying automatically.</p>' +
+          '</div>';
+        refreshIcons();
+      }
     } finally {
       refreshInFlight = false;
       if (manual && btn) btn.disabled = false;

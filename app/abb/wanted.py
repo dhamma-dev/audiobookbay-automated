@@ -43,7 +43,8 @@ ABB_REQUEST_RE = re.compile(r"\(\s*REQ", re.IGNORECASE)
 # straight back in the queue instead of waiting out the retry TTL.
 RENEW_AFTER = 3        # consecutive unreachable searches
 RENEW_COOLDOWN = 600   # seconds between automatic renewals
-OWNED_SWEEP_TTL = 300  # seconds between local "did it land in ABS yet?" sweeps
+OWNED_SWEEP_TTL = 120   # worker "did it land in ABS yet?" sweeps (also caps index age)
+CACHED_SWEEP_TTL = 30   # page-load sweeps against the already-cached index
 
 
 def wanted_queries(title, author):
@@ -124,6 +125,7 @@ class WantedService:
         # silently suppress the FIRST renewal/sweep.
         self._last_renew = None
         self._last_owned_sweep = None
+        self._last_cached_sweep = None
         self._stop = threading.Event()  # set when settings rebuild retires this instance
         # Rows with a search currently running. A quick-add's inline search
         # and the worker tick can otherwise race for the same fresh row —
@@ -416,8 +418,15 @@ class WantedService:
             self.store.record_download(log_user, title, link,
                                        infohash_from_magnet(magnet), "ok",
                                        "Wanted-list auto-download", route=route)
-            self.store.wanted_upsert({"hc_id": row["hc_id"], "status": "sent",
-                                      "detail": "auto-downloaded"})
+            update = {"hc_id": row["hc_id"], "status": "sent",
+                      "detail": "auto-downloaded"}
+            if not row.get("author"):
+                # Borrow the author from the listing we just sent, so the
+                # ownership sweep can author-gate this row later.
+                _bt, author = matching.split_title_author(title)
+                if author:
+                    update["author"] = author
+            self.store.wanted_upsert(update)
             log.info("auto-sent %r", title)
         except Exception as e:
             log.warning("wanted auto-send failed for %r: %s", row.get("title"), e)
@@ -586,20 +595,14 @@ class WantedService:
                     self.store.wanted_upsert({"hc_id": row["hc_id"], "searched_at": None})
         return ok
 
-    def _sweep_owned(self):
+    def _flip_owned(self, index):
         """Flip rows whose book has since landed in the Audiobookshelf
         library — a sent download completing is the main path, but manual
-        imports count too. Entirely local: the cached ABS index and the same
-        author-gated matcher as everywhere else, so precision-first still
-        holds (no confident match, no flip). This is what makes the
-        dashboard's promise — sent flips to "In your library" once the
-        download arrives — actually true."""
-        if not self.library.enabled:
-            return
-        now = time.monotonic()
-        if self._last_owned_sweep is not None and now - self._last_owned_sweep < OWNED_SWEEP_TTL:
-            return
-        self._last_owned_sweep = now
+        imports count too. Same author-gated matcher as everywhere else, so
+        precision-first still holds (no confident match, no flip). Rows added
+        without an author borrow one from the sent pick's listing title —
+        we know exactly which listing went out, so "Treasure Island" sent as
+        "Treasure Island - Robert Louis Stevenson" can still author-gate."""
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for row in self.store.wanted_rows():
             # Everything non-owned is checked — including skipped rows, since
@@ -607,10 +610,55 @@ class WantedService:
             if row.get("status") == "owned":
                 continue
             title, author = row.get("title") or "", row.get("author") or ""
-            if title and self.library.owns(title, author):
+            if not author and row.get("best_title"):
+                _bt, author = matching.split_title_author(row["best_title"])
+            if not title:
+                continue
+            tier, _s, _i, _r = matching.best_match(
+                {"raw": title, "title": title, "author": author, "language": ""}, index)
+            if tier == matching.STRONG:
                 self.store.wanted_upsert({"hc_id": row["hc_id"], "status": "owned",
                                           "detail": f"in your library {stamp}"})
                 log.info("%r is now in the library; row flipped to owned", title)
+
+    def _sweep_owned(self, force=False, max_age=None):
+        """The worker's sweep: throttled, and it demands an index at most
+        OWNED_SWEEP_TTL old — a fresh arrival must not wait out the full
+        15-minute ABS cache on top of the sweep cadence (observed live: the
+        search page's badge flipped while the wanted row sat on "Sent")."""
+        if not self.library.enabled:
+            return
+        now = time.monotonic()
+        if not force and self._last_owned_sweep is not None \
+                and now - self._last_owned_sweep < OWNED_SWEEP_TTL:
+            return
+        self._last_owned_sweep = now
+        index = self.library.get_index(
+            max_age=OWNED_SWEEP_TTL if max_age is None else max_age)
+        if index:
+            self._flip_owned(index)
+
+    def sweep_owned_now(self):
+        """Sync now's companion: an immediate sweep against a fresh index, so
+        the user's refresh-everything button also answers "did my downloads
+        land yet?"."""
+        self._sweep_owned(force=True, max_age=30)
+
+    def sweep_owned_cached(self):
+        """Page-load nudge: flip owned rows against whatever index is already
+        in memory. Pure local matching, never a network call — the wanted
+        page stays fast but reflects anything another page (a search, the
+        ownership poll) has already learned."""
+        if not self.library.enabled:
+            return
+        now = time.monotonic()
+        if self._last_cached_sweep is not None \
+                and now - self._last_cached_sweep < CACHED_SWEEP_TTL:
+            return
+        self._last_cached_sweep = now
+        index = self.library.peek_index()
+        if index:
+            self._flip_owned(index)
 
     def _worker(self):
         """Background loop: keep the wanted list synced and searched.

@@ -114,6 +114,11 @@ class AbsLibrary:
                 self._cache["fetched_at"] = now  # back off before retrying
             return self._cache["items"]
 
+    def peek_index(self):
+        """Whatever is already cached, without ever fetching — for page-load
+        nudges that must stay instant and local."""
+        return self._cache["items"] if self.enabled else []
+
     # --- Owned-copy quality ("Upgrade Radar") ------------------------------------
     def quality_flag(self, item):
         """A short human reason when an owned copy looks below par, else None.

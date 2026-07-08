@@ -314,3 +314,29 @@ def test_quota_errors_do_not_disable_thinking():
     assert _is_quota_error(Exception("429 RESOURCE_EXHAUSTED. spending cap"))
     assert _is_quota_error(Exception("Quota exceeded for quota metric"))
     assert not _is_quota_error(Exception("thinking_config is not supported for this model"))
+
+
+def test_status_page_is_an_instant_shell(client):
+    """No blocking download-client call on render — the JS fills it in, so a
+    transient client-API error can't become a full-page failure."""
+    r = client.get("/status")
+    assert r.status_code == 200
+    assert b'data-loading="1"' in r.data and b"Loading downloads" in r.data
+    assert b"Couldn't load downloads" not in r.data
+
+
+def test_wanted_page_load_flips_landed_rows(tmp_path):
+    """The user's own suggestion: small local queries on page load. A sent
+    row whose book is in the already-cached index flips on refresh."""
+    from tests.test_wanted import FakeLibrary
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    svc.wanted.library = FakeLibrary({"Treasure Island": "Robert Louis Stevenson"})
+    svc.store.wanted_upsert({"hc_id": 1, "title": "Treasure Island",
+                             "author": "Robert Louis Stevenson", "status": "sent"})
+    page = app.test_client().get("/wanted").data.decode()
+    assert "In your library" in page and 'id="wanted-owned-list"' in page
+    assert svc.store.wanted_rows()[0]["status"] == "owned"

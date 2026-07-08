@@ -125,12 +125,28 @@ def test_mark_sent_by_link_matches_pick_and_alternatives(tmp_path):
 
 
 class FakeLibrary:
-    def __init__(self, owned_titles, enabled=True):
+    """Owned books as {title: author} (a set means author-less items). The
+    sweep does real matcher passes against get_index(); owns() serves the
+    pre-search and add-time checks."""
+
+    def __init__(self, owned, enabled=True):
         self.enabled = enabled
-        self.owned_titles = set(owned_titles)
+        self.owned = dict(owned) if isinstance(owned, dict) else {t: "" for t in owned}
+        self.get_index_calls = []   # records max_age per call, for assertions
+
+    def _items(self):
+        return [{"title": t, "author": a, "series": [], "asin": "", "isbn": "",
+                 "language": ""} for t, a in self.owned.items()]
+
+    def get_index(self, max_age=None):
+        self.get_index_calls.append(max_age)
+        return self._items()
+
+    def peek_index(self):
+        return self._items()
 
     def owns(self, title, author):
-        return title in self.owned_titles
+        return title in self.owned
 
 
 def test_owned_sweep_flips_rows_that_landed(tmp_path):
@@ -138,7 +154,7 @@ def test_owned_sweep_flips_rows_that_landed(tmp_path):
     cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
     store = Store(cfg)
     store.init()
-    library = FakeLibrary({"I Know Why the Caged Bird Sings"})
+    library = FakeLibrary({"I Know Why the Caged Bird Sings": "Maya Angelou"})
     svc = WantedService(cfg, store, None, library, None, None, None, None)
 
     store.wanted_upsert({"hc_id": 1, "title": "I Know Why the Caged Bird Sings",
@@ -153,7 +169,7 @@ def test_owned_sweep_flips_rows_that_landed(tmp_path):
     assert rows[2]["status"] == "sent"             # no match -> no flip
 
     # The sweep is throttled: within its TTL a new arrival waits for the next pass.
-    library.owned_titles.add("Not Landed Yet")
+    library.owned["Not Landed Yet"] = "Someone"
     svc._sweep_owned()
     assert {r["hc_id"]: r for r in store.wanted_rows()}[2]["status"] == "sent"
     svc._last_owned_sweep = None                   # TTL elapsed (never-ran sentinel)
@@ -219,9 +235,11 @@ def test_owned_sweep_covers_skipped_rows(tmp_path):
     cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
     store = Store(cfg)
     store.init()
-    svc = WantedService(cfg, store, None, FakeLibrary({"Skipped But Owned"}),
+    svc = WantedService(cfg, store, None,
+                        FakeLibrary({"Skipped But Owned": "Some Author"}),
                         None, None, None, None)
-    store.wanted_upsert({"hc_id": 1, "title": "Skipped But Owned", "status": "skipped"})
+    store.wanted_upsert({"hc_id": 1, "title": "Skipped But Owned",
+                         "author": "Some Author", "status": "skipped"})
     svc._sweep_owned()
     assert store.wanted_rows()[0]["status"] == "owned"
 
@@ -469,3 +487,67 @@ def test_auto_policy_label(tmp_path):
     svc.config = make_config(hardcover_api_key="k", wanted_auto_format="any",
                              wanted_auto_min_kbps=100.0)
     assert svc.auto_policy_label() == "any format, ≥ 100 kbps"
+
+
+def test_worker_sweep_demands_a_fresh_index(tmp_path):
+    """The sweep must not wait out the full 15-minute ABS cache on top of its
+    own cadence — it asks for an index at most OWNED_SWEEP_TTL old."""
+    from abb.storage import Store
+    from abb.wanted import OWNED_SWEEP_TTL
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    library = FakeLibrary({})
+    svc = WantedService(cfg, store, None, library, None, None, None, None)
+    svc._sweep_owned()
+    assert library.get_index_calls == [OWNED_SWEEP_TTL]
+    svc.sweep_owned_now()   # Sync now's companion forces an even fresher one
+    assert library.get_index_calls[-1] == 30
+
+
+def test_cached_sweep_is_local_only(tmp_path):
+    """The page-load sweep flips rows using only the in-memory index — it
+    never triggers a fetch (get_index is not called at all)."""
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    library = FakeLibrary({"Treasure Island": "Robert Louis Stevenson"})
+    svc = WantedService(cfg, store, None, library, None, None, None, None)
+    store.wanted_upsert({"hc_id": 1, "title": "Treasure Island",
+                         "author": "Robert Louis Stevenson", "status": "sent"})
+    svc.sweep_owned_cached()
+    assert library.get_index_calls == []                     # local only
+    assert store.wanted_rows()[0]["status"] == "owned"
+
+
+def test_sweep_borrows_author_from_the_sent_pick(tmp_path):
+    """A quick-add without an author would otherwise never flip (title-only
+    caps at MAYBE) — the sweep borrows the author from the listing that was
+    actually sent."""
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    library = FakeLibrary({"Treasure Island": "Robert Louis Stevenson"})
+    svc = WantedService(cfg, store, None, library, None, None, None, None)
+    store.wanted_upsert({"hc_id": -1, "title": "Treasure island", "author": "",
+                         "status": "sent", "added_by": "dhamma",
+                         "best_title": "Treasure Island - Robert Louis Stevenson"})
+    svc.sweep_owned_now()
+    assert store.wanted_rows()[0]["status"] == "owned"
+
+
+def test_auto_send_backfills_the_row_author(tmp_path):
+    svc, store, clients = autodownload_service(tmp_path, M4B_BOOK)
+    store.wanted_upsert({"hc_id": 1, "author": ""})   # quick-add style: no author
+
+    class VerdictRank:  # the AI picks it (deterministic matching can't, sans author)
+        def wanted_verdict(self, title, author, listings):
+            return {"match_found": True, "ranked": [0], "notes": [], "reason": "ok"}
+
+    svc.rank = VerdictRank()
+    svc.search_and_autodownload(store.wanted_rows()[0])
+    (row,) = store.wanted_rows()
+    assert row["status"] == "sent"
+    assert row["author"] == "Frank Herbert"   # borrowed from the sent listing

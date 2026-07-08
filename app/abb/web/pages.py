@@ -122,12 +122,11 @@ def cover():
 
 @bp.route("/status")
 def status():
-    s = svc()
-    try:
-        torrent_list = s.clients.list_torrents()
-        return render_template("status.html", torrents=torrent_list)
-    except Exception as e:
-        return render_template("status.html", torrents=[], error=str(e))
+    """Renders instantly with a loading shell; the client JS fetches
+    /api/status on load and every 10s. A transient download-client hiccup
+    (put.io right after an add, observed live) is a quiet retry instead of a
+    full-page error."""
+    return render_template("status.html")
 
 
 @bp.route("/upgrades")
@@ -154,6 +153,7 @@ def wanted():
         return render_template("wanted.html", enabled=False, active=[], owned=[],
                                skipped=[], counts={},
                                auto=s.config.wanted_auto_download, sync_error="")
+    s.wanted.sweep_owned_cached()  # local-only: fold in anything already known
     rows = sorted(s.store.wanted_rows(), key=lambda r: (r.get("title") or "").lower())
     # Three shelves: the ACTIVE pipeline (still doing or awaiting something),
     # books that are DONE (in the library — nothing left to do), and books
