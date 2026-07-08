@@ -250,6 +250,11 @@ def sanitize_results(incoming):
     return results
 
 
+def _is_quota_error(e):
+    msg = str(e)
+    return "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
+
+
 def _schema_with_canonical():
     """A deep copy of the base schema with the per-result 'canonical' block
     added and required, used only when ABS matching is on."""
@@ -344,7 +349,11 @@ class RankService:
         try:
             return call()
         except Exception as e:
-            if "thinking_config" not in config_kwargs:
+            # The retry exists for models that reject a thinking budget. A
+            # quota/rate error (429) would fail the retry identically — and
+            # permanently disabling the fast thinking=0 path over a billing
+            # blip would silently slow every later call.
+            if "thinking_config" not in config_kwargs or _is_quota_error(e):
                 raise
             self._thinking_supported = False
             log.warning("thinking_budget=%s failed (%s); retrying without it.",

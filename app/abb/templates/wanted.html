@@ -113,7 +113,7 @@
     </span>
     <span class="downloads-updated">
         background searches via {{ route_label }} ·
-        {% if auto %}auto-download ON (M4B only){% else %}auto-download off{% endif %}
+        {% if auto %}auto-download ON ({{ auto_policy }}){% else %}auto-download off — app adds still auto ({{ auto_policy }}){% endif %}
     </span>
 </div>
 

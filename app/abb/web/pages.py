@@ -180,6 +180,7 @@ def wanted():
     return render_template("wanted.html", enabled=True, active=active, owned=owned,
                            skipped=skipped, counts=counts,
                            auto=s.config.wanted_auto_download,
+                           auto_policy=s.wanted.auto_policy_label(),
                            sync_error=s.wanted.sync_error,
                            route_label=s.wanted.route_label())
 

@@ -307,3 +307,10 @@ def test_nav_order_with_all_features(tmp_path):
     order = _nav_positions(page, ("Search", "Wanted", "Downloads",
                                   "Upgrades", "Log", "Settings"))
     assert order == sorted(order)
+
+
+def test_quota_errors_do_not_disable_thinking():
+    from abb.smart_sort import _is_quota_error
+    assert _is_quota_error(Exception("429 RESOURCE_EXHAUSTED. spending cap"))
+    assert _is_quota_error(Exception("Quota exceeded for quota metric"))
+    assert not _is_quota_error(Exception("thinking_config is not supported for this model"))

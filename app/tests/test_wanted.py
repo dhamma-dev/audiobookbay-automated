@@ -444,3 +444,28 @@ def test_auto_format_config_parsing():
     assert Config.from_env({"WANTED_AUTO_FORMAT": "flac"}).wanted_auto_format == "m4b"
     assert coerce("WANTED_AUTO_FORMAT", "any", "m4b") == "any"
     assert coerce("WANTED_AUTO_FORMAT", "nonsense", "m4b") == "m4b"
+
+
+def test_inflight_guard_prevents_duplicate_searches(tmp_path):
+    """A quick-add's inline search and the worker tick must not both search
+    the same row (observed live: double scrape, double Gemini verdict)."""
+    svc, store, clients = autodownload_service(tmp_path, M4B_BOOK)
+    row = store.wanted_rows()[0]
+
+    # Someone else (the inline search) is mid-flight on this row.
+    svc._inflight.add(row["hc_id"])
+    assert svc.search_one(row) == "in-flight"
+    assert store.wanted_rows()[0]["status"] == "wanted"   # untouched
+    svc._inflight.discard(row["hc_id"])
+
+    # A normal search registers and always deregisters, even on success.
+    assert svc.search_one(row) == "found"
+    assert svc._inflight == set()
+
+
+def test_auto_policy_label(tmp_path):
+    svc, _, _ = autodownload_service(tmp_path, M4B_BOOK)
+    assert svc.auto_policy_label() == "M4B only"
+    svc.config = make_config(hardcover_api_key="k", wanted_auto_format="any",
+                             wanted_auto_min_kbps=100.0)
+    assert svc.auto_policy_label() == "any format, ≥ 100 kbps"

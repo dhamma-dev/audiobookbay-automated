@@ -125,6 +125,12 @@ class WantedService:
         self._last_renew = None
         self._last_owned_sweep = None
         self._stop = threading.Event()  # set when settings rebuild retires this instance
+        # Rows with a search currently running. A quick-add's inline search
+        # and the worker tick can otherwise race for the same fresh row —
+        # observed live: double scrape, double Gemini verdict, and (had it
+        # matched) potentially a double send.
+        self._inflight = set()
+        self._inflight_lock = threading.Lock()
 
     # --- Hardcover -------------------------------------------------------------
     def _gql(self, query, variables=None):
@@ -196,6 +202,13 @@ class WantedService:
             return False
         return self.config.use_tor and self.tor.available
 
+    def auto_policy_label(self):
+        """The universal auto-download requirements, as shown to humans."""
+        label = "M4B only" if self.config.wanted_auto_format == "m4b" else "any format"
+        if self.config.wanted_auto_min_kbps:
+            label += f", ≥ {self.config.wanted_auto_min_kbps:g} kbps"
+        return label
+
     def route_label(self):
         if self.config.wanted_route in ("tor", "direct"):
             return self.config.wanted_route.capitalize()
@@ -239,6 +252,11 @@ class WantedService:
         re-search cadence."""
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         title, author = row["title"], row.get("author") or ""
+        with self._inflight_lock:
+            if row["hc_id"] in self._inflight:
+                log.info("%r: a search is already in flight; skipping the duplicate", title)
+                return "in-flight"
+            self._inflight.add(row["hc_id"])
         try:
             if self.library.owns(title, author):
                 self.store.wanted_upsert({"hc_id": row["hc_id"], "status": "owned",
@@ -319,6 +337,9 @@ class WantedService:
             self.store.wanted_upsert({"hc_id": row["hc_id"], "status": "wanted",
                                       "searched_at": now, "detail": str(e)})
             return "wanted"
+        finally:
+            with self._inflight_lock:
+                self._inflight.discard(row["hc_id"])
 
     def mark_sent_by_link(self, link):
         """Called after a successful /send: if that link is a wanted book's
@@ -613,6 +634,8 @@ class WantedService:
                                  len(due), self.route_label())
                     for row in due[:3]:
                         status = self.search_and_autodownload(row, sess=self._session())
+                        if status == "in-flight":
+                            continue  # someone else is already searching this row
                         self._note_result(status)
                         if status == "unreachable":
                             break  # this route is down right now; stop burning the tick
@@ -634,7 +657,8 @@ class WantedService:
             requeued = 0
             log.warning("wanted requeue at boot failed: %s", e)
         threading.Thread(target=self._worker, daemon=True, name="wanted-worker").start()
-        log.info("Hardcover wanted list enabled%s%s",
-                 ", auto-download ON (M4B-only)" if self.config.wanted_auto_download
-                 else ", dashboard only",
+        log.info("Hardcover wanted list enabled; auto-download %s, policy: %s%s",
+                 "ON" if self.config.wanted_auto_download
+                 else "off for Hardcover rows (app adds always auto)",
+                 self.auto_policy_label(),
                  f"; requeued {requeued} open books for a fresh sweep" if requeued else "")
