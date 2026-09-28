@@ -212,7 +212,13 @@ GEMINI_API_KEY=your-google-ai-studio-key   # Enables Smart sort when set
 RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
 SMART_PREFETCH_DEFAULT=off                  # Optional; "on" prefetches by default
 RANK_THINKING_BUDGET=0                       # Default 0 (fastest); N allows thinking; negative = model default
+GEMINI_TIMEOUT=60                            # Optional; seconds per Gemini call (0/off = no limit)
 ```
+
+Every Gemini call — Smart sort and the wanted-list verdict — gives up after
+`GEMINI_TIMEOUT` seconds, so a stalled model can't hang a search or the
+background worker (a wanted book then falls back to the deterministic pick).
+Keep it under 120s: the browser stops waiting for Smart sort after that.
 
 > **Why the budget defaults to 0:** flash models spend time "thinking" before
 > answering, and for a structured ranking task that's mostly wasted latency.
@@ -221,7 +227,8 @@ RANK_THINKING_BUDGET=0                       # Default 0 (fastest); N allows thi
 > and far less variance. Raise it to a positive token count if you ever notice
 > worse series/ownership matching, or set a negative value to restore the
 > model's own default thinking. The server logs `[SMART SORT] … in Xs` so you
-> can compare, and if a model rejects the budget the app retries without it.
+> can compare, and if a model rejects the budget the app retries without it
+> (only then — a timeout or an overloaded model never switches the fast path off).
 
 > **Privacy note:** unlike AudioBook Bay scraping, the Smart sort request goes
 > **directly to Google's API and is _not_ routed through Tor**. Only your search

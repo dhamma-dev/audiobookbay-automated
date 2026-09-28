@@ -333,13 +333,6 @@ def test_nav_order_with_all_features(tmp_path):
     assert order == sorted(order)
 
 
-def test_quota_errors_do_not_disable_thinking():
-    from abb.smart_sort import _is_quota_error
-    assert _is_quota_error(Exception("429 RESOURCE_EXHAUSTED. spending cap"))
-    assert _is_quota_error(Exception("Quota exceeded for quota metric"))
-    assert not _is_quota_error(Exception("thinking_config is not supported for this model"))
-
-
 def test_status_page_is_an_instant_shell(client):
     """No blocking download-client call on render — the JS fills it in, so a
     transient client-API error can't become a full-page failure."""

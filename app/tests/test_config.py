@@ -17,6 +17,10 @@ def test_timeout_and_thinking_parsing():
     assert Config.from_env({"REQUEST_TIMEOUT": "90"}).request_timeout == 90.0
     assert Config.from_env({"RANK_THINKING_BUDGET": "-1"}).rank_thinking_budget is None
     assert Config.from_env({"RANK_THINKING_BUDGET": "256"}).rank_thinking_budget == 256
+    assert Config.from_env({}).gemini_timeout == 60.0
+    assert Config.from_env({"GEMINI_TIMEOUT": ""}).gemini_timeout == 60.0  # compose's empty unset
+    assert Config.from_env({"GEMINI_TIMEOUT": "off"}).gemini_timeout is None
+    assert Config.from_env({"GEMINI_TIMEOUT": "90"}).gemini_timeout == 90.0
 
 
 def test_dl_url_parsing():

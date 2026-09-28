@@ -130,9 +130,12 @@ Client posts `{query, results}` (the slim payload). Server re-sanitizes to
 `id + RANK_FIELDS`, calls `RankService.rank`, returns a JSON verdict the client
 applies **without re-rendering** — it reorders/wraps the existing cards.
 
-`rank` (temperature 0, structured schema; reasoning capped by
-`RANK_THINKING_BUDGET` — default 0, with a retry-without-it fallback; completed
-rankings cached for `RANK_CACHE_TTL`) asks Gemini for:
+`rank` (temperature 0, structured schema; every Gemini call bounded by
+`GEMINI_TIMEOUT` — default 60s, since the SDK's own default is no timeout;
+reasoning capped by `RANK_THINKING_BUDGET` — default 0, retried without it only
+when the model rejects the thinking config (a 400 naming it), never on a
+timeout, 429 or 5xx; completed rankings cached for `RANK_CACHE_TTL`) asks
+Gemini for:
 - `ordering` + `buckets` (strong/possible/unlikely) — relevance sort + filtering.
 - `ambiguous` + `interpretations` — clickable "did you mean" chips.
 - `series` — ordered entries (seq/title/best_id/alt_ids), `collections`

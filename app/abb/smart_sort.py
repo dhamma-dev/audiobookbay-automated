@@ -250,9 +250,13 @@ def sanitize_results(incoming):
     return results
 
 
-def _is_quota_error(e):
-    msg = str(e)
-    return "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
+def _rejects_thinking(e):
+    """True only when the model refused the thinking config itself: a 400
+    that names it ("thinking budget is not supported", "only works in
+    thinking mode"). That is the one failure a retry without the budget can
+    fix; a timeout, quota (429) or server error (5xx) would fail it just the
+    same."""
+    return getattr(e, "code", None) == 400 and "thinking" in str(e).lower()
 
 
 def _schema_with_canonical():
@@ -325,12 +329,17 @@ class RankService:
     # --- Gemini plumbing ----------------------------------------------------------
     def _generate(self, system_instruction, schema, prompt):
         """One structured generate_content call with the shared temperature /
-        thinking-budget handling. A budget the model rejects is retried once
-        without and then never sent again."""
+        thinking-budget handling, bounded by GEMINI_TIMEOUT — the SDK's own
+        default is no timeout, so one hung call could pin a request thread or
+        stall the whole wanted worker. A budget the model rejects is retried
+        once without and then never sent again."""
+        import httpx
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self.config.gemini_api_key)
+        timeout = self.config.gemini_timeout
+        http_options = types.HttpOptions(timeout=int(timeout * 1000)) if timeout else None
+        client = genai.Client(api_key=self.config.gemini_api_key, http_options=http_options)
         config_kwargs = dict(
             system_instruction=system_instruction,
             response_mime_type="application/json",
@@ -342,21 +351,29 @@ class RankService:
                 thinking_budget=self.config.rank_thinking_budget)
 
         def call():
-            return client.models.generate_content(
-                model=self.config.rank_model, contents=prompt,
-                config=types.GenerateContentConfig(**config_kwargs))
+            try:
+                return client.models.generate_content(
+                    model=self.config.rank_model, contents=prompt,
+                    config=types.GenerateContentConfig(**config_kwargs))
+            except httpx.TimeoutException as e:
+                # A plain message for the smart-sort toast and the worker log,
+                # rather than an httpx internal.
+                raise TimeoutError(f"Gemini didn't answer within {timeout:g}s" if timeout
+                                   else "Gemini timed out") from e
 
         try:
             return call()
         except Exception as e:
-            # The retry exists for models that reject a thinking budget. A
-            # quota/rate error (429) would fail the retry identically — and
-            # permanently disabling the fast thinking=0 path over a billing
-            # blip would silently slow every later call.
-            if "thinking_config" not in config_kwargs or _is_quota_error(e):
+            # The retry exists for models that reject a thinking budget — and
+            # only for that. Retrying a timeout, a quota error (429) or an
+            # overloaded model (503) would fail the same way, and it used to
+            # also switch the fast thinking=0 path off for good, silently
+            # slowing every later call over one transient blip.
+            if "thinking_config" not in config_kwargs or not _rejects_thinking(e):
                 raise
             self._thinking_supported = False
-            log.warning("thinking_budget=%s failed (%s); retrying without it.",
+            log.warning("%s rejected thinking_budget=%s (%s); retrying without it "
+                        "(and not sending it again).", self.config.rank_model,
                         self.config.rank_thinking_budget, e)
             config_kwargs.pop("thinking_config")
             return call()

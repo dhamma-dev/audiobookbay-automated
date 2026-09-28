@@ -66,9 +66,10 @@ def is_truthy(value: str | None) -> bool:
     return (value or "").lower() not in ("0", "false", "no", "off", "")
 
 
-def _parse_timeout(raw: str | None) -> float | None:
-    """"45" -> 45.0; "0"/"off"/"none" -> None (unbounded, the old behaviour)."""
-    v = (raw or "45").strip().lower()
+def _parse_timeout(raw: str | None, default: str = "45") -> float | None:
+    """"45" -> 45.0; "0"/"off"/"none" -> None (unbounded, the old behaviour).
+    Unset or empty -> `default`."""
+    v = (raw or default).strip().lower()
     return None if v in ("0", "off", "none") else float(v)
 
 
@@ -122,6 +123,9 @@ class Config:
     rank_model: str = "gemini-3.5-flash"
     smart_prefetch_default: str = "off"     # "on" | "off"
     rank_thinking_budget: int | None = 0
+    # Seconds per Gemini call. The SDK's own default is no timeout at all; a
+    # hung call used to pin a request thread or stall the wanted worker.
+    gemini_timeout: float | None = 60.0
     rank_cache_ttl: int = 900
     preferred_language: str = ""
 
@@ -205,6 +209,7 @@ class Config:
             rank_model=g("RANK_MODEL", "gemini-3.5-flash"),
             smart_prefetch_default="on" if is_truthy(g("SMART_PREFETCH_DEFAULT", "off")) else "off",
             rank_thinking_budget=_parse_thinking_budget(g("RANK_THINKING_BUDGET")),
+            gemini_timeout=_parse_timeout(g("GEMINI_TIMEOUT"), default="60"),
             rank_cache_ttl=int(g("RANK_CACHE_TTL", "900")),
             preferred_language=(g("PREFERRED_LANGUAGE") or "").strip(),
             log_db_path=g("LOG_DB_PATH", "/data/downloads.db"),
@@ -307,7 +312,8 @@ class Config:
                 f"  put.io: client id {onoff(self.putio_client_id)}, secret {onoff(self.putio_client_secret)}"
                 f", static token {onoff(self.putio_access_token)}, folder {self.putio_save_parent_id or '(root)'}")
         lines += [
-            "Smart sort: " + (f"enabled ({self.rank_model}, thinking={self.rank_thinking_budget})"
+            "Smart sort: " + (f"enabled ({self.rank_model}, thinking={self.rank_thinking_budget}, "
+                              f"timeout {f'{self.gemini_timeout:g}s' if self.gemini_timeout else 'unbounded'})"
                               if self.smart_sort_enabled else "disabled (no GEMINI_API_KEY)"),
             "ABS matching: " + (f"enabled ({self.abs_url})" if self.abs_enabled else "disabled"),
             "Download log: " + (self.log_db_path if self.log_enabled else "disabled (LOG_DB_PATH empty)")
