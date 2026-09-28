@@ -39,7 +39,7 @@ jobs:
         run: python -m pytest app -q
 
       - name: Syntax-check client JS
-        run: node --check app/abb/static/js/app.js && node --check app/abb/static/js/icons.js
+        run: for f in app/abb/static/js/*.js; do node --check "$f" || exit 1; done
 
   build:
     name: Build and Push Multi-Architecture Image to GHCR

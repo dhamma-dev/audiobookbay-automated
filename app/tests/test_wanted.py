@@ -348,7 +348,7 @@ class FakeScraper:
         self.sessions.append(("search", sess))
         return [dict(b) for b in self.books]
 
-    def extract_magnet_link(self, link, sess=None):
+    def extract_magnet_link(self, link, sess=None, title=None):
         self.sessions.append(("magnet", sess))
         return "magnet:?xt=urn:btih:abc123&tr=x"
 

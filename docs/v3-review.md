@@ -62,10 +62,10 @@ ABS or client traffic). Numbers below are measured, not estimated.
 | R2 | ABS back-off only works once a snapshot exists; fetch holds the lock searches wait on; an empty home-page load triggers a fetch | ABS down/misconfigured → every search retries (5 calls → 5 fetches, 20 s timeout each) | Back off on failure regardless; skip when `books` is empty; serve stale while refreshing |
 | R3 | Gemini calls have no timeout (`google-genai` defaults to `None`) | One hung call pins a request thread or **stalls the whole wanted worker** (no syncs, searches, sweeps) | **Fixed:** `GEMINI_TIMEOUT` (default 60s) via `HttpOptions`; a timeout surfaces as "Gemini didn't answer within 60s" and the wanted verdict falls back to the deterministic pick. Verified end to end against a silent socket |
 | R4 | Any non-quota error permanently disables the thinking=0 path | A transient 503 makes every later rank ~4–5× slower until restart — and with R3's timeout, *every* timeout would have too, so the two were fixed together | **Fixed:** the retry-without-thinking fires only on a 400 that names the thinking config (`_rejects_thinking`); timeouts, 429s and 5xx fail once and keep the fast path |
-| R5 | qBittorrent's add result (`Fails.` / failure count) is ignored | Rejected magnets report "Download added" | Check the return value |
-| R6 | Compose passes unset keys as empty strings; `Config.from_env` treats "" as a value | `DL_CATEGORY` default lost (qBittorrent/Deluge torrents uncategorized, Downloads lists every uncategorized torrent); `ABS_LOW_KBPS=""` crashes boot | One env helper that treats "" as unset |
+| R5 | qBittorrent's add result (`Fails.` / failure count) is ignored | Rejected magnets report "Download added" | **Fixed:** `qbt_add_failed` reads both response shapes; a refusal or a duplicate (409) is an error with a plain message |
+| R6 | Compose passes unset keys as empty strings; `Config.from_env` treats "" as a value | `DL_CATEGORY` default lost (qBittorrent/Deluge torrents uncategorized, Downloads lists every uncategorized torrent); `ABS_LOW_KBPS=""` crashes boot | **Fixed:** blank = unset in `from_env` (except `LOG_DB_PATH`, where empty is the documented off switch); a test replays the shipped compose file with nothing set |
 | R7 | Transmission list ignores `DL_SCHEME` and filters nothing | HTTPS Transmission can add but not list; Downloads shows the whole client | Pass `protocol`; label on add, filter on list |
-| R8 | Magnets carry no `dn=`; fallback trackers are long dead | Clients show a 40-char hash until metadata arrives | Add `dn=<title>`; refresh the fallback list |
+| R8 | Magnets carry no `dn=`; fallback trackers are long dead | Clients show a 40-char hash until metadata arrives | **`dn=` fixed:** every magnet carries the listing title. *Open:* refresh the fallback tracker list (only used when a detail page lists none) |
 | R9 | "One Gemini call per book, ever" holds for *found* rows only | Unmatched rows are re-rated daily, on every restart, and on every *Sync now* | Store a fingerprint of the judged listings; skip the call when nothing new appeared |
 | R10 | A failed auto-send (client down, magnet fetch failed) never retries | Quick add's "dip out, it shows up" silently stops at *Found* | Retry on a backoff, a few times |
 | R11 | Quick add runs search → verdict → send inside the form POST | Can take a minute over Tor | Enqueue and redirect; the row shows "searching…" |
@@ -79,14 +79,14 @@ ABS or client traffic). Numbers below are measured, not estimated.
 | # | Finding | Consequence | Recommended fix |
 |---|---|---|---|
 | S1 | The shipped compose publishes `5078` on all interfaces, while identity trust requires proxy-only reachability (the README's trust note says so) | Anyone on the LAN can forge `X-authentik-username`. Since v2.1 this matters more: Settings is open to everyone when `LOG_ADMIN_USERS` is unset, and changing `ABS_URL` keeps the stored `ABS_TOKEN` — the token can be re-pointed at any host | No published port (or `127.0.0.1:`) by default; optional `TRUSTED_PROXIES` check before honouring identity headers; clear/require the token when its URL changes |
-| S2 | The v2 CSP (`script-src 'self'`) blocks the inline `onerror` cover fallbacks in `book_card.html` | Dead covers render as broken images / alt text (console: "Executing inline event handler violates…") | A capture-phase `error` listener in `app.js` |
+| S2 | The v2 CSP (`script-src 'self'`) blocks the inline `onerror` cover fallbacks in `book_card.html` | Dead covers render as broken images / alt text (console: "Executing inline event handler violates…") | **Fixed:** `static/js/covers.js`, a capture-phase `error` listener loaded in `<head>` (app.js is deferred, so a fast failure would beat it); a test fails on any inline handler in rendered pages |
 
 ## Open — UX
 
 | # | Finding | Recommended fix |
 |---|---|---|
 | U1 | **Phones:** at 375 px the nav needs ~850 px — only *Search* and *Wanted* fit, the rest (and the Tor/Direct control) are off-screen and the page scrolls sideways; the Wanted table wraps titles one word per line and pushes Send/re-check/skip off-screen | Icon-only nav under 640 px (icons exist); stacked wanted rows |
-| U2 | The AJAX search never updates the URL — reload/back lose results, searches can't be shared though `GET /?q=` works | `history.pushState` |
+| U2 | The AJAX search never updates the URL — reload/back lose results, searches can't be shared though `GET /?q=` works | **Fixed:** each search pushes `/?q=…`; Back/Forward restore from an in-memory cache (no re-scrape), a miss reloads the URL |
 | U3 | Failed form actions render a raw JSON page (e.g. *Sync now* when the Hardcover token expires on Jan 1) | Redirect with a banner |
 | U4 | Downloads shows raw qBittorrent states ("MetaDL", "StalledDL") and polls every 10 s in hidden tabs | Friendly state names; skip when `document.hidden` |
 | U5 | Small: log times in UTC; after *Back*, `data-busy` buttons keep spinning (bfcache); no confirm/undo on remove; a Tier-1 badge isn't cleared when Tier 2 contradicts it (rare now) | — |

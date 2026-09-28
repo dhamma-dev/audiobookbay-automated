@@ -168,7 +168,14 @@ class Config:
     @classmethod
     def from_env(cls, env=None) -> "Config":
         env = os.environ if env is None else env
-        g = env.get
+
+        def g(key, default=None):
+            """The env value, blank treated as unset. docker-compose passes
+            every listed-but-unset key as an empty string (`KEY=${KEY}`), and
+            "" must not beat a default (DL_CATEGORY once arrived as "", so
+            torrents went uncategorized) or crash a number (ABS_LOW_KBPS="")."""
+            value = env.get(key)
+            return default if value is None or not value.strip() else value
 
         dl_url = g("DL_URL")
         dl_scheme, dl_host, dl_port = g("DL_SCHEME", "http"), g("DL_HOST"), g("DL_PORT")
@@ -212,7 +219,9 @@ class Config:
             gemini_timeout=_parse_timeout(g("GEMINI_TIMEOUT"), default="60"),
             rank_cache_ttl=int(g("RANK_CACHE_TTL", "900")),
             preferred_language=(g("PREFERRED_LANGUAGE") or "").strip(),
-            log_db_path=g("LOG_DB_PATH", "/data/downloads.db"),
+            # Raw on purpose: an explicitly empty LOG_DB_PATH is the documented
+            # (v1) way to turn the log off — the one key where blank means something.
+            log_db_path=env.get("LOG_DB_PATH", "/data/downloads.db"),
             log_admin_users=frozenset(
                 u.strip() for u in g("LOG_ADMIN_USERS", "").split(",") if u.strip()
             ),

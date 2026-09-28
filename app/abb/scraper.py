@@ -153,12 +153,14 @@ class Scraper:
             results.extend(page_results)
         return results
 
-    def extract_magnet_link(self, details_url, sess=None):
+    def extract_magnet_link(self, details_url, sess=None, title=None):
         """Read the Info Hash + trackers off a detail page and build a magnet
         link. Returns None on any fetch/parse failure. `sess` pins the route
         (the wanted worker passes the session its search used, so the detail
         page goes out the same way); TorUnavailable propagates so callers can
-        say "Tor is down" instead of "no magnet found"."""
+        say "Tor is down" instead of "no magnet found". `title` becomes the
+        magnet's display name (dn=), so the download client shows the book
+        rather than a 40-character hash until the torrent's metadata arrives."""
         sess = sess or self.outbound.scrape_session()
         try:
             response = sess.get(
@@ -179,8 +181,11 @@ class Scraper:
             tracker_rows = soup.find_all("td", string=re.compile(r"udp://|http://", re.IGNORECASE))
             trackers = [row.text.strip() for row in tracker_rows] or list(DEFAULT_TRACKERS)
 
-            trackers_query = "&".join(f"tr={requests.utils.quote(t)}" for t in trackers)
-            magnet = f"magnet:?xt=urn:btih:{info_hash}&{trackers_query}"
+            parts = [f"xt=urn:btih:{info_hash}"]
+            if title:
+                parts.append(f"dn={requests.utils.quote(title)}")
+            parts += [f"tr={requests.utils.quote(t)}" for t in trackers]
+            magnet = "magnet:?" + "&".join(parts)
             log.debug("generated magnet link: %s", magnet)
             return magnet
         except Exception as e:

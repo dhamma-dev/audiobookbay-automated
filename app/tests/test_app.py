@@ -186,6 +186,31 @@ def test_search_post_renders_result_cards(client):
     assert 'id="search-results-data"' not in body  # no Gemini key -> no payload blob
 
 
+def test_no_inline_event_handlers_anywhere(tmp_path):
+    """The CSP (script-src 'self') silently blocks inline handlers — that's
+    how the cover fallback broke in v2. Scan rendered pages, results
+    included; dead covers are handled by static/js/covers.js instead."""
+    import re
+    cfg = make_config(log_db_path=str(tmp_path / "p.db"), hardcover_api_key="k",
+                      log_admin_users=frozenset())
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    svc.scraper.search = lambda q, max_pages=5, sess=None: [{
+        "title": "Dune - Frank Herbert", "link": "https://audiobookbay.lu/abss/dune/",
+        "cover": "https://audiobookbay.lu/c/dune.jpg", "size": "1 GB", "format": "M4B",
+        "bitrate": "64 Kbps", "language": "English", "keywords": [], "is_m4b": True}]
+    c = app.test_client()
+    token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()
+    pages = [c.post("/", data={"query": "dune", "csrf_token": token}).data.decode()]
+    pages += [c.get(p).data.decode() for p in ("/", "/wanted", "/status", "/upgrades",
+                                               "/log", "/settings")]
+    for html in pages:
+        assert not re.search(r"<[^>]+\son[a-z]+\s*=", html), "inline handler found"
+    assert "data-fallback-src=" in pages[0] and "js/covers.js" in pages[0]
+
+
 def test_wanted_page_shelves_and_skip_flow(tmp_path):
     """Owned and skipped rows leave the active table for their own collapsed
     shelves; skip/unskip round-trips through the real endpoints."""

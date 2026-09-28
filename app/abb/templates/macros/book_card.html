@@ -9,6 +9,8 @@
     M4B
   </div>
   {% endif %}
+  {# No inline onerror: the CSP blocks inline handlers. static/js/covers.js
+     drops a dead backdrop and swaps a dead cover to data-fallback-src. #}
   <div class="book-cover-container">
     <img
       src="{{ book.cover }}"
@@ -16,14 +18,13 @@
       aria-hidden="true"
       class="book-cover-bg"
       loading="lazy"
-      onerror="this.remove();"
     >
     <img
       src="{{ book.cover }}"
       alt="{{ book.title }} cover"
       class="book-cover"
       loading="lazy"
-      onerror="this.onerror=null;this.src='{{ url_for('static', filename='images/default-cover.svg') }}';"
+      data-fallback-src="{{ url_for('static', filename='images/default-cover.svg') }}"
     >
   </div>
   <div class="book-details">

@@ -12,7 +12,7 @@ import re
 
 import requests
 from flask import has_request_context, session as flask_session
-from qbittorrentapi import Client as QbtClient
+from qbittorrentapi import Client as QbtClient, Conflict409Error
 from transmission_rpc import Client as TransmissionClient
 from deluge_web_client import DelugeWebClient
 
@@ -28,6 +28,19 @@ class PutioNotConnected(Exception):
 
 def sanitize_title(title):
     return re.sub(r'[<>:"/\\|?*]', "", title).strip()
+
+
+def qbt_add_failed(result):
+    """qBittorrent reports a refused add in the RESPONSE, not as an HTTP
+    error: "Fails." before Web API v2.14, a failure count after. One magnet
+    per call, so it failed when something failed and nothing was added or
+    queued. An unrecognized shape counts as success rather than a guess."""
+    if isinstance(result, str):
+        return result.strip().lower().startswith("fail")
+    if hasattr(result, "get"):
+        added = (result.get("success_count") or 0) + (result.get("pending_count") or 0)
+        return bool(result.get("failure_count")) and not added
+    return False
 
 
 class ClientRegistry:
@@ -69,8 +82,15 @@ class ClientRegistry:
         return qb
 
     def _qbittorrent_add(self, magnet_link, title):
-        self._qbt().torrents_add(urls=magnet_link, save_path=self._save_path(title),
-                                 category=self.config.dl_category)
+        try:
+            result = self._qbt().torrents_add(urls=magnet_link, save_path=self._save_path(title),
+                                              category=self.config.dl_category)
+        except Conflict409Error:
+            raise RuntimeError("qBittorrent already has this torrent.") from None
+        # Ignoring the result used to say "Download added" for refused magnets.
+        if qbt_add_failed(result):
+            raise RuntimeError("qBittorrent refused the torrent (the magnet may be invalid, "
+                               "or it's already in the client).")
 
     def _qbittorrent_list(self):
         return [

@@ -437,7 +437,7 @@ class WantedService:
                                                     f"send it manually if you want it)"})
                 log.info("auto-download skipped for %r: best match %s", title, reason)
                 return
-            magnet = self.scraper.extract_magnet_link(link, sess=sess)
+            magnet = self.scraper.extract_magnet_link(link, sess=sess, title=title)
             if not magnet:
                 self.store.record_download(log_user, title, link, None, "error",
                                            "Failed to extract magnet link", route=route)

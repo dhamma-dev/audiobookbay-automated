@@ -41,7 +41,7 @@ Workflow, testing, and deploy details. The essentials are in
 
 ```bash
 cd app && python -m pytest -q          # the suite CI runs (needs requirements-dev.txt)
-node --check app/abb/static/js/app.js  # and icons.js if you touched it
+for f in app/abb/static/js/*.js; do node --check "$f"; done   # what CI runs
 python3 app/abs_match_spike.py --selftest   # matcher eval CLI, offline mode
 ```
 

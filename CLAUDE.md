@@ -42,7 +42,7 @@ why v2 looks like this.
 | `app/abb/identity.py`, `security.py` | Proxy-header identity; CSRF, security headers, persisted secret key. |
 | `app/abb/settings.py` | In-app settings overlay: `FEATURE_SETTINGS` overrides from SQLite, most-recently-set-wins vs env (snapshot comparison). UI in `web/admin.py`. |
 | `app/abb/web/` | Blueprints: `pages` (HTML), `actions` (send/settings/wanted POSTs), `api` (JSON + `/healthz`), `putio` (OAuth). |
-| `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**). |
+| `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**) + `covers.js` (cover fallbacks; in `<head>` so it's listening before images load). **No inline event handlers** (`onerror=` etc.) — the CSP blocks them. |
 | `app/tests/` | pytest suite; CI gates image builds on it. |
 | `app/abs_match_spike.py` | Standalone matcher eval CLI; imports `abb.matching` only. |
 | `Dockerfile`, `docker-compose.yaml` | python:3.12-slim + tor, non-root (uid 1000), `HEALTHCHECK` → `/healthz`. |
@@ -75,7 +75,7 @@ why v2 looks like this.
 
 # Before committing:
 cd app && python -m pytest -q                 # the real gate (CI runs this)
-node --check app/abb/static/js/app.js
+for f in app/abb/static/js/*.js; do node --check "$f"; done
 python3 app/abs_match_spike.py --selftest     # matcher eval CLI, offline mode
 ```
 

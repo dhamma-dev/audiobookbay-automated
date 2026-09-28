@@ -52,6 +52,37 @@ def test_parse_search_page_defaults():
     assert book["cover"] == "/static/images/default-cover.svg"
 
 
+DETAIL_PAGE = """
+<table>
+  <tr><td>Info Hash:</td><td>ABCDEF0123456789ABCDEF0123456789ABCDEF01</td></tr>
+  <tr><td>udp://tracker.example.org:1337/announce</td></tr>
+</table>
+"""
+
+
+def test_magnet_carries_a_display_name():
+    """dn= makes the download client show the book, not a 40-char hash,
+    until metadata arrives — encoded so '&'/':' in titles can't break it."""
+    from abb.scraper import Scraper
+    from tests.conftest import make_config
+
+    class Resp:
+        status_code, text = 200, DETAIL_PAGE
+
+    class Sess:
+        def get(self, url, headers=None, timeout=None):
+            return Resp()
+
+    scraper = Scraper(make_config(), outbound=None)
+    magnet = scraper.extract_magnet_link("https://audiobookbay.lu/abss/x/", sess=Sess(),
+                                         title="Atomic Habits: An Easy & Proven Way")
+    assert magnet.startswith("magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+                             "&dn=Atomic%20Habits%3A%20An%20Easy%20%26%20Proven%20Way&tr=udp")
+    assert infohash_from_magnet(magnet) == "abcdef0123456789abcdef0123456789abcdef01"
+    # No title (older callers): same magnet as before, just without dn=.
+    assert "&dn=" not in scraper.extract_magnet_link("https://audiobookbay.lu/abss/x/", sess=Sess())
+
+
 def test_infohash_from_magnet():
     assert infohash_from_magnet("magnet:?xt=urn:btih:ABC123&tr=x") == "abc123"
     assert infohash_from_magnet(None) is None

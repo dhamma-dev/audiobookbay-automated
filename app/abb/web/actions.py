@@ -46,7 +46,7 @@ def send():
         return jsonify({"message": s.clients.config_error}), 503
 
     try:
-        magnet_link = s.scraper.extract_magnet_link(details_url)
+        magnet_link = s.scraper.extract_magnet_link(details_url, title=title)
         if not magnet_link:
             s.store.record_download(user, title, details_url, None, "error",
                                     "Failed to extract magnet link", route=route)
@@ -110,7 +110,7 @@ def send_batch():
                             "error": "Not an AudiobookBay link"})
             continue
         try:
-            magnet_link = s.scraper.extract_magnet_link(link)
+            magnet_link = s.scraper.extract_magnet_link(link, title=title)
             if not magnet_link:
                 s.store.record_download(user, title, link, None, "error",
                                         "Failed to extract magnet link",

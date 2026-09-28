@@ -23,6 +23,37 @@ def test_timeout_and_thinking_parsing():
     assert Config.from_env({"GEMINI_TIMEOUT": "90"}).gemini_timeout == 90.0
 
 
+def test_blank_env_values_fall_back_to_defaults():
+    # docker-compose passes listed-but-unset keys as "" — a blank must behave
+    # like an unset key, not beat the default or crash a number.
+    c = Config.from_env({"DL_CATEGORY": "", "ABS_LOW_KBPS": "", "TOR_SOCKS_PORT": " ",
+                         "RANK_MODEL": "", "USE_TOR": "", "ABB_HOSTNAME": ""})
+    assert c.dl_category == "Audiobookbay-Audiobooks"
+    assert c.abs_low_kbps == 63.0 and c.tor_socks_port == 9050
+    assert c.rank_model == "gemini-3.5-flash" and c.use_tor
+    assert c.abb_hostname == "audiobookbay.lu"
+    # ...except the documented v1 switch: an empty LOG_DB_PATH turns the log off.
+    assert not Config.from_env({"LOG_DB_PATH": ""}).log_enabled
+
+
+def test_the_shipped_compose_file_boots_with_nothing_set():
+    """Emulate compose's substitution over docker-compose.yaml with no .env:
+    `${KEY}` -> "", `${KEY:-default}` -> default. Every default must hold."""
+    import os
+    import re
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "docker-compose.yaml")
+    env = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"\s*-\s*([A-Z_]+)=\$\{[A-Z_]+(?::-([^}]*))?\}", line)
+            if m:
+                env[m.group(1)] = m.group(2) or ""
+    assert "DL_CATEGORY" in env and env["DL_CATEGORY"] == ""   # the case that bit
+    c = Config.from_env(env)
+    assert c.dl_category == "Audiobookbay-Audiobooks"
+    assert c.use_tor and c.log_enabled and c.gemini_timeout == 60.0
+
+
 def test_dl_url_parsing():
     c = Config.from_env({"DL_URL": "https://torrents.local:8112"})
     assert (c.dl_scheme, c.dl_host, c.dl_port) == ("https", "torrents.local", "8112")

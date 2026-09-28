@@ -15,6 +15,9 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/layout.css') }}">
     {% block page_css %}{% endblock %}
+    {# Blocking and in <head> on purpose: its error listener must exist before
+       any cover can fail (see the file). #}
+    <script src="{{ url_for('static', filename='js/covers.js') }}"></script>
 </head>
 <body>
     <nav class="navbar" aria-label="Main navigation">
