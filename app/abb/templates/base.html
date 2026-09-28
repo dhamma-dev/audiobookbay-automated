@@ -146,6 +146,15 @@
 
     <footer class="footer">
         Powered by AudioBook Bay
+        {# Which commit is deployed — compare with the commit you just pushed. #}
+        {% if build %}
+        <span class="footer-build" title="{{ build.full_sha }}{{ ' (local checkout)' if build.source == 'checkout' }}">
+            ·
+            {% if build.ref %}{{ build.ref }} ·{% endif %}
+            {% if build.url %}<a href="{{ build.url }}" target="_blank" rel="noopener noreferrer"><code>{{ build.sha }}</code></a>{% else %}<code>{{ build.sha }}</code>{% endif %}
+            {% if build.built %}· {{ build.built }}{% endif %}
+        </span>
+        {% endif %}
     </footer>
 
     <div id="toast-container" role="region" aria-live="polite" aria-label="Notifications"></div>

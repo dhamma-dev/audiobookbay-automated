@@ -107,7 +107,9 @@ ABS or client traffic). Numbers below are measured, not estimated.
   (`config.py` `report()`) — it's configurable now.
 - README says an empty `LOG_DB_PATH` disables logging; compose's
   `${LOG_DB_PATH:-…}` substitutes the default for an empty value.
-- [`v2-review.md`](v2-review.md) says the image carries its git SHA, surfaced
-  at boot — nothing does.
+- ~~[`v2-review.md`](v2-review.md) says the image carries its git SHA, surfaced
+  at boot — nothing does.~~ **Fixed:** CI passes commit/branch/build time as
+  build args (`APP_*` env, `abb/version.py`); the footer, `/healthz` and the
+  boot log show them.
 - Static files are served `no-cache` with ETags, so the old "hard refresh after
   deploy" advice (agent notes) no longer applies.

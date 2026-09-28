@@ -189,6 +189,21 @@
   margin-top: auto;
 }
 
+/* The deployed build — quiet, but a real link to the commit. */
+.footer-build code {
+  padding: 0;
+  background: none;
+  color: var(--color-text-muted);
+}
+
+.footer-build a {
+  color: inherit;
+}
+
+.footer-build a:hover code {
+  color: var(--color-accent);
+}
+
 @media (max-width: 480px) {
   .navbar {
     padding: 0 var(--space-4);

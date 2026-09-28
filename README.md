@@ -516,6 +516,13 @@ The app is then available on `http://<your-host>:5078`.
 > writable, the app still runs — the download log and the persisted session key
 > just disable themselves with a warning in the logs.
 
+**Which build is running?** The page footer shows the branch, commit and build
+time the image was built from — e.g. `dev · b68986b · 2026-09-28 15:05 UTC` —
+with the commit linking to GitHub; `/healthz` and the startup log say the
+same. After redeploying, compare it with the commit you expect. (Local runs
+show the checkout's commit instead, suffixed `-dirty` when files have
+uncommitted changes.)
+
 ---
 
 ## Running locally

@@ -34,4 +34,17 @@ EXPOSE 5078
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s \
     CMD python -c "import urllib.request as u; u.urlopen('http://127.0.0.1:5078/healthz', timeout=4)" || exit 1
 
+# Build identity — shown in the UI footer, /healthz and the boot log (see
+# abb/version.py). CI passes these; a plain local `docker build` leaves them
+# empty and the footer just shows no version. Declared last, so a new commit
+# only changes image metadata and never invalidates the layers above.
+ARG GIT_SHA=""
+ARG GIT_REF=""
+ARG BUILD_DATE=""
+ARG GIT_REPO_URL=""
+ENV APP_GIT_SHA=$GIT_SHA \
+    APP_GIT_REF=$GIT_REF \
+    APP_BUILD_DATE=$BUILD_DATE \
+    APP_GIT_REPO_URL=$GIT_REPO_URL
+
 CMD ["python", "main.py"]

@@ -41,6 +41,7 @@ why v2 looks like this.
 | `app/abb/clients.py` | Download-client registry (add/list per client) + put.io token logic. |
 | `app/abb/identity.py`, `security.py` | Proxy-header identity; CSRF, security headers, persisted secret key. |
 | `app/abb/settings.py` | In-app settings overlay: `FEATURE_SETTINGS` overrides from SQLite, most-recently-set-wins vs env (snapshot comparison). UI in `web/admin.py`. |
+| `app/abb/version.py` | Build identity (commit/branch/build time) from the image's `APP_*` env (CI build args), else the local git checkout → footer, `/healthz`, boot log. |
 | `app/abb/web/` | Blueprints: `pages` (HTML), `actions` (send/settings/wanted POSTs), `api` (JSON + `/healthz`), `putio` (OAuth). |
 | `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**) + `covers.js` (cover fallbacks; in `<head>` so it's listening before images load). **No inline event handlers** (`onerror=` etc.) — the CSP blocks them. |
 | `app/tests/` | pytest suite; CI gates image builds on it. |

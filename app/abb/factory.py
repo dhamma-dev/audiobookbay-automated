@@ -9,6 +9,7 @@ import logging
 
 from flask import Flask, session
 
+from . import version
 from .clients import ClientRegistry
 from .config import CLIENT_LABELS, Config
 from .identity import current_user_label, is_log_admin
@@ -35,6 +36,9 @@ class Services:
         self.config = config
         self.settings_provenance = {}
         self._started = False
+        # Which commit this is (footer, /healthz, boot log). The image's baked
+        # env only here; start() falls back to asking git for local runs.
+        self.build = version.from_env()
         self.store = Store(config)
         self.tor = TorManager(config)
         self.outbound = Outbound(config, self.tor)
@@ -70,6 +74,9 @@ class Services:
         """The side effects, in dependency order: database, settings overlay,
         Tor (background bootstrap — serving starts immediately), then the
         wanted worker."""
+        if self.build is None:
+            self.build = version.from_git_checkout()
+        log.info("Build: %s", version.describe(self.build))
         self.store.init()
         self.reload_settings()      # not yet _started: rebuild only, no threads
         # The config report describes the EFFECTIVE config — env plus in-app
@@ -153,6 +160,7 @@ def create_app(config: Config | None = None, start: bool = True) -> Flask:
             # The Settings nav entry follows the same gate as the page itself.
             "is_settings_admin": is_log_admin(current_user_label(), c),
             "page_title_suffix": "AudiobookBay",
+            "build": services.build,        # footer: which commit is deployed
         }
 
     if start:

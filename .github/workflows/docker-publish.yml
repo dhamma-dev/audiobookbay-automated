@@ -79,6 +79,7 @@ jobs:
             echo "tags<<EOF"
             echo "$tags"
             echo "EOF"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
@@ -96,3 +97,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.image.outputs.tags }}
           platforms: linux/amd64,linux/arm64
+          # Build identity for the UI footer, /healthz and the boot log, so a
+          # deploy can be checked against the commit it should be running.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            GIT_REF=${{ github.ref_name }}
+            BUILD_DATE=${{ steps.image.outputs.build_date }}
+            GIT_REPO_URL=${{ github.server_url }}/${{ github.repository }}
