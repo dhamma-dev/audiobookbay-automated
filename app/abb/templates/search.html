@@ -46,16 +46,24 @@
         >
     </div>
     <button type="submit" id="search-submit" class="btn btn-primary"
-            {% if route_mode == 'tor' and tor_status == 'starting' %}disabled{% endif %}>
+            {% if route_mode == 'tor' and tor_status != 'ready' %}disabled{% endif %}>
         <i data-lucide="search" aria-hidden="true"></i>
         Search
     </button>
 </form>
 
-{% if route_mode == 'tor' and tor_status == 'starting' %}
-<div id="tor-booting" class="tor-booting" role="status">
+{# Tor route but no Tor: search waits (app.js polls /api/connection and
+   re-enables it) — it never quietly goes out Direct. #}
+{% if route_mode == 'tor' and tor_status != 'ready' %}
+<div id="tor-booting" class="tor-booting{% if tor_status == 'unavailable' %} tor-unavailable{% endif %}" role="status">
+    {% if tor_status == 'starting' %}
     <span class="spinner-icon" aria-hidden="true"></span>
     <span class="tor-booting-text">Starting Tor — search will be ready in a moment.</span>
+    {% else %}
+    <i data-lucide="alert-triangle" aria-hidden="true"></i>
+    <span class="tor-booting-text">Tor isn't available right now, so search is paused rather than going
+        out directly (which would show AudioBook Bay this server's IP). It resumes on its own when Tor is back.</span>
+    {% endif %}
     <button type="button" class="btn btn-secondary" data-action="search-direct">
         <i data-lucide="zap" aria-hidden="true"></i>
         Search directly instead

@@ -73,7 +73,12 @@ class AbsLibrary:
                 duration = media.get("duration") or 0
                 tracks = media.get("numTracks") or media.get("numAudioFiles") or 0
                 items.append({
+                    "id": it.get("id") or "",   # stable across refreshes (wanted reopen)
                     "title": md.get("title") or "",
+                    # The matcher's identity guard forgives a result's subtitle
+                    # only when it matches the owned copy's ("Atomic Habits: An
+                    # Easy & Proven Way..." is still the Atomic Habits you own).
+                    "subtitle": md.get("subtitle") or "",
                     "author": author,
                     "series": series,
                     "asin": md.get("asin") or "",
@@ -248,8 +253,12 @@ class AbsLibrary:
             hit = self.owned_seqs_for(series, owned_series).get(norm_seq(seq))
             if hit is not None:
                 return hit
+        # The fallback carries the canonical number too, so the matcher's
+        # volume guard can refuse a sibling: canonical "Dune" #1 must not
+        # resolve to an owned "Dune Messiah" (#2) just because the titles overlap.
         abb = {"raw": c.get("title", ""), "title": c.get("title", ""),
-               "author": c.get("author", ""), "language": c.get("language", "")}
+               "author": c.get("author", ""), "language": c.get("language", ""),
+               "series": series, "seq": seq}
         tier, _s, item, _r = matching.best_match(abb, index)
         return item if tier == matching.STRONG else None
 

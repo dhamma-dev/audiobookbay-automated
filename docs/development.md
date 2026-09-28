@@ -30,7 +30,9 @@ Workflow, testing, and deploy details. The essentials are in
   container runs as **uid 1000** and reports health via `/healthz`.
 - **Local:** `cd app && python main.py` (waitress on port 5078; `PORT=5178` to
   move it). Needs a reachable tor for ABB search unless the user switches to
-  Direct in the UI. A local `app/.venv/` exists.
+  Direct in the UI (or `USE_TOR=false`) — Tor routing fails closed, so without
+  Tor the search page shows "Tor · down" rather than scraping Direct. A local
+  `app/.venv/` exists.
 - **Run a script inside the live container** (e.g. the matcher spike), which
   reuses the app's Tor and `.env`:
   `docker compose exec audiobookbay-automated python abs_match_spike.py --selftest`

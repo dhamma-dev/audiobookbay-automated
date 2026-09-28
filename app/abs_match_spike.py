@@ -14,6 +14,9 @@ Offline logic check (no ABS or ABB needed):
 
     docker compose exec audiobookbay-automated python abs_match_spike.py --selftest
 
+Live runs need Tor (the container's). Outside the container, --direct opts in
+to scraping without it — which reveals your IP to AudioBook Bay.
+
 Environment (add ABS_* to your .env):
     ABS_URL          e.g. https://audiobooks.example.com   (required for live runs)
     ABS_TOKEN        Audiobookshelf API token (Settings -> Users -> your user)
@@ -65,7 +68,8 @@ def pick_library():
 
 
 def load_library(library_id):
-    """Return a list of {title, author, series:[(name,seq)], asin, isbn}."""
+    """Return a list of {title, subtitle, author, series:[(name,seq)], asin,
+    isbn} — the same fields the app's index gives the matcher."""
     items, page, limit = [], 0, 500
     while True:
         data = _abs_get(f"/api/libraries/{library_id}/items", limit=limit, page=page)
@@ -77,6 +81,7 @@ def load_library(library_id):
             series = [(s.get("name"), s.get("sequence")) for s in (md.get("series") or [])]
             items.append({
                 "title": md.get("title") or "",
+                "subtitle": md.get("subtitle") or "",
                 "author": author,
                 "series": series,
                 "asin": md.get("asin") or "",
@@ -90,19 +95,23 @@ def load_library(library_id):
 
 
 # --- AudioBook Bay (minimal scrape, routed through the app's Tor) ------------
-def _session():
-    """Reuse the container's Tor SOCKS proxy if it's up; fall back to direct."""
+def _session(allow_direct=False):
+    """Reuse the container's Tor SOCKS proxy. Like the app, this fails closed:
+    no Tor means no scrape unless --direct was asked for explicitly."""
     s = requests.Session()
+    if allow_direct:
+        print("  (--direct: scraping ABB DIRECTLY, your real IP is exposed)")
+        return s
     proxy = f"socks5h://127.0.0.1:{TOR_SOCKS_PORT}"
     s.proxies = {"http": proxy, "https": proxy}
     try:
         s.get("https://check.torproject.org/api/ip", timeout=15)
-        print(f"  (routing ABB through Tor on 127.0.0.1:{TOR_SOCKS_PORT})")
-        return s
     except Exception:
-        print("  (Tor SOCKS not reachable -- scraping ABB DIRECTLY, your real IP is exposed)")
-        s.proxies = {}
-        return s
+        raise SystemExit(f"Tor SOCKS on 127.0.0.1:{TOR_SOCKS_PORT} isn't reachable. Run this "
+                         "inside the container, or pass --direct to scrape without Tor "
+                         "(reveals your IP).")
+    print(f"  (routing ABB through Tor on 127.0.0.1:{TOR_SOCKS_PORT})")
+    return s
 
 
 def _split_title_author(raw):
@@ -170,6 +179,7 @@ def selftest():
         item("He Who Fights with Monsters 10", "Travis Deverell Shirtaloon",
              [("He Who Fights with Monsters", "10")]),
         item("No Man's Land", "Richard K. Morgan"),
+        item("Dune", "Frank Herbert", [("Dune", "1")]),
     ]
     cases = [
         ("The Steel Remains (A Land Fit for Heroes #1) - Richard K. Morgan", "STRONG (title+author+series)"),
@@ -182,6 +192,9 @@ def selftest():
         ("The Sandman - Neil Gaiman, Dirk Maggs", "STRONG (English original, still matches)"),
         ("He Who Fights with Monsters, Books 01-10 - Shirtaloon", "MAYBE (bundle vs single owned volume)"),
         ("Sandman Slim - Richard Kadrey", "NONE (shared first name only -> author rejected)"),
+        # Identity guards (sequels used to read as the book 1 you own):
+        ("Dune Messiah - Frank Herbert", "MAYBE (a sequel's title contains book 1's)"),
+        ("He Who Fights with Monsters 11 - Shirtaloon", "MAYBE (volume 11 vs owned 10)"),
     ]
     print("Self-test (thresholds: STRONG_TITLE=%.2f MAYBE_TITLE=%.2f AUTHOR_MIN=%.2f)\n"
           % (abs_match.STRONG_TITLE, abs_match.MAYBE_TITLE, abs_match.AUTHOR_MIN))
@@ -202,12 +215,13 @@ def main():
     if not ABS_URL or not ABS_TOKEN:
         raise SystemExit("Set ABS_URL and ABS_TOKEN (in .env) for a live run, "
                          "or use --selftest for an offline logic check.")
-    queries = args or ["cradle"]
+    allow_direct = "--direct" in args
+    queries = [a for a in args if a != "--direct"] or ["cradle"]
     lib_id, lib_name = pick_library()
     print(f"Loading Audiobookshelf library '{lib_name}'...")
     library = load_library(lib_id)
     print(f"Loaded {len(library)} items.")
-    session = _session()
+    session = _session(allow_direct)
     totals = [0, 0, 0]
     for q in queries:
         s, m, n = run_query(session, library, q)

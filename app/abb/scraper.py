@@ -135,7 +135,9 @@ class Scraper:
 
         Returns None when the mirror couldn't be reached at all (page 1
         failed) — distinct from [] meaning "reached it, nothing found". `sess`
-        overrides the per-request route session (used by the wanted worker)."""
+        overrides the per-request route session (used by the wanted worker).
+        Raises TorUnavailable when the route is Tor and Tor isn't up — it is
+        never quietly swapped for Direct."""
         sess = sess or self.outbound.scrape_session()
         results = self._fetch_page(sess, query, 1)
         if results is None:
@@ -151,11 +153,15 @@ class Scraper:
             results.extend(page_results)
         return results
 
-    def extract_magnet_link(self, details_url):
+    def extract_magnet_link(self, details_url, sess=None):
         """Read the Info Hash + trackers off a detail page and build a magnet
-        link. Returns None on any failure."""
+        link. Returns None on any fetch/parse failure. `sess` pins the route
+        (the wanted worker passes the session its search used, so the detail
+        page goes out the same way); TorUnavailable propagates so callers can
+        say "Tor is down" instead of "no magnet found"."""
+        sess = sess or self.outbound.scrape_session()
         try:
-            response = self.outbound.scrape_session().get(
+            response = sess.get(
                 details_url, headers={"User-Agent": USER_AGENT},
                 timeout=self.config.request_timeout)
             if response.status_code != 200:

@@ -59,10 +59,7 @@ def test_deterministic_rank_prefers_m4b_language_bitrate():
 
 def test_match_against_skips_request_posts():
     # Request posts ("(REQ) ...") describe a book somebody is ASKING for —
-    # there's no torrent behind them, so they must never become a pick. Note
-    # the token-set matcher is deliberately extra-word tolerant ("Dune
-    # Messiah" would still match "Dune") — identity strictness is the AI
-    # verdict's job; this deterministic pass is the broad fallback.
+    # there's no torrent behind them, so they must never become a pick.
     books = [
         {"title": "Dune - Frank Herbert"},
         {"title": "(REQ) Dune - Frank Herbert"},
@@ -70,6 +67,29 @@ def test_match_against_skips_request_posts():
     ]
     hits = WantedService._match_against(books, "Dune", "Frank Herbert")
     assert [h["title"] for h in hits] == ["Dune - Frank Herbert"]
+
+
+def test_match_against_refuses_sequels():
+    # This deterministic pick can auto-download (no key / API failure), and the
+    # README promises "strict title+author". The token-set matcher used to
+    # accept every "... of Dune" for a wanted "Dune" and could send whichever
+    # ranked highest by format/bitrate; the identity guards now refuse them.
+    books = [
+        {"title": "God Emperor of Dune - Frank Herbert", "is_m4b": True},
+        {"title": "Dune Messiah - Frank Herbert"},
+        {"title": "Dune (Dune Chronicles #1) - Frank Herbert"},
+    ]
+    hits = WantedService._match_against(books, "Dune", "Frank Herbert")
+    assert [h["title"] for h in hits] == ["Dune (Dune Chronicles #1) - Frank Herbert"]
+
+
+def test_match_against_keeps_subtitled_wanted_titles():
+    # Hardcover titles carry subtitles the ABB listing omits; the broad query
+    # ladder relies on still matching them.
+    hits = WantedService._match_against([{"title": "The Last Wish - Andrzej Sapkowski"}],
+                                        "The Last Wish: Introducing the Witcher",
+                                        "Andrzej Sapkowski")
+    assert len(hits) == 1
 
 
 def test_candidate_payload_is_slim():
@@ -177,6 +197,81 @@ def test_owned_sweep_flips_rows_that_landed(tmp_path):
     assert {r["hc_id"]: r for r in store.wanted_rows()}[2]["status"] == "owned"
 
 
+class IdLibrary(FakeLibrary):
+    """Index items carry Audiobookshelf ids, like the real index."""
+
+    def __init__(self, items):
+        super().__init__({})
+        self.items = items
+
+    def _items(self):
+        return [dict(it) for it in self.items]
+
+
+def _lib_item(item_id, title, author):
+    return {"id": item_id, "title": title, "author": author, "series": [],
+            "asin": "", "isbn": "", "language": ""}
+
+
+def test_reopen_ignores_only_the_rejected_match(tmp_path):
+    """"Search anyway" on a done row: back in the queue, and the library item
+    that claimed it is ignored by the sweep — but a genuinely different copy
+    landing later still flips it (the matcher stays in charge)."""
+    from abb.storage import Store
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    library = IdLibrary([_lib_item("li_wrong", "Red Rising", "Pierce Brown")])
+    svc = WantedService(cfg, store, None, library, None, None, None, None)
+    store.wanted_upsert({"hc_id": 1, "title": "Red Rising", "author": "Pierce Brown",
+                         "status": "owned"})
+
+    assert svc.reopen(1, "alice") == (True, "")
+    (row,) = store.wanted_rows()
+    assert row["status"] == "wanted" and row["searched_at"] is None
+    assert "alice" in row["detail"]
+    assert {r["hc_id"] for r in svc.due_rows()} == {1}   # searched right away
+
+    svc._sweep_owned()                                   # rejected item: no re-flip
+    assert store.wanted_rows()[0]["status"] == "wanted"
+    library.items.append(_lib_item("li_real", "Red Rising", "Pierce Brown"))
+    svc._last_owned_sweep = None
+    svc._sweep_owned()                                   # a real copy still counts
+    assert store.wanted_rows()[0]["status"] == "owned"
+
+    store.wanted_upsert({"hc_id": 2, "title": "Queued", "status": "wanted"})
+    assert svc.reopen(2, "alice")[0] is False            # only done rows reopen
+    assert svc.reopen(99, "alice")[0] is False
+
+
+def test_done_shelf_is_rechecked_once_and_flags_not_reopens(tmp_path):
+    """Rows an older, looser matcher filed as owned (a sequel read as book 1)
+    are flagged on the worker's first sweep — flagged, never reopened
+    automatically: that could re-download a book the user does own."""
+    from abb.storage import Store
+    from abb.wanted import UNCONFIRMED
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    store = Store(cfg)
+    store.init()
+    library = FakeLibrary({"Dune": "Frank Herbert"})
+    svc = WantedService(cfg, store, None, library, None, None, None, None)
+    store.wanted_upsert({"hc_id": 1, "title": "Dune Messiah", "author": "Frank Herbert",
+                         "status": "owned", "detail": "in your library 2026-07-01"})
+    store.wanted_upsert({"hc_id": 2, "title": "Dune", "author": "Frank Herbert",
+                         "status": "owned", "detail": "in your library 2026-07-01"})
+
+    svc._sweep_owned()
+    rows = {r["hc_id"]: r for r in store.wanted_rows()}
+    assert rows[1]["status"] == "owned" and rows[1]["detail"].startswith(UNCONFIRMED)
+    assert rows[2]["detail"] == "in your library 2026-07-01"   # confirmed: untouched
+
+    # Once per worker: later sweeps don't redo the pass.
+    store.wanted_upsert({"hc_id": 1, "detail": "manually cleared"})
+    svc._last_owned_sweep = None
+    svc._sweep_owned()
+    assert {r["hc_id"]: r for r in store.wanted_rows()}[1]["detail"] == "manually cleared"
+
+
 def test_owned_sweep_noop_without_abs(tmp_path):
     from abb.storage import Store
     cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
@@ -247,11 +342,14 @@ def test_owned_sweep_covers_skipped_rows(tmp_path):
 class FakeScraper:
     def __init__(self, books):
         self.books = books
+        self.sessions = []   # (call, sess) — which route each ABB request took
 
     def search(self, query, max_pages=5, sess=None):
+        self.sessions.append(("search", sess))
         return [dict(b) for b in self.books]
 
-    def extract_magnet_link(self, link):
+    def extract_magnet_link(self, link, sess=None):
+        self.sessions.append(("magnet", sess))
         return "magnet:?xt=urn:btih:abc123&tr=x"
 
 
@@ -479,6 +577,64 @@ def test_inflight_guard_prevents_duplicate_searches(tmp_path):
     # A normal search registers and always deregisters, even on success.
     assert svc.search_one(row) == "found"
     assert svc._inflight == set()
+
+
+def _routed_service(tmp_path, tor_status, **overrides):
+    """A WantedService wired to a real Outbound over a stub Tor, so routing
+    decisions are the production ones."""
+    import time
+    from abb.outbound import Outbound
+    from abb.storage import Store
+    from tests.test_tor import StubTor
+    kwargs = dict(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    kwargs.update(overrides)
+    cfg = make_config(**kwargs)
+    store = Store(cfg)
+    store.init()
+    tor = StubTor(tor_status)
+    outbound = Outbound(cfg, tor)
+    if tor_status == "ready":
+        tor.on_ready()
+    scraper, clients = FakeScraper([M4B_BOOK]), FakeClients()
+    svc = WantedService(cfg, store, scraper, FakeLibrary(set()), FakeRank(), clients,
+                        outbound, tor)
+    svc.last_sync = time.monotonic()   # _tick: skip the Hardcover sync
+    store.wanted_upsert({"hc_id": 1, "title": "Dune", "author": "Frank Herbert",
+                         "status": "wanted"})
+    return svc, store, scraper, outbound
+
+
+def test_background_searches_pause_instead_of_going_direct(tmp_path):
+    import pytest
+    from abb.outbound import TorUnavailable
+    for overrides in ({"use_tor": True}, {"use_tor": False, "wanted_route": "tor"}):
+        svc, store, scraper, _ob = _routed_service(tmp_path / str(len(overrides)),
+                                                   "unavailable", **overrides)
+        assert svc.background_paused() == "unavailable"
+        with pytest.raises(TorUnavailable):
+            svc._session()                    # WANTED_ROUTE=tor used to mean "or direct"
+        svc._tick()
+        assert scraper.sessions == []         # nothing went out, least of all direct
+        assert store.wanted_rows()[0]["searched_at"] is None   # still due, waiting
+
+
+def test_direct_background_route_does_not_wait_for_tor(tmp_path):
+    svc, _store, scraper, ob = _routed_service(tmp_path, "starting", wanted_route="direct",
+                                               use_tor=True)
+    assert svc.background_paused() is None
+    svc._tick()
+    assert scraper.sessions[0] == ("search", ob.direct_session)
+
+
+def test_auto_send_fetches_the_magnet_on_the_search_route(tmp_path):
+    """USE_TOR=false + WANTED_ROUTE=tor: search AND detail page go via Tor.
+    The magnet fetch used to take the server default (Direct) instead."""
+    svc, store, scraper, ob = _routed_service(tmp_path, "ready", use_tor=False,
+                                              wanted_route="tor", wanted_auto_download=True)
+    svc._tick()
+    assert scraper.sessions == [("search", ob.tor_session), ("magnet", ob.tor_session)]
+    (entry,) = store.fetch_download_log()
+    assert entry["status"] == "ok" and entry["route"] == "tor"
 
 
 def test_auto_policy_label(tmp_path):

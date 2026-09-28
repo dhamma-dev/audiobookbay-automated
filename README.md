@@ -275,9 +275,10 @@ ABS_TOKEN=your-abs-api-token                 # Settings → Users → (you) → 
 
 The matcher (`app/abb/matching.py`) is **precision-first**: it only ever asserts a
 positive, and only when confident. A strong title match is *gated on the author*
-(so a same-title / wrong-author result is rejected), foreign-language editions
-and bundles matched against a single owned volume are held back, and a match it
-isn't sure about simply shows no badge. **A missing badge is never a claim you
+(so a same-title / wrong-author result is rejected), foreign-language editions,
+bundles, other volumes of a series, and sequels whose title merely contains the
+first book's (owning *Dune* doesn't mean you own *Dune Messiah*) are held back,
+and a match it isn't sure about simply shows no badge. **A missing badge is never a claim you
 _don't_ own something** — so a slight title variation can never mislead you. The
 badge is informational and never blocks the Send button (you may still want a
 different edition or narrator).
@@ -319,7 +320,11 @@ Connect your [Hardcover](https://hardcover.app) account and your **“Want to
 Read” list becomes a dashboard**: a **Wanted** page appears in the nav where
 every wanted book is pre-searched on AudioBook Bay in the background and moves
 through a pipeline — *Queued → Found → Sent → In your library* (books you
-already own in Audiobookshelf are marked instead of searched).
+already own in Audiobookshelf are marked instead of searched). If a book was
+marked *In your library* by mistake, **Search anyway** on that row puts it
+back in the queue and ignores the library match that claimed it; rows the
+current matcher no longer confirms are flagged *Unconfirmed* (never
+re-downloaded on their own — that stays your call).
 
 **Quick add.** The `/wanted` page also has an "Add & fetch" box for books that
 aren't on your Hardcover list: type a title (author optional) and dip out. Your
@@ -355,8 +360,10 @@ WANTED_ROUTE=default                     # background search route: default | to
 
 > **Routing note:** background searches use the **server's default route**
 > (`USE_TOR`), not your browser's Tor/Direct toggle — the toolbar shows which.
-> Failed rows say so and retry within ~30 minutes, and the per-row re-check
-> button always uses *your* browser's route, so it doubles as a diagnostic.
+> On the Tor route they **wait for Tor** when it's down (the dashboard says
+> they're paused) — they never fall back to Direct. Failed rows say so and
+> retry within ~30 minutes, and the per-row re-check button always uses *your*
+> browser's route, so it doubles as a diagnostic.
 > **On Tor, the worker self-heals:** after 3 consecutive unreachable searches
 > it automatically requests a fresh Tor circuit (at most once per 10 minutes —
 > renewal swaps the exit for everyone on the instance) and immediately requeues
@@ -391,7 +398,8 @@ recall on your own data. It reuses the app's Tor and `.env`:
 # offline logic check — no ABS or ABB needed, exercises the matcher + guards:
 docker compose exec audiobookbay-automated python abs_match_spike.py --selftest
 
-# live run against your library + real ABB searches:
+# live run against your library + real ABB searches (through the container's
+# Tor — it refuses without it; --direct opts in to scraping from your real IP):
 docker compose exec audiobookbay-automated \
     python abs_match_spike.py "cradle" "land fit for heroes"
 ```
@@ -413,6 +421,15 @@ still connecting and your default route is Tor, search waits and enables itself
 the moment Tor is ready — or you can switch to Direct and search immediately.
 Defaulting to Direct (`USE_TOR=false`) lets you search right away regardless.
 
+**Tor routing fails closed.** Whenever the route is Tor and Tor isn't usable —
+still connecting, failed to start, or crashed — AudioBook Bay requests (search,
+Send, magnet lookups, proxied covers, background wanted-list searches) **wait
+or refuse; they never quietly go out Direct**, which would show the mirror your
+server's real IP. The UI says so ("Tor · down") and offers a one-click switch
+to Direct for your browser. A slow bootstrap still comes good when it
+finishes, and a Tor process that exits is relaunched automatically (with
+backoff).
+
 **Per-user controls.** A **Connection** menu in the navbar lets each visitor:
 
 - **Toggle Tor ⇄ Direct** for AudioBook Bay traffic. The choice is remembered in
@@ -430,13 +447,14 @@ TOR_AUTOSTART=true          # Set to false to use an already-running Tor instead
                             # Circuit renewal requires the app-managed Tor.
 TOR_SOCKS_PORT=9050         # SOCKS port the app starts Tor on / connects to
 TOR_CONTROL_PORT=9051       # Control port (localhost) used for circuit renewal
-TOR_BOOTSTRAP_TIMEOUT=90    # Seconds to wait for Tor to connect before failing
+TOR_BOOTSTRAP_TIMEOUT=90    # Seconds before a still-connecting Tor reports "down" (it keeps trying)
 ```
 
-> The app starts Tor in the background; if it can't (no `tor` binary, or
-> `TOR_AUTOSTART=false` with nothing already listening) it runs in Direct-only
-> mode and the toggle reflects that. If you run outside Docker, the `tor` binary
-> must be installed and on your `PATH`.
+> The app starts Tor in the background. If it can't (no `tor` binary, or
+> `TOR_AUTOSTART=false` with nothing already listening), Tor-routed traffic is
+> paused, not rerouted: set `USE_TOR=false` to default to Direct instead, or pick
+> Direct per browser. If you run outside Docker, the `tor` binary must be
+> installed and on your `PATH`.
 
 ---
 

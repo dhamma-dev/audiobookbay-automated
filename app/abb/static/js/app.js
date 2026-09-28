@@ -1289,13 +1289,16 @@
       if (!res.ok) throw new Error(data.message || 'Could not change routing');
 
       const label = document.querySelector('.conn-mode-label');
-      if (label) label.textContent = mode === 'tor' ? 'Tor' : 'Direct';
+      if (label) {
+        label.textContent = mode === 'direct' ? 'Direct'
+          : data.tor_status === 'starting' ? 'Tor · starting…' : 'Tor';
+      }
       const warning = document.querySelector('.conn-direct-warning');
       if (warning) warning.hidden = mode === 'tor';
       const renew = document.querySelector('.conn-renew-btn');
       if (renew) renew.disabled = mode !== 'tor';
       // Switching to Direct unblocks a search that was waiting on Tor.
-      if (mode === 'direct') clearTorBooting();
+      if (mode === 'direct') clearTorBooting('direct');
       showToast(mode === 'tor' ? 'Routing AudioBook Bay via Tor.' : 'Routing AudioBook Bay directly.', 'success');
     } catch (err) {
       checkbox.checked = !checkbox.checked; // revert the visual toggle
@@ -1330,18 +1333,21 @@
   }
 
   /* ----------------------------------------------------------
-     Tor boot gating: when this browser defaults to Tor and Tor is
-     still bootstrapping, the search page waits (polling) and offers
-     a one-click switch to Direct, then enables itself when ready.
+     Tor gating: when this browser's route is Tor and Tor isn't up
+     (still bootstrapping, or down), the search page waits (polling)
+     and offers a one-click switch to Direct — it never quietly goes
+     out Direct — then enables itself when Tor is ready.
      ---------------------------------------------------------- */
-  function clearTorBooting() {
+  // `mode` is the route now in effect: 'tor' (Tor came up) or 'direct' (the
+  // user switched) — the label must say which, not just drop "· starting…".
+  function clearTorBooting(mode) {
     if (torPollTimer) { clearTimeout(torPollTimer); torPollTimer = null; }
     const notice = document.getElementById('tor-booting');
     if (notice) notice.remove();
     const submit = document.getElementById('search-submit');
     if (submit) submit.disabled = false;
     const label = document.querySelector('.conn-mode-label');
-    if (label && /starting/i.test(label.textContent)) label.textContent = 'Tor';
+    if (label) label.textContent = mode === 'direct' ? 'Direct' : 'Tor';
   }
 
   let torPollTimer = null;
@@ -1350,10 +1356,12 @@
       .then((r) => r.json())
       .then((d) => {
         if (d.tor_status === 'ready' || d.route_mode === 'direct') {
-          clearTorBooting();
+          clearTorBooting(d.route_mode);
           if (d.tor_status === 'ready') showToast('Tor is ready — search away.', 'success');
         } else {
-          torPollTimer = setTimeout(pollConnection, 2500);
+          // Booting resolves in seconds; a Tor that's down (relaunching with
+          // backoff) doesn't need a request every 2.5s.
+          torPollTimer = setTimeout(pollConnection, d.tor_status === 'starting' ? 2500 : 15000);
         }
       })
       .catch(() => { torPollTimer = setTimeout(pollConnection, 4000); });
@@ -1375,7 +1383,7 @@
       if (warning) warning.hidden = false;
       const renew = document.querySelector('.conn-renew-btn');
       if (renew) renew.disabled = true;
-      clearTorBooting();
+      clearTorBooting('direct');
       showToast('Searching directly. Your server IP is visible to AudioBook Bay.', 'info');
     } catch (err) {
       btn.disabled = false;

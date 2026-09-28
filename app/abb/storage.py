@@ -75,7 +75,10 @@ class Store:
                         detail TEXT
                     )
                 """)
-                self._migrate(conn, "wanted", ("candidates", "verdict", "added_by"))
+                # owned_ignore: library matches the user said are NOT this
+                # book (JSON list of identities; see WantedService.reopen).
+                self._migrate(conn, "wanted", ("candidates", "verdict", "added_by",
+                                               "owned_ignore"))
                 # In-app feature settings (see abb/settings.py). env_snapshot
                 # is the env value seen at save time — the key to the
                 # most-recently-set-wins precedence.
@@ -154,7 +157,8 @@ class Store:
                 self._wanted_mem[row["hc_id"]] = {**self._wanted_mem.get(row["hc_id"], {}), **row}
             return
         cols = ("hc_id", "title", "author", "slug", "status", "best_link", "best_title",
-                "best_meta", "searched_at", "detail", "candidates", "verdict", "added_by")
+                "best_meta", "searched_at", "detail", "candidates", "verdict", "added_by",
+                "owned_ignore")
         with self._lock, self._connect() as conn:
             existing = conn.execute("SELECT * FROM wanted WHERE hc_id = ?",
                                     (row["hc_id"],)).fetchone()

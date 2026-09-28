@@ -204,8 +204,9 @@ def test_wanted_page_shelves_and_skip_flow(tmp_path):
     assert "1 in the pipeline" in page and "1 in library" in page
     assert 'id="wanted-owned-list"' in page          # done shelf, collapsed
     assert "/wanted/skip/1" in page                  # skip on the queued row
-    assert "/wanted/skip/2" not in page              # no actions on done rows
+    assert "/wanted/skip/2" not in page              # done rows: no queue actions...
     assert "/wanted/research/2" not in page
+    assert "/wanted/reopen/2" in page                # ...just "Search anyway"
 
     token = page.split('name="csrf-token" content="')[1].split('"')[0]
     r = c.post("/wanted/skip/1", data={"csrf_token": token})
@@ -220,6 +221,29 @@ def test_wanted_page_shelves_and_skip_flow(tmp_path):
 
     # Guard surfaces as a conflict, not a silent success.
     assert c.post("/wanted/skip/2", data={"csrf_token": token}).status_code == 409
+
+
+def test_unconfirmed_done_rows_open_the_shelf_and_can_reopen(tmp_path):
+    from abb.wanted import UNCONFIRMED
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    store = app.extensions["abb"].store
+    store.init()
+    store.wanted_upsert({"hc_id": 3, "title": "Dune Messiah", "author": "Frank Herbert",
+                         "status": "owned", "detail": f"{UNCONFIRMED} — no longer matches"})
+
+    c = app.test_client()
+    page = c.get("/wanted").data.decode()
+    assert "1 unconfirmed" in page
+    assert '<div id="wanted-owned-list">' in page     # opened, not hidden
+    assert "no longer matches" in page                 # the why, visible without hover
+
+    token = page.split('name="csrf-token" content="')[1].split('"')[0]
+    assert c.post("/wanted/reopen/3", data={"csrf_token": token}).status_code == 302
+    (row,) = store.wanted_rows()
+    assert row["status"] == "wanted" and row["searched_at"] is None
+    assert c.post("/wanted/reopen/3", data={"csrf_token": token}).status_code == 409
 
 
 def test_manual_recheck_routes_through_autodownload(tmp_path):

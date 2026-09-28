@@ -12,9 +12,10 @@ from flask import (Blueprint, Response, abort, render_template, request,
                    url_for)
 
 from ..identity import current_user_label, is_log_admin
+from ..outbound import TorUnavailable
 from ..scraper import USER_AGENT
 from ..smart_sort import rank_payload
-from ..wanted import wanted_queries
+from ..wanted import UNCONFIRMED, wanted_queries
 from . import svc
 
 bp = Blueprint("pages", __name__)
@@ -34,17 +35,19 @@ def search():
     # the Upgrade Radar uses the latter to deep-link straight into results.
     query = (request.form.get("query", "") if request.method == "POST"
              else request.args.get("q", "")).strip().lower()
+    searched = bool(query)
     if query:
-        # If this browser is set to Tor but Tor is still bootstrapping, don't
-        # silently scrape over Direct — tell the client to wait (it polls and
-        # re-enables) or switch to Direct.
-        if s.outbound.route_mode() == "tor" and s.tor.status() != "ready":
-            if request.method == "POST":
-                return {"message": "Tor is still starting. Please wait a moment or switch to Direct.",
-                        "tor_status": s.tor.status()}, 503
-            query, books = "", []  # GET deep link while Tor boots: render unsearched
-        else:
+        try:
             books = s.scraper.search(query) or []  # None = mirror unreachable
+        except TorUnavailable as e:
+            # This browser is set to Tor but Tor isn't up (booting, failed,
+            # crashed): never scrape over Direct instead. The client shows the
+            # message and waits (it polls /api/connection), or the user
+            # switches to Direct.
+            if request.method == "POST":
+                return {"message": str(e), "tor_status": s.tor.status()}, 503
+            searched = False  # GET deep link: unsearched (query kept in the box)
+        else:
             # Float preferred results to the top: matching-language first (when
             # PREFERRED_LANGUAGE is set), then M4B. Python's stable sort keeps
             # the mirror's original ordering within each group.
@@ -63,7 +66,7 @@ def search():
     m4b_count = sum(1 for b in books if b.get("is_m4b"))
     owned_count = sum(1 for b in books if b.get("library_match"))
     return render_template("search.html", books=books, query=query,
-                           searched=bool(query),
+                           searched=searched,
                            result_count=len(books), m4b_count=m4b_count,
                            owned_count=owned_count,
                            rank_payload=payload)
@@ -162,6 +165,10 @@ def wanted():
     active = [r for r in rows if (r.get("status") or "wanted") in order]
     active.sort(key=lambda r: order[r.get("status") or "wanted"])
     owned = [r for r in rows if r.get("status") == "owned"]
+    # Owned rows the current matcher no longer confirms (see _verify_owned):
+    # the done shelf opens by itself so they can't hide in a collapsed list.
+    for r in owned:
+        r["unconfirmed"] = (r.get("detail") or "").startswith(UNCONFIRMED)
     skipped = [r for r in rows if r.get("status") == "skipped"]
     for r in active:  # manual Search uses the same broad primary query as the worker
         r["search_q"] = wanted_queries(r.get("title") or "", r.get("author") or "")[0]
@@ -178,11 +185,13 @@ def wanted():
     for r in rows:
         counts[r.get("status") or "wanted"] = counts.get(r.get("status") or "wanted", 0) + 1
     return render_template("wanted.html", enabled=True, active=active, owned=owned,
+                           unconfirmed=sum(1 for r in owned if r["unconfirmed"]),
                            skipped=skipped, counts=counts,
                            auto=s.config.wanted_auto_download,
                            auto_policy=s.wanted.auto_policy_label(),
                            sync_error=s.wanted.sync_error,
-                           route_label=s.wanted.route_label())
+                           route_label=s.wanted.route_label(),
+                           paused=s.wanted.background_paused())
 
 
 @bp.route("/log")

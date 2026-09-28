@@ -654,3 +654,21 @@
 .tor-booting-text {
   margin-right: auto;
 }
+
+/* Tor down (not merely booting): same banner, warning tones. */
+.tor-booting.tor-unavailable {
+  background: var(--color-warning-muted);
+  border-color: var(--color-warning-muted);
+}
+
+.tor-booting.tor-unavailable > svg {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--color-warning);
+}
+
+/* The longer explanation wraps beside its icon instead of below it. */
+.tor-booting.tor-unavailable .tor-booting-text {
+  flex: 1 1 18rem;
+}
