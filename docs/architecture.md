@@ -68,7 +68,13 @@ One module per subsystem; each service class owns its own state and locks:
   ladder (`wanted_queries`), the worker loop (`_tick`: ≤3 searches/minute,
   auto circuit renewal after repeated unreachable scrapes; when the background
   route is Tor and Tor isn't up it **pauses** — `background_paused()`, shown on
-  the dashboard — instead of searching Direct), settled found rows, strict
+  the dashboard — instead of searching Direct), settled found rows, a
+  **verdict memory** for unfound ones (`verdict_cache`: the AI is only sent
+  listings it hasn't judged for that book — a "no match" rules out everything
+  it saw — so unchanged daily re-checks, restarts and Sync now cost no calls;
+  keys are the listing's post + every field the AI reads, the memory resets
+  on a new book identity/model/prompt/language or after 30 days, only coherent
+  verdicts are kept, and the per-row re-check passes `fresh`), strict
   auto-download (the magnet page is fetched on the same session the search
   used, and logged with that route), and a local ownership sweep (every ~2
   min) that flips rows to "In your library" once the book actually lands in

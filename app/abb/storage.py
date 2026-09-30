@@ -77,8 +77,10 @@ class Store:
                 """)
                 # owned_ignore: library matches the user said are NOT this
                 # book (JSON list of identities; see WantedService.reopen).
+                # verdict_cache: listings the AI already judged for this book
+                # (JSON; see WantedService._verdict_memory).
                 self._migrate(conn, "wanted", ("candidates", "verdict", "added_by",
-                                               "owned_ignore"))
+                                               "owned_ignore", "verdict_cache"))
                 # In-app feature settings (see abb/settings.py). env_snapshot
                 # is the env value seen at save time — the key to the
                 # most-recently-set-wins precedence.
@@ -158,7 +160,7 @@ class Store:
             return
         cols = ("hc_id", "title", "author", "slug", "status", "best_link", "best_title",
                 "best_meta", "searched_at", "detail", "candidates", "verdict", "added_by",
-                "owned_ignore")
+                "owned_ignore", "verdict_cache")
         with self._lock, self._connect() as conn:
             existing = conn.execute("SELECT * FROM wanted WHERE hc_id = ?",
                                     (row["hc_id"],)).fetchone()

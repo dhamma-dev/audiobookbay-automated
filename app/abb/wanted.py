@@ -16,12 +16,14 @@ descriptive user-agent per their guidance, and are read-only toward Hardcover.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import threading
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import requests
 
@@ -29,6 +31,7 @@ from . import matching
 from .library import parse_kbps
 from .outbound import TorUnavailable
 from .scraper import infohash_from_magnet
+from .smart_sort import VERDICT_PROMPT_REV
 
 log = logging.getLogger("abb.wanted")
 
@@ -51,6 +54,17 @@ CACHED_SWEEP_TTL = 30   # page-load sweeps against the already-cached index
 # stay on the done shelf (reopening automatically could re-download a book you
 # do own); the dashboard flags them so the user can decide with "Search anyway".
 UNCONFIRMED = "unconfirmed"
+
+# Verdict memory. A "no match" verdict means the AI judged every listing it
+# was shown and none is the book, so a background re-check only needs to ask
+# about listings it hasn't judged yet — the daily check of a book that isn't
+# on ABB used to re-send the same listings every day (and on every restart,
+# Settings save and Sync now). Remembered judgments are retired after
+# VERDICT_MEMORY_DAYS, and whenever the book, model, prompt or language
+# preference changes, so a mistaken "no" can't stick; the per-row re-check
+# always asks afresh.
+VERDICT_MEMORY_DAYS = 30
+VERDICT_MEMORY_MAX = 400   # judged-listing keys kept per book (oldest dropped)
 
 
 def library_identity(item):
@@ -108,6 +122,15 @@ def parse_hardcover_wanted(data):
             "slug": b.get("slug") or "",
         })
     return [r for r in rows if r["hc_id"] is not None]
+
+
+def listing_key(b):
+    """One listing exactly as the AI saw it: its ABB post plus every field the
+    verdict reads. An edited post (a sample replaced by the full book) makes
+    a new key, so it is judged again."""
+    fields = [urlparse(b.get("link") or "").path]
+    fields += [str(b.get(f) or "") for f in ("title", "format", "bitrate", "size", "language")]
+    return hashlib.sha1("\x1f".join(fields).encode()).hexdigest()[:16]
 
 
 def candidate_payload(b):
@@ -269,12 +292,53 @@ class WantedService:
                 hits.append(b)
         return hits
 
-    def search_one(self, row, sess=None):
+    # --- verdict memory ----------------------------------------------------------------
+    def _llm_active(self):
+        """Will the AI verdict be asked? The memory only applies then — with
+        it off, the deterministic matcher runs exactly as it always has."""
+        return bool(getattr(self.rank, "enabled", False) and self.config.wanted_llm)
+
+    def _verdict_stamp(self, title, author):
+        """Everything a verdict depends on besides the listings: the book, the
+        model, the prompt and the language preference."""
+        parts = (matching.normalize(title), matching.normalize(author), self.config.rank_model,
+                 VERDICT_PROMPT_REV, (self.config.preferred_language or "").lower())
+        return hashlib.sha1("\x1f".join(parts).encode()).hexdigest()[:12]
+
+    @staticmethod
+    def _verdict_memory(row, stamp):
+        """What the AI already judged for this book, if that still applies
+        (same stamp, younger than VERDICT_MEMORY_DAYS); else None."""
+        try:
+            memory = json.loads(row.get("verdict_cache") or "")
+            since = datetime.fromisoformat(memory["since"])
+        except (ValueError, KeyError, TypeError):
+            return None
+        if memory.get("stamp") != stamp or \
+                (datetime.now(timezone.utc) - since).days >= VERDICT_MEMORY_DAYS:
+            return None
+        return memory
+
+    @staticmethod
+    def _remembered(stamp, memory, new_keys, reason, now):
+        """The memory to store once a search got verdicts: its judged listings
+        added (newest last, capped) to what still applied."""
+        keys = list(memory["keys"]) if memory else []
+        known = set(keys)
+        keys += [k for k in new_keys if k not in known]
+        return json.dumps({"stamp": stamp, "since": memory["since"] if memory else now,
+                           "updated": now, "keys": keys[-VERDICT_MEMORY_MAX:],
+                           "reason": reason or (memory or {}).get("reason", "")})
+
+    def search_one(self, row, sess=None, fresh=False):
         """Search ABB for one wanted book and update its row. Returns the new
         status. A failed scrape (mirror unreachable / blocked exit) is NOT
         "unmatched": the row drops back to 'wanted' with the error in detail
         and retries on the short WANTED_RETRY_TTL instead of the daily
-        re-search cadence."""
+        re-search cadence. The AI is only asked about listings it hasn't
+        already judged for this book (see VERDICT_MEMORY_DAYS) — unless
+        `fresh`, which the per-row re-check sets: a human asking gets a fresh
+        look at everything."""
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         title, author = row["title"], row.get("author") or ""
         with self._inflight_lock:
@@ -288,16 +352,30 @@ class WantedService:
                                           "searched_at": now})
                 return "owned"
 
+            # Verdict memory, only when the AI will actually be asked.
+            use_memory = self._llm_active()
+            stamp = self._verdict_stamp(title, author) if use_memory else None
+            memory = None if fresh or not use_memory else self._verdict_memory(row, stamp)
+            judged = set(memory["keys"]) if memory else set()
+            new_keys, calls, skipped = [], 0, 0
+
+            def remember(update):
+                """Fold what the AI judged in this search into the row update."""
+                if new_keys:
+                    update["verdict_cache"] = self._remembered(stamp, memory, new_keys,
+                                                               ai_reason, now)
+                return update
+
             def store_found(ranked, q, verdict_reason):
                 best = ranked[0]
                 meta = " · ".join(x for x in (best.get("format"), best.get("bitrate"),
                                               best.get("size")) if x and x != "Unknown")
-                self.store.wanted_upsert({
+                self.store.wanted_upsert(remember({
                     "hc_id": row["hc_id"], "status": "found",
                     "best_link": best.get("link"), "best_title": best.get("title"),
                     "best_meta": meta, "searched_at": now, "detail": "",
                     "verdict": verdict_reason,
-                    "candidates": json.dumps(ranked[:8])})
+                    "candidates": json.dumps(ranked[:8])}))
                 log.info("%r: found via %r (%s; %d candidate(s))",
                          title, q, meta, len(ranked))
 
@@ -307,26 +385,53 @@ class WantedService:
                 books = self.scraper.search(q, max_pages=2, sess=sess)
                 if books is None:
                     log.info("%r: ABB unreachable on this route; will retry", title)
-                    self.store.wanted_upsert({
+                    # remember(): verdicts from earlier on this ladder still stand.
+                    self.store.wanted_upsert(remember({
                         "hc_id": row["hc_id"], "status": "wanted", "searched_at": now,
                         "detail": "AudioBook Bay didn't respond on the background "
-                                  "route — retrying shortly"})
+                                  "route — retrying shortly"}))
                     return "unreachable"  # row status is 'wanted'; sentinel drives renewal
                 considered += len(books)
-                usable = [b for b in books if not ABB_REQUEST_RE.search(b.get("title", ""))][:25]
+                usable = [b for b in books if not ABB_REQUEST_RE.search(b.get("title", ""))]
+                if use_memory:
+                    # Only listings the AI hasn't judged for this book, in an
+                    # earlier check or earlier on this ladder: every one it saw
+                    # was ruled out, so those can't change the answer. (This
+                    # also lets results past the first 25 get a look over time.)
+                    unseen, keys = [], set()
+                    for b in usable:
+                        k = listing_key(b)
+                        if k not in judged and k not in keys:
+                            keys.add(k)
+                            unseen.append(b)
+                    if usable and not unseen:
+                        skipped += 1
+                        continue
+                    usable = unseen
+                usable = usable[:25]
                 if not usable:
                     continue
                 # The pick comes from ONE small AI verdict over this query's
                 # results (rated once, persisted). Deterministic fallback keeps
-                # the pipeline working with no key / on API failure.
+                # the pipeline working with no key / on API failure — and, with
+                # the memory on, it never sees a listing the AI already ruled out.
+                calls += 1
                 verdict = self.rank.wanted_verdict(title, author, [
                     {"id": i, "title": b.get("title"), "format": b.get("format"),
                      "bitrate": b.get("bitrate"), "size": b.get("size"),
                      "language": b.get("language")} for i, b in enumerate(usable)])
                 if verdict is not None:
+                    idx = []
                     if verdict.get("match_found"):
                         idx = [i for i in (verdict.get("ranked") or [])
                                if isinstance(i, int) and 0 <= i < len(usable)]
+                    if use_memory and (idx or not verdict.get("match_found")):
+                        # A coherent verdict judged every listing it was shown.
+                        # ("Match" with no valid pick isn't one; don't keep it.)
+                        batch = [listing_key(b) for b in usable]
+                        judged.update(batch)
+                        new_keys.extend(batch)
+                    if verdict.get("match_found"):
                         if idx:
                             notes = {n.get("id"): n.get("note")
                                      for n in (verdict.get("notes") or [])}
@@ -349,13 +454,22 @@ class WantedService:
             # Clear any previous pick — "no longer available" with a stale best
             # match still showing reads as a contradiction.
             detail = f"no confident match ({tried} searches, {considered} results considered)"
-            if ai_reason:
-                detail += f" — AI: {ai_reason}"
-            self.store.wanted_upsert({
+            if skipped and not calls and memory:
+                # Nothing new since the AI last looked: say so, with its reason.
+                detail += ("; nothing new since the AI last looked "
+                           f"({memory.get('updated', memory['since'])[:10]})")
+            # The remembered reason only when nothing new was asked; after a new
+            # verdict it could describe listings that were not this batch.
+            reason = ai_reason or ("" if calls else (memory or {}).get("reason", ""))
+            if reason:
+                detail += f" — AI: {reason}"
+            self.store.wanted_upsert(remember({
                 "hc_id": row["hc_id"], "status": "unmatched", "searched_at": now,
                 "best_link": None, "best_title": None, "best_meta": None,
-                "candidates": None, "verdict": None, "detail": detail})
-            log.info("%r: no match (%d searches, %d results)", title, tried, considered)
+                "candidates": None, "verdict": None, "detail": detail}))
+            log.info("%r: no match (%d searches, %d results; AI asked %d time(s), "
+                     "%d search(es) skipped: nothing new since the last verdict)",
+                     title, tried, considered, calls, skipped)
             return "unmatched"
         except TorUnavailable:
             # The route is Tor and Tor isn't up, so nothing went out. That's
@@ -468,12 +582,13 @@ class WantedService:
             self.store.wanted_upsert({"hc_id": row["hc_id"],
                                       "detail": f"auto-download failed — {e}"})
 
-    def search_and_autodownload(self, row, sess=None):
+    def search_and_autodownload(self, row, sess=None, fresh=False):
         """search_one plus the auto-download step when it's enabled. BOTH
         discovery paths go through this — the background worker and the manual
         per-row re-check — so "auto-download on" means on, regardless of who
-        triggered the search that found the book."""
-        status = self.search_one(row, sess=sess)
+        triggered the search that found the book. `fresh` (the re-check)
+        ignores the verdict memory."""
+        status = self.search_one(row, sess=sess, fresh=fresh)
         if status == "found":
             fresh = next((r for r in self.store.wanted_rows()
                           if r["hc_id"] == row["hc_id"]), None)
@@ -564,8 +679,11 @@ class WantedService:
                 if item is None:
                     break
                 ignored.add(library_identity(item))
+        # verdict_cache cleared too: reopening says something was wrong about
+        # this book, so it gets a fresh AI look rather than remembered verdicts.
         self.store.wanted_upsert({"hc_id": hc_id, "status": "wanted", "searched_at": None,
                                   "owned_ignore": json.dumps(sorted(ignored)) if ignored else None,
+                                  "verdict_cache": None,
                                   "detail": f"reopened by {user} — not in the library after all"})
         log.info("%r reopened by %s (ignoring %d library match(es))",
                  row.get("title"), user, len(ignored))

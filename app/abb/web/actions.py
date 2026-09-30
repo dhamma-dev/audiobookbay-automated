@@ -272,6 +272,7 @@ def wanted_research(hc_id):
     if not row:
         return jsonify({"message": "Unknown wanted book."}), 404
     # Same path as the worker: a find here auto-downloads too (when enabled).
-    if s.wanted.search_and_autodownload(row) == "tor-unavailable":
+    # fresh: a human asking gets a fresh AI look, not the remembered verdicts.
+    if s.wanted.search_and_autodownload(row, fresh=True) == "tor-unavailable":
         return redirect(url_for("pages.wanted", added="tor", t=row["title"]))
     return redirect(url_for("pages.wanted"))

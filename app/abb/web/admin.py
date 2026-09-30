@@ -52,7 +52,8 @@ SECTIONS = [
          "Picks with a stated bitrate below this are held for manual review "
          "(0 = no minimum). Listings that don't state a bitrate pass."),
         ("WANTED_LLM", "AI verdict on found results",
-         "One small Gemini call per found book, ever. Off = deterministic matching."),
+         "One small Gemini call per found book, ever; books not found yet only send it "
+         "listings it hasn't judged before. Off = deterministic matching."),
         ("WANTED_ROUTE", "Background search route",
          "“default” follows the server's USE_TOR setting."),
     ]),

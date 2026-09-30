@@ -384,9 +384,13 @@ match, **M4B only**), it sends it to your download client automatically and
 records it in the download log as `hardcover-auto`. Anything less than
 confident stays a dashboard suggestion for you to decide.
 
-> **Cost & privacy notes:** the AI verdict is **~one small call per wanted
-> book, ever** — it fires only when a search first finds results, and the
-> rating is persisted (found = settled). Set `WANTED_LLM=false` for a fully
+> **Cost & privacy notes:** a found book costs **one small AI call, ever** —
+> the rating is persisted (found = settled). A book that isn't on ABB yet is
+> re-searched daily, but the AI only sees listings it hasn't already judged
+> for that book: an unchanged set of results costs nothing (restarts and
+> *Sync now* included), and new uploads cost one small call for just those.
+> Remembered verdicts are refreshed monthly (and when the model or book
+> changes), and the per-row re-check (↻) always asks afresh. Set `WANTED_LLM=false` for a fully
 > deterministic pipeline (M4B/language/bitrate rules, no calls at all). What
 > the model sees is the wanted book's public title/author and the public ABB
 > listing metadata — never your library. Hardcover is queried a couple of

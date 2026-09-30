@@ -9,6 +9,7 @@ API; Tor shields only the AudiobookBay scrape.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -218,6 +219,14 @@ WANTED_VERDICT_SCHEMA = {
     },
     "required": ["match_found", "ranked", "notes", "reason"],
 }
+
+# Fingerprint of everything that shapes a wanted verdict besides its inputs.
+# The wanted list remembers which listings the AI already judged (see
+# WantedService._verdict_memory); changing the prompt or schema here changes
+# this, which retires every remembered judgment — no version number to forget.
+VERDICT_PROMPT_REV = hashlib.sha1(
+    (WANTED_VERDICT_INSTRUCTION + json.dumps(WANTED_VERDICT_SCHEMA, sort_keys=True)).encode()
+).hexdigest()[:8]
 
 
 def rank_payload(books):

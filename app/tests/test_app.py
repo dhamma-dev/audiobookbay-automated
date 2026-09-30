@@ -280,13 +280,16 @@ def test_manual_recheck_routes_through_autodownload(tmp_path):
     svc.store.wanted_upsert({"hc_id": 1, "title": "Dune", "status": "wanted"})
 
     calls = []
-    svc.wanted.search_and_autodownload = lambda row, sess=None: calls.append(row["hc_id"]) or "found"
+    svc.wanted.search_and_autodownload = \
+        lambda row, sess=None, fresh=False: calls.append((row["hc_id"], fresh)) or "found"
 
     c = app.test_client()
     token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()
     r = c.post("/wanted/research/1", data={"csrf_token": token})
     assert r.status_code == 302
-    assert calls == [1]   # the re-check uses the auto-download-aware path
+    # The re-check uses the auto-download-aware path, and a human asking gets
+    # a fresh AI look (the verdict memory is bypassed).
+    assert calls == [(1, True)]
 
 
 def test_wanted_add_endpoint_owned_and_queued(tmp_path):
@@ -299,7 +302,7 @@ def test_wanted_add_endpoint_owned_and_queued(tmp_path):
     svc.library.owns = lambda title, author: title == "Owned Book"
     svc.wanted.library = svc.library
     # No real scrape in tests: the immediate search comes back unreachable.
-    svc.wanted.search_one = lambda row, sess=None: "unreachable"
+    svc.wanted.search_one = lambda row, sess=None, fresh=False: "unreachable"
 
     c = app.test_client()
     token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()

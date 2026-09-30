@@ -637,6 +637,182 @@ def test_auto_send_fetches_the_magnet_on_the_search_route(tmp_path):
     assert entry["status"] == "ok" and entry["route"] == "tor"
 
 
+# --- verdict memory: unchanged results never go back to the AI ----------------------
+class RecordingRank:
+    """An active AI verdict that records the listings it was shown and answers
+    from a script (default: none of them is the book)."""
+    enabled = True
+
+    def __init__(self, answer=None):
+        self.calls = []
+        self.answer = answer or (lambda listings: {
+            "match_found": False, "ranked": [], "notes": [], "reason": "not this book"})
+
+    def wanted_verdict(self, title, author, listings):
+        self.calls.append([li["title"] for li in listings])
+        return self.answer(listings)
+
+
+def listing(n, **fields):
+    return dict({"title": f"Unrelated Listing {n} - Someone",
+                 "link": f"https://audiobookbay.lu/abss/unrelated-{n}/", "format": "MP3",
+                 "bitrate": "64 Kbps", "size": "300 MB", "language": "English",
+                 "keywords": [], "is_m4b": False}, **fields)
+
+
+def memory_service(tmp_path, books, rank=None, **overrides):
+    from abb.storage import Store
+    kwargs = dict(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    kwargs.update(overrides)
+    cfg = make_config(**kwargs)
+    store = Store(cfg)
+    store.init()
+    scraper, rank = FakeScraper(books), rank or RecordingRank()
+    svc = WantedService(cfg, store, scraper, FakeLibrary(set()), rank, FakeClients(),
+                        FakeOutbound(), None)
+    store.wanted_upsert({"hc_id": 1, "title": "Obscure Book", "author": "Some Author",
+                         "status": "wanted"})
+    return svc, store, scraper, rank
+
+
+def row_of(store):
+    return store.wanted_rows()[0]
+
+
+def test_unchanged_results_are_not_sent_to_the_ai_again(tmp_path):
+    svc, store, _scraper, rank = memory_service(tmp_path, [listing(1), listing(2), listing(3)])
+    assert svc.search_one(row_of(store)) == "unmatched"
+    # One call: the ladder's second query returned the same listings, and
+    # those were already judged moments earlier.
+    assert len(rank.calls) == 1 and len(rank.calls[0]) == 3
+
+    assert svc.search_one(row_of(store)) == "unmatched"      # the next daily check
+    assert len(rank.calls) == 1                               # nothing new, no call
+    detail = row_of(store)["detail"]
+    assert "nothing new since the AI last looked" in detail and "AI: not this book" in detail
+
+
+def test_only_new_listings_are_sent_and_can_still_be_found(tmp_path):
+    svc, store, scraper, rank = memory_service(tmp_path, [listing(1), listing(2)])
+    svc.search_one(row_of(store))
+    scraper.books.append(listing(3, title="Obscure Book - Some Author", format="M4B",
+                                 is_m4b=True))
+    rank.answer = lambda listings: {"match_found": True, "ranked": [0], "notes": [],
+                                    "reason": "the new upload is the book"}
+    assert svc.search_one(row_of(store)) == "found"
+    assert rank.calls[-1] == ["Obscure Book - Some Author"]   # only the unseen listing
+    assert row_of(store)["best_title"] == "Obscure Book - Some Author"
+
+
+def test_the_recheck_button_gets_a_fresh_look(tmp_path):
+    svc, store, _scraper, rank = memory_service(tmp_path, [listing(1), listing(2)])
+    svc.search_one(row_of(store))
+    svc.search_one(row_of(store), fresh=True)                 # the ↻ button
+    assert len(rank.calls) == 2 and len(rank.calls[1]) == 2   # everything, again
+
+
+def test_an_edited_post_is_judged_again(tmp_path):
+    svc, store, scraper, rank = memory_service(tmp_path, [listing(1, title="Obscure Book (sample)")])
+    svc.search_one(row_of(store))
+    scraper.books[0] = listing(1, title="Obscure Book - Some Author")   # same post, updated
+    svc.search_one(row_of(store))
+    assert rank.calls[-1] == ["Obscure Book - Some Author"]
+
+
+def test_memory_resets_when_the_book_model_or_language_changes(tmp_path):
+    from dataclasses import replace
+    svc, store, _scraper, rank = memory_service(tmp_path, [listing(1)])
+    svc.search_one(row_of(store))
+    for change in (lambda: store.wanted_upsert({"hc_id": 1, "title": "Obscure Book: Revised"}),
+                   lambda: setattr(svc, "config", replace(svc.config, rank_model="gemini-9")),
+                   lambda: setattr(svc, "config", replace(svc.config, preferred_language="German"))):
+        before = len(rank.calls)
+        change()
+        svc.search_one(row_of(store))
+        assert len(rank.calls) == before + 1   # a different judge or book: ask again
+
+
+def test_memory_expires(tmp_path):
+    import json
+    from datetime import datetime, timedelta, timezone
+    from abb.wanted import VERDICT_MEMORY_DAYS
+    svc, store, _scraper, rank = memory_service(tmp_path, [listing(1)])
+    svc.search_one(row_of(store))
+    memory = json.loads(row_of(store)["verdict_cache"])
+    old = datetime.now(timezone.utc) - timedelta(days=VERDICT_MEMORY_DAYS)
+    memory["since"] = old.isoformat(timespec="seconds")
+    store.wanted_upsert({"hc_id": 1, "verdict_cache": json.dumps(memory)})
+    svc.search_one(row_of(store))
+    assert len(rank.calls) == 2   # a mistaken "no" can't stick past the window
+
+
+def test_failed_or_garbled_verdicts_are_not_remembered(tmp_path):
+    answers = (lambda listings: None,                                 # timeout / quota
+               lambda listings: {"match_found": True, "ranked": [99],    # no valid pick
+                                 "notes": [], "reason": "?"})
+    for case, answer in enumerate(answers):
+        svc, store, _scraper, rank = memory_service(tmp_path / f"case{case}",
+                                                    [listing(1)], RecordingRank(answer))
+        svc.search_one(row_of(store))
+        assert row_of(store)["verdict_cache"] is None
+        svc.search_one(row_of(store))
+        assert len(rank.calls) >= 2   # asked again next time
+
+
+def test_the_fallback_never_revives_a_listing_the_ai_ruled_out(tmp_path):
+    # The AI rejected a listing the deterministic matcher would accept (say, an
+    # abridged sample). If a later AI call fails, the fallback must not pick
+    # it — and auto-download it — behind the AI's back.
+    lookalike = listing(1, title="Obscure Book - Some Author", format="M4B", is_m4b=True)
+    svc, store, scraper, rank = memory_service(tmp_path, [lookalike])
+    svc.search_one(row_of(store))                  # AI: not this book
+    scraper.books.append(listing(2))
+    rank.answer = lambda listings: None            # the next call fails
+    assert svc.search_one(row_of(store)) == "unmatched"
+
+
+def test_judgments_survive_a_search_cut_short(tmp_path):
+    # AI judged the first query's listings, then ABB stopped answering: those
+    # verdicts still stand and aren't paid for again.
+    svc, store, scraper, rank = memory_service(tmp_path, [listing(1), listing(2)])
+    answers = iter([[listing(1), listing(2)], None])
+    scraper.search = lambda q, max_pages=5, sess=None: next(answers)
+    assert svc.search_one(row_of(store)) == "unreachable"
+    scraper.search = lambda q, max_pages=5, sess=None: [listing(1), listing(2)]
+    svc.search_one(row_of(store))
+    assert len(rank.calls) == 1
+
+
+def test_search_anyway_clears_the_memory(tmp_path):
+    svc, store, _scraper, rank = memory_service(tmp_path, [listing(1)])
+    svc.search_one(row_of(store))
+    store.wanted_upsert({"hc_id": 1, "status": "owned"})
+    svc.reopen(1, "alice")
+    assert row_of(store)["verdict_cache"] is None
+    svc.search_one(row_of(store))
+    assert len(rank.calls) == 2   # a fresh look after "this was wrong"
+
+
+def test_memory_is_off_when_the_ai_is(tmp_path):
+    rank = RecordingRank()
+    rank.enabled = False                            # no key / WANTED_LLM=false
+    svc, store, _scraper, _rank = memory_service(tmp_path, [listing(1)], rank)
+    svc.search_one(row_of(store))
+    svc.search_one(row_of(store))
+    assert row_of(store)["verdict_cache"] is None   # deterministic, exactly as before
+
+
+def test_memory_is_capped():
+    import json
+    from abb.wanted import VERDICT_MEMORY_MAX
+    memory = {"stamp": "s", "since": "2026-09-01T00:00:00+00:00",
+              "keys": [f"old{i}" for i in range(VERDICT_MEMORY_MAX)], "reason": "r"}
+    stored = json.loads(WantedService._remembered("s", memory, ["new1", "new2"], "", "now"))
+    assert len(stored["keys"]) == VERDICT_MEMORY_MAX
+    assert stored["keys"][-2:] == ["new1", "new2"] and "old0" not in stored["keys"]
+    assert stored["reason"] == "r" and stored["since"] == memory["since"]
+
+
 def test_auto_policy_label(tmp_path):
     svc, _, _ = autodownload_service(tmp_path, M4B_BOOK)
     assert svc.auto_policy_label() == "M4B only"

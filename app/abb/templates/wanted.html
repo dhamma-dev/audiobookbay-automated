@@ -217,7 +217,7 @@
                     <form method="post" action="{{ url_for('actions.wanted_research', hc_id=r.hc_id) }}" class="wanted-inline-form">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
-                                title="Re-check AudioBook Bay for this book now (uses your browser's Tor/Direct route)">
+                                title="Re-check AudioBook Bay for this book now: a fresh search, and a fresh AI look at every listing (uses your browser's Tor/Direct route)">
                             <i data-lucide="rotate-cw" aria-hidden="true"></i>
                         </button>
                     </form>
@@ -400,7 +400,8 @@
     Books added here in the app auto-download as soon as a match meets the server's
     auto-download requirements (see Settings) — Hardcover-synced books do the same when
     auto-download is switched on. “Not available yet”
-    books are re-checked about once a day; skip (✕) takes one out of the
+    books are re-checked about once a day (the AI only sees listings it hasn't already ruled
+    out, so an unchanged search costs nothing); skip (✕) takes one out of the
     rotation entirely until you allow it again. Found books are settled — their results and AI
     rating are stored and never looked up again unless you hit re-check (↻) on that row.
     Sending (manually or auto) marks the row — and once the download lands in Audiobookshelf,
