@@ -31,31 +31,32 @@ why v2 looks like this.
 | `app/main.py` | Entrypoint: `load_dotenv()` → `create_app()` → waitress (one process + threads — required by the caches/Tor/worker; never run multi-worker). |
 | `app/abb/config.py` | Typed `Config.from_env()`: every env var, defaults, validation, masked startup report. |
 | `app/abb/factory.py` | `create_app()` + the `Services` container (config/store/tor/outbound/scraper/library/rank/clients/wanted). |
-| `app/abb/tor.py`, `outbound.py` | `TorManager` (launch/bootstrap/renew) and `Outbound` (direct+tor sessions, per-browser route mode). |
+| `app/abb/tor.py`, `outbound.py` | `TorManager` (launch/bootstrap/renew/relaunch) and `Outbound` (direct+tor sessions, per-browser route mode; **fails closed** — `TorUnavailable`, never a silent Direct). |
 | `app/abb/scraper.py` | ABB search parse (pure `parse_search_page`) + magnet extraction. |
 | `app/abb/storage.py` | SQLite (WAL): download log + wanted rows; v1 schema, self-migrating. |
-| `app/abb/matching.py` | **Pure, stdlib-only** library matcher (v1 `abs_match.py`, unchanged logic). |
+| `app/abb/matching.py` | **Pure, stdlib-only** library matcher (v1 `abs_match.py` + the v3 volume/identity guards that stop sequels reading as book 1). |
 | `app/abb/library.py` | `AbsLibrary`: ABS index cache, ownership joins, Upgrade Radar. |
 | `app/abb/smart_sort.py` | `RankService`: Gemini schemas/instructions, rank cache, wanted verdict. `RANK_FIELDS` is the privacy allowlist. |
 | `app/abb/wanted.py` | `WantedService`: Hardcover sync, query ladder, worker thread, auto-download. |
 | `app/abb/clients.py` | Download-client registry (add/list per client) + put.io token logic. |
 | `app/abb/identity.py`, `security.py` | Proxy-header identity; CSRF, security headers, persisted secret key. |
 | `app/abb/settings.py` | In-app settings overlay: `FEATURE_SETTINGS` overrides from SQLite, most-recently-set-wins vs env (snapshot comparison). UI in `web/admin.py`. |
+| `app/abb/version.py` | Build identity (commit/branch/build time) from the image's `APP_*` env (CI build args), else the local git checkout → footer, `/healthz`, boot log. |
 | `app/abb/web/` | Blueprints: `pages` (HTML), `actions` (send/settings/wanted POSTs), `api` (JSON + `/healthz`), `putio` (OAuth). |
-| `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**). |
+| `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**) + `covers.js` (cover fallbacks; in `<head>` so it's listening before images load). **No inline event handlers** (`onerror=` etc.) — the CSP blocks them. |
 | `app/tests/` | pytest suite; CI gates image builds on it. |
 | `app/abs_match_spike.py` | Standalone matcher eval CLI; imports `abb.matching` only. |
 | `Dockerfile`, `docker-compose.yaml` | python:3.12-slim + tor, non-root (uid 1000), `HEALTHCHECK` → `/healthz`. |
-| `docs/` | Deep dives (architecture, library matching, development, v2 review). |
+| `docs/` | Deep dives (architecture, library matching, development, v2 + v3 reviews — v3 lists the open findings). |
 
 ## Core subsystems (one line each — details in docs)
 
 - **Download clients** — registry in `clients.py`; one client per deploy via `DOWNLOAD_CLIENT`. Adding a client = one backends entry + `CLIENT_REQUIRED_ENV`.
-- **Tor routing** — the app starts/manages its own `tor`; ABB scrape + magnet lookup go through it, toggleable per browser (`session['route_mode']`). Everything else (Gemini, ABS, Hardcover, the download client) goes direct.
+- **Tor routing** — the app starts/manages its own `tor`; ABB scrape + magnet lookup go through it, toggleable per browser (`session['route_mode']`). Everything else (Gemini, ABS, Hardcover, the download client) goes direct. **Fails closed:** on the Tor route with no usable Tor, ABB requests wait or refuse (`TorUnavailable`, worker pauses) — never silently Direct; Direct is always explicit.
 - **Smart sort** — optional Gemini call (`/api/rank`) re-ranking results, grouping series/editions. Only public result metadata (`RANK_FIELDS`) is sent. See [`docs/architecture.md`](docs/architecture.md).
 - **ABS library matching** — deterministic baseline + LLM-canonicalized local join + live re-check poll. **Precision-first; the library never leaves the box.** See [`docs/library-matching.md`](docs/library-matching.md).
 - **Download log** — SQLite audit of who sent what; identity from reverse-proxy auth headers (Authentik). `/log` gated by `LOG_ADMIN_USERS`.
-- **Hardcover wanted list** — `/wanted` dashboard syncs "Want to Read" (GraphQL), background-searches ABB (worker thread, broad query ladder). Found rows are **AI-rated once, then settled** (`WANTED_LLM=false` → deterministic). Optional strict auto-download (`WANTED_AUTO_DOWNLOAD`, M4B-only). Dashboard shelves: active / owned (done) / skipped (out of rotation until re-allowed). Quick add on /wanted: manual rows (negative hc_id, `added_by`) check the library at add time, search immediately, and ALWAYS auto-download the best pick (any format) as the requesting user — fire and forget.
+- **Hardcover wanted list** — `/wanted` dashboard syncs "Want to Read" (GraphQL), background-searches ABB (worker thread, broad query ladder). Found rows are **AI-rated once, then settled** (`WANTED_LLM=false` → deterministic); unfound rows only send the AI listings it hasn't judged for that book (`verdict_cache`: 30-day refresh, reset on model/prompt/book change, ↻ re-check = fresh). Optional strict auto-download (`WANTED_AUTO_DOWNLOAD`, M4B-only). Dashboard shelves: active / owned (done; "Search anyway" reopens a wrong one, `owned_ignore` remembers the rejected match) / skipped (out of rotation until re-allowed). Quick add on /wanted: manual rows (negative hc_id, `added_by`) check the library at add time, search immediately, and always ATTEMPT auto-download as the requesting user. Auto requirements are one universal policy (`WANTED_AUTO_FORMAT` m4b|any + `WANTED_AUTO_MIN_KBPS`, in Settings) for Hardcover and manual rows alike.
 - **Auth deployment** — behind Authentik forward-auth via Nginx Proxy Manager; `X-authentik-username` etc. arrive as request headers.
 - **Security layer (v2)** — CSRF on all form POSTs (`X-CSRF-Token` header on fetches), CSP/security headers, SameSite=Lax cookies, secret key persisted under `/data`.
 - **In-app settings (v2.1)** — `/settings` (gated like `/log`) edits the *feature* keys (Gemini/ABS/Hardcover/wanted) live, no restart; env vs app precedence = whichever was set most recently (see `abb/settings.py`). Deployment plumbing stays env-only, and `LOG_ADMIN_USERS` is deliberately not editable from the page it gates.
@@ -75,7 +76,7 @@ why v2 looks like this.
 
 # Before committing:
 cd app && python -m pytest -q                 # the real gate (CI runs this)
-node --check app/abb/static/js/app.js
+for f in app/abb/static/js/*.js; do node --check "$f"; done
 python3 app/abs_match_spike.py --selftest     # matcher eval CLI, offline mode
 ```
 
@@ -92,7 +93,8 @@ python3 app/abs_match_spike.py --selftest     # matcher eval CLI, offline mode
   and smart sort all swallow their own errors: a failure leaves search working,
   just without that enrichment.
 - **Privacy boundaries are deliberate — preserve them:**
-  - Tor shields **only** the ABB scrape (plus covers when `COVER_PROXY=true`).
+  - Tor shields **only** the ABB scrape (plus covers when `COVER_PROXY=true`),
+    and it fails closed — never add a code path that falls back to Direct.
     Gemini, ABS and Hardcover calls go direct.
   - Smart sort sends **only** public result metadata (`RANK_FIELDS`), never
     links/covers/hostname.

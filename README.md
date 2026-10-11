@@ -212,7 +212,13 @@ GEMINI_API_KEY=your-google-ai-studio-key   # Enables Smart sort when set
 RANK_MODEL=gemini-3.5-flash                 # Optional; Gemini model to use
 SMART_PREFETCH_DEFAULT=off                  # Optional; "on" prefetches by default
 RANK_THINKING_BUDGET=0                       # Default 0 (fastest); N allows thinking; negative = model default
+GEMINI_TIMEOUT=60                            # Optional; seconds per Gemini call (0/off = no limit)
 ```
+
+Every Gemini call — Smart sort and the wanted-list verdict — gives up after
+`GEMINI_TIMEOUT` seconds, so a stalled model can't hang a search or the
+background worker (a wanted book then falls back to the deterministic pick).
+Keep it under 120s: the browser stops waiting for Smart sort after that.
 
 > **Why the budget defaults to 0:** flash models spend time "thinking" before
 > answering, and for a structured ranking task that's mostly wasted latency.
@@ -221,7 +227,8 @@ RANK_THINKING_BUDGET=0                       # Default 0 (fastest); N allows thi
 > and far less variance. Raise it to a positive token count if you ever notice
 > worse series/ownership matching, or set a negative value to restore the
 > model's own default thinking. The server logs `[SMART SORT] … in Xs` so you
-> can compare, and if a model rejects the budget the app retries without it.
+> can compare, and if a model rejects the budget the app retries without it
+> (only then — a timeout or an overloaded model never switches the fast path off).
 
 > **Privacy note:** unlike AudioBook Bay scraping, the Smart sort request goes
 > **directly to Google's API and is _not_ routed through Tor**. Only your search
@@ -275,9 +282,10 @@ ABS_TOKEN=your-abs-api-token                 # Settings → Users → (you) → 
 
 The matcher (`app/abb/matching.py`) is **precision-first**: it only ever asserts a
 positive, and only when confident. A strong title match is *gated on the author*
-(so a same-title / wrong-author result is rejected), foreign-language editions
-and bundles matched against a single owned volume are held back, and a match it
-isn't sure about simply shows no badge. **A missing badge is never a claim you
+(so a same-title / wrong-author result is rejected), foreign-language editions,
+bundles, other volumes of a series, and sequels whose title merely contains the
+first book's (owning *Dune* doesn't mean you own *Dune Messiah*) are held back,
+and a match it isn't sure about simply shows no badge. **A missing badge is never a claim you
 _don't_ own something** — so a slight title variation can never mislead you. The
 badge is informational and never blocks the Send button (you may still want a
 different edition or narrator).
@@ -319,15 +327,22 @@ Connect your [Hardcover](https://hardcover.app) account and your **“Want to
 Read” list becomes a dashboard**: a **Wanted** page appears in the nav where
 every wanted book is pre-searched on AudioBook Bay in the background and moves
 through a pipeline — *Queued → Found → Sent → In your library* (books you
-already own in Audiobookshelf are marked instead of searched).
+already own in Audiobookshelf are marked instead of searched). If a book was
+marked *In your library* by mistake, **Search anyway** on that row puts it
+back in the queue and ignores the library match that claimed it; rows the
+current matcher no longer confirms are flagged *Unconfirmed* (never
+re-downloaded on their own — that stays your call).
 
 **Quick add.** The `/wanted` page also has an "Add & fetch" box for books that
 aren't on your Hardcover list: type a title (author optional) and dip out. Your
 Audiobookshelf library is checked first — if you already own it, the page says
 so and nothing is added. Otherwise the book is searched immediately and, since
-you won't be coming back to choose, its best match downloads automatically on
-your behalf (any format — M4B still wins when available), credited to your user
-in the download log. Misses join the normal daily re-check queue. App-added
+you won't be coming back to choose, a match meeting the server's auto-download
+requirements downloads automatically on your behalf, credited to your user in
+the download log. The requirements — format (`WANTED_AUTO_FORMAT`: `m4b` or
+`any`) and an optional minimum bitrate (`WANTED_AUTO_MIN_KBPS`) — are one
+universal policy for Hardcover-synced and app-added books alike, editable on
+the Settings page; held picks say why on their row. Misses join the normal daily re-check queue. App-added
 books show a trash button to remove them; Hardcover books are removed on
 Hardcover.
 
@@ -352,8 +367,10 @@ WANTED_ROUTE=default                     # background search route: default | to
 
 > **Routing note:** background searches use the **server's default route**
 > (`USE_TOR`), not your browser's Tor/Direct toggle — the toolbar shows which.
-> Failed rows say so and retry within ~30 minutes, and the per-row re-check
-> button always uses *your* browser's route, so it doubles as a diagnostic.
+> On the Tor route they **wait for Tor** when it's down (the dashboard says
+> they're paused) — they never fall back to Direct. Failed rows say so and
+> retry within ~30 minutes, and the per-row re-check button always uses *your*
+> browser's route, so it doubles as a diagnostic.
 > **On Tor, the worker self-heals:** after 3 consecutive unreachable searches
 > it automatically requests a fresh Tor circuit (at most once per 10 minutes —
 > renewal swaps the exit for everyone on the instance) and immediately requeues
@@ -367,9 +384,13 @@ match, **M4B only**), it sends it to your download client automatically and
 records it in the download log as `hardcover-auto`. Anything less than
 confident stays a dashboard suggestion for you to decide.
 
-> **Cost & privacy notes:** the AI verdict is **~one small call per wanted
-> book, ever** — it fires only when a search first finds results, and the
-> rating is persisted (found = settled). Set `WANTED_LLM=false` for a fully
+> **Cost & privacy notes:** a found book costs **one small AI call, ever** —
+> the rating is persisted (found = settled). A book that isn't on ABB yet is
+> re-searched daily, but the AI only sees listings it hasn't already judged
+> for that book: an unchanged set of results costs nothing (restarts and
+> *Sync now* included), and new uploads cost one small call for just those.
+> Remembered verdicts are refreshed monthly (and when the model or book
+> changes), and the per-row re-check (↻) always asks afresh. Set `WANTED_LLM=false` for a fully
 > deterministic pipeline (M4B/language/bitrate rules, no calls at all). What
 > the model sees is the wanted book's public title/author and the public ABB
 > listing metadata — never your library. Hardcover is queried a couple of
@@ -388,7 +409,8 @@ recall on your own data. It reuses the app's Tor and `.env`:
 # offline logic check — no ABS or ABB needed, exercises the matcher + guards:
 docker compose exec audiobookbay-automated python abs_match_spike.py --selftest
 
-# live run against your library + real ABB searches:
+# live run against your library + real ABB searches (through the container's
+# Tor — it refuses without it; --direct opts in to scraping from your real IP):
 docker compose exec audiobookbay-automated \
     python abs_match_spike.py "cradle" "land fit for heroes"
 ```
@@ -410,6 +432,15 @@ still connecting and your default route is Tor, search waits and enables itself
 the moment Tor is ready — or you can switch to Direct and search immediately.
 Defaulting to Direct (`USE_TOR=false`) lets you search right away regardless.
 
+**Tor routing fails closed.** Whenever the route is Tor and Tor isn't usable —
+still connecting, failed to start, or crashed — AudioBook Bay requests (search,
+Send, magnet lookups, proxied covers, background wanted-list searches) **wait
+or refuse; they never quietly go out Direct**, which would show the mirror your
+server's real IP. The UI says so ("Tor · down") and offers a one-click switch
+to Direct for your browser. A slow bootstrap still comes good when it
+finishes, and a Tor process that exits is relaunched automatically (with
+backoff).
+
 **Per-user controls.** A **Connection** menu in the navbar lets each visitor:
 
 - **Toggle Tor ⇄ Direct** for AudioBook Bay traffic. The choice is remembered in
@@ -427,13 +458,14 @@ TOR_AUTOSTART=true          # Set to false to use an already-running Tor instead
                             # Circuit renewal requires the app-managed Tor.
 TOR_SOCKS_PORT=9050         # SOCKS port the app starts Tor on / connects to
 TOR_CONTROL_PORT=9051       # Control port (localhost) used for circuit renewal
-TOR_BOOTSTRAP_TIMEOUT=90    # Seconds to wait for Tor to connect before failing
+TOR_BOOTSTRAP_TIMEOUT=90    # Seconds before a still-connecting Tor reports "down" (it keeps trying)
 ```
 
-> The app starts Tor in the background; if it can't (no `tor` binary, or
-> `TOR_AUTOSTART=false` with nothing already listening) it runs in Direct-only
-> mode and the toggle reflects that. If you run outside Docker, the `tor` binary
-> must be installed and on your `PATH`.
+> The app starts Tor in the background. If it can't (no `tor` binary, or
+> `TOR_AUTOSTART=false` with nothing already listening), Tor-routed traffic is
+> paused, not rerouted: set `USE_TOR=false` to default to Direct instead, or pick
+> Direct per browser. If you run outside Docker, the `tor` binary must be
+> installed and on your `PATH`.
 
 ---
 
@@ -487,6 +519,13 @@ The app is then available on `http://<your-host>:5078`.
 > as root, make it writable once: `chown -R 1000:1000 data`. If it isn't
 > writable, the app still runs — the download log and the persisted session key
 > just disable themselves with a warning in the logs.
+
+**Which build is running?** The page footer shows the branch, commit and build
+time the image was built from — e.g. `dev · b68986b · 2026-09-28 15:05 UTC` —
+with the commit linking to GitHub; `/healthz` and the startup log say the
+same. After redeploying, compare it with the commit you expect. (Local runs
+show the checkout's commit instead, suffixed `-dirty` when files have
+uncommitted changes.)
 
 ---
 

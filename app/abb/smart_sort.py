@@ -9,6 +9,7 @@ API; Tor shields only the AudiobookBay scrape.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -219,6 +220,14 @@ WANTED_VERDICT_SCHEMA = {
     "required": ["match_found", "ranked", "notes", "reason"],
 }
 
+# Fingerprint of everything that shapes a wanted verdict besides its inputs.
+# The wanted list remembers which listings the AI already judged (see
+# WantedService._verdict_memory); changing the prompt or schema here changes
+# this, which retires every remembered judgment — no version number to forget.
+VERDICT_PROMPT_REV = hashlib.sha1(
+    (WANTED_VERDICT_INSTRUCTION + json.dumps(WANTED_VERDICT_SCHEMA, sort_keys=True)).encode()
+).hexdigest()[:8]
+
 
 def rank_payload(books):
     """The slim, privacy-conscious payload sent to Gemini for re-ranking: the
@@ -248,6 +257,15 @@ def sanitize_results(incoming):
                 slim[field] = value
         results.append(slim)
     return results
+
+
+def _rejects_thinking(e):
+    """True only when the model refused the thinking config itself: a 400
+    that names it ("thinking budget is not supported", "only works in
+    thinking mode"). That is the one failure a retry without the budget can
+    fix; a timeout, quota (429) or server error (5xx) would fail it just the
+    same."""
+    return getattr(e, "code", None) == 400 and "thinking" in str(e).lower()
 
 
 def _schema_with_canonical():
@@ -320,12 +338,17 @@ class RankService:
     # --- Gemini plumbing ----------------------------------------------------------
     def _generate(self, system_instruction, schema, prompt):
         """One structured generate_content call with the shared temperature /
-        thinking-budget handling. A budget the model rejects is retried once
-        without and then never sent again."""
+        thinking-budget handling, bounded by GEMINI_TIMEOUT — the SDK's own
+        default is no timeout, so one hung call could pin a request thread or
+        stall the whole wanted worker. A budget the model rejects is retried
+        once without and then never sent again."""
+        import httpx
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self.config.gemini_api_key)
+        timeout = self.config.gemini_timeout
+        http_options = types.HttpOptions(timeout=int(timeout * 1000)) if timeout else None
+        client = genai.Client(api_key=self.config.gemini_api_key, http_options=http_options)
         config_kwargs = dict(
             system_instruction=system_instruction,
             response_mime_type="application/json",
@@ -337,17 +360,29 @@ class RankService:
                 thinking_budget=self.config.rank_thinking_budget)
 
         def call():
-            return client.models.generate_content(
-                model=self.config.rank_model, contents=prompt,
-                config=types.GenerateContentConfig(**config_kwargs))
+            try:
+                return client.models.generate_content(
+                    model=self.config.rank_model, contents=prompt,
+                    config=types.GenerateContentConfig(**config_kwargs))
+            except httpx.TimeoutException as e:
+                # A plain message for the smart-sort toast and the worker log,
+                # rather than an httpx internal.
+                raise TimeoutError(f"Gemini didn't answer within {timeout:g}s" if timeout
+                                   else "Gemini timed out") from e
 
         try:
             return call()
         except Exception as e:
-            if "thinking_config" not in config_kwargs:
+            # The retry exists for models that reject a thinking budget — and
+            # only for that. Retrying a timeout, a quota error (429) or an
+            # overloaded model (503) would fail the same way, and it used to
+            # also switch the fast thinking=0 path off for good, silently
+            # slowing every later call over one transient blip.
+            if "thinking_config" not in config_kwargs or not _rejects_thinking(e):
                 raise
             self._thinking_supported = False
-            log.warning("thinking_budget=%s failed (%s); retrying without it.",
+            log.warning("%s rejected thinking_budget=%s (%s); retrying without it "
+                        "(and not sending it again).", self.config.rank_model,
                         self.config.rank_thinking_budget, e)
             config_kwargs.pop("thinking_config")
             return call()

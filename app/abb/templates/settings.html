@@ -77,7 +77,7 @@
             </label>
             {% elif item.kind == 'choice' %}
             <select id="set-{{ item.key }}" name="{{ item.key }}" {% if not store_enabled %}disabled{% endif %}>
-                {% for c in route_choices %}
+                {% for c in item.choices %}
                 <option value="{{ c }}" {% if item.value == c %}selected{% endif %}>{{ c }}</option>
                 {% endfor %}
             </select>

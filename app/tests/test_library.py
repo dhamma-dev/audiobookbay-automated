@@ -101,6 +101,27 @@ def test_resolve_ownership_reports_upgrade_for_flagged_copy():
     assert o["status"] == "upgrade" and "kbps" in o["detail"]
 
 
+def test_canonical_fallback_never_resolves_to_a_sibling():
+    # Canonical "Dune" #1 misses the (series, seq) join when only #2 is owned;
+    # the fuzzy fallback used to hand back the owned sibling anyway.
+    L = lib()
+    index = [owned("Dune Messiah", "Frank Herbert", [("Dune", "2")])]
+    series_index = L.owned_series_index(index)
+    book1 = {"title": "Dune", "author": "Frank Herbert", "series": "Dune", "seq": 1}
+    assert L.canonical_owned(book1, index, series_index) is None
+    book2 = {"title": "Dune Messiah", "author": "Frank Herbert", "series": "Dune", "seq": 2}
+    assert L.canonical_owned(book2, index, series_index) is index[0]
+
+
+def test_load_items_keeps_the_subtitle():
+    L = lib()
+    L._get = lambda path, **params: {"results": [{"media": {"metadata": {
+        "title": "Atomic Habits", "subtitle": "An Easy & Proven Way",
+        "authorName": "James Clear"}}}]}
+    (item,) = L._load_items("lib")
+    assert item["subtitle"] == "An Easy & Proven Way"
+
+
 def test_resolve_ownership_never_raises():
     L = lib()
     L.resolve_ownership({"series": [{"entries": [{"seq": None}]}], "canonical": None},

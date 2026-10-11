@@ -152,6 +152,46 @@
     }
   }
 
+  // After results are swapped in (a search, or Back/Forward to one).
+  function resultsSwapped() {
+    smartSortReset();  // new result set => any cached ranking is stale
+    initSmartSort();   // opt-in prefetch for the new results
+    syncHideOwned();   // re-apply the session's hide-owned choice
+  }
+
+  /* Searches live in the address bar: reload re-runs one (GET /?q=),
+     Back/Forward step between them, and the link is shareable. Each
+     search's rendered results are kept here so stepping back is instant
+     instead of a re-scrape; a miss (e.g. after a reload) loads the URL. */
+  const searchPages = new Map();   // normalized query -> results HTML
+  let searchSeq = 0;               // a newer search or Back/Forward wins
+
+  function currentUrlQuery() {
+    return (new URLSearchParams(window.location.search).get('q') || '').trim().toLowerCase();
+  }
+
+  function rememberSearch(q, html, push) {
+    searchPages.set(q, html);
+    const state = { abbSearch: q };
+    const url = window.location.pathname + (q ? '?q=' + encodeURIComponent(q) : '');
+    if (push && q !== currentUrlQuery()) history.pushState(state, '', url);
+    else history.replaceState(state, '', url);
+  }
+
+  window.addEventListener('popstate', (e) => {
+    const q = e.state && e.state.abbSearch;
+    if (typeof q !== 'string') return;  // not a search entry
+    const results = document.getElementById('search-results');
+    const html = searchPages.get(q);
+    if (!results || html === undefined) { window.location.reload(); return; }
+    searchSeq++;                        // an in-flight search must not land on top
+    results.innerHTML = html;
+    const input = document.getElementById('search-input');
+    if (input) input.value = q;
+    resultsSwapped();
+    refreshIcons();
+  });
+
   async function handleSearch(form) {
     const results = document.getElementById('search-results');
     if (!results) {
@@ -162,6 +202,8 @@
       return; // let the browser surface the "required" message
     }
 
+    const seq = ++searchSeq;
+    const query = String(new FormData(form).get('query') || '').trim().toLowerCase();
     setSearchLoading(true);
     try {
       const res = await fetch(form.action || window.location.href, {
@@ -177,13 +219,13 @@
       }
 
       const html = await res.text();
+      if (seq !== searchSeq) return;    // overtaken by a newer search or Back
       const doc = new DOMParser().parseFromString(html, 'text/html');
       const fresh = doc.getElementById('search-results');
       if (fresh) {
         results.innerHTML = fresh.innerHTML;
-        smartSortReset();  // new result set => any cached ranking is stale
-        initSmartSort();   // opt-in prefetch for the new results
-        syncHideOwned();   // re-apply the session's hide-owned choice
+        resultsSwapped();
+        if (query) rememberSearch(query, fresh.innerHTML, true);
       } else {
         results.innerHTML =
           '<div class="empty-state">' +
@@ -193,6 +235,7 @@
           '</div>';
       }
     } catch (err) {
+      if (seq !== searchSeq) return;
       results.innerHTML =
         '<div class="empty-state">' +
         '<i data-lucide="wifi-off" class="empty-state-icon" aria-hidden="true"></i>' +
@@ -1218,6 +1261,7 @@
       if (!res.ok) throw new Error(data.message || 'Failed to load downloads');
 
       const torrents = data.torrents || [];
+      delete list.dataset.loading;
       if (torrents.length === 0) {
         list.innerHTML =
           '<div class="empty-state">' +
@@ -1238,6 +1282,19 @@
       refreshIcons();
     } catch (err) {
       if (manual) showToast(err.message || "Couldn't refresh downloads", 'error');
+      // First load failed (e.g. the client API hiccuping right after an
+      // add): show a quiet retrying state instead of spinning forever —
+      // the 10s auto-refresh keeps trying.
+      if (list.dataset.loading) {
+        list.innerHTML =
+          '<div class="empty-state">' +
+          '<i data-lucide="wifi-off" class="empty-state-icon" aria-hidden="true"></i>' +
+          '<p class="empty-state-title">Couldn\'t reach the download client</p>' +
+          '<p class="empty-state-subtitle">' + escapeHtml(err.message || '') +
+          ' — retrying automatically.</p>' +
+          '</div>';
+        refreshIcons();
+      }
     } finally {
       refreshInFlight = false;
       if (manual && btn) btn.disabled = false;
@@ -1275,13 +1332,16 @@
       if (!res.ok) throw new Error(data.message || 'Could not change routing');
 
       const label = document.querySelector('.conn-mode-label');
-      if (label) label.textContent = mode === 'tor' ? 'Tor' : 'Direct';
+      if (label) {
+        label.textContent = mode === 'direct' ? 'Direct'
+          : data.tor_status === 'starting' ? 'Tor · starting…' : 'Tor';
+      }
       const warning = document.querySelector('.conn-direct-warning');
       if (warning) warning.hidden = mode === 'tor';
       const renew = document.querySelector('.conn-renew-btn');
       if (renew) renew.disabled = mode !== 'tor';
       // Switching to Direct unblocks a search that was waiting on Tor.
-      if (mode === 'direct') clearTorBooting();
+      if (mode === 'direct') clearTorBooting('direct');
       showToast(mode === 'tor' ? 'Routing AudioBook Bay via Tor.' : 'Routing AudioBook Bay directly.', 'success');
     } catch (err) {
       checkbox.checked = !checkbox.checked; // revert the visual toggle
@@ -1316,18 +1376,21 @@
   }
 
   /* ----------------------------------------------------------
-     Tor boot gating: when this browser defaults to Tor and Tor is
-     still bootstrapping, the search page waits (polling) and offers
-     a one-click switch to Direct, then enables itself when ready.
+     Tor gating: when this browser's route is Tor and Tor isn't up
+     (still bootstrapping, or down), the search page waits (polling)
+     and offers a one-click switch to Direct — it never quietly goes
+     out Direct — then enables itself when Tor is ready.
      ---------------------------------------------------------- */
-  function clearTorBooting() {
+  // `mode` is the route now in effect: 'tor' (Tor came up) or 'direct' (the
+  // user switched) — the label must say which, not just drop "· starting…".
+  function clearTorBooting(mode) {
     if (torPollTimer) { clearTimeout(torPollTimer); torPollTimer = null; }
     const notice = document.getElementById('tor-booting');
     if (notice) notice.remove();
     const submit = document.getElementById('search-submit');
     if (submit) submit.disabled = false;
     const label = document.querySelector('.conn-mode-label');
-    if (label && /starting/i.test(label.textContent)) label.textContent = 'Tor';
+    if (label) label.textContent = mode === 'direct' ? 'Direct' : 'Tor';
   }
 
   let torPollTimer = null;
@@ -1336,10 +1399,12 @@
       .then((r) => r.json())
       .then((d) => {
         if (d.tor_status === 'ready' || d.route_mode === 'direct') {
-          clearTorBooting();
+          clearTorBooting(d.route_mode);
           if (d.tor_status === 'ready') showToast('Tor is ready — search away.', 'success');
         } else {
-          torPollTimer = setTimeout(pollConnection, 2500);
+          // Booting resolves in seconds; a Tor that's down (relaunching with
+          // backoff) doesn't need a request every 2.5s.
+          torPollTimer = setTimeout(pollConnection, d.tor_status === 'starting' ? 2500 : 15000);
         }
       })
       .catch(() => { torPollTimer = setTimeout(pollConnection, 4000); });
@@ -1361,7 +1426,7 @@
       if (warning) warning.hidden = false;
       const renew = document.querySelector('.conn-renew-btn');
       if (renew) renew.disabled = true;
-      clearTorBooting();
+      clearTorBooting('direct');
       showToast('Searching directly. Your server IP is visible to AudioBook Bay.', 'info');
     } catch (err) {
       btn.disabled = false;
@@ -1494,6 +1559,13 @@
   function init() {
     refreshIcons();
     setSearchLoading(false);
+
+    // The page as loaded is a search entry too (possibly the empty one), so
+    // Back from the first AJAX search restores it instead of leaving.
+    const searchResults = document.getElementById('search-results');
+    if (searchResults && document.getElementById('search-form')) {
+      rememberSearch(currentUrlQuery(), searchResults.innerHTML, false);
+    }
 
     const downloadsList = document.getElementById('downloads-list');
     if (downloadsList) {

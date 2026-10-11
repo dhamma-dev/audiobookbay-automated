@@ -186,6 +186,31 @@ def test_search_post_renders_result_cards(client):
     assert 'id="search-results-data"' not in body  # no Gemini key -> no payload blob
 
 
+def test_no_inline_event_handlers_anywhere(tmp_path):
+    """The CSP (script-src 'self') silently blocks inline handlers — that's
+    how the cover fallback broke in v2. Scan rendered pages, results
+    included; dead covers are handled by static/js/covers.js instead."""
+    import re
+    cfg = make_config(log_db_path=str(tmp_path / "p.db"), hardcover_api_key="k",
+                      log_admin_users=frozenset())
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    svc.scraper.search = lambda q, max_pages=5, sess=None: [{
+        "title": "Dune - Frank Herbert", "link": "https://audiobookbay.lu/abss/dune/",
+        "cover": "https://audiobookbay.lu/c/dune.jpg", "size": "1 GB", "format": "M4B",
+        "bitrate": "64 Kbps", "language": "English", "keywords": [], "is_m4b": True}]
+    c = app.test_client()
+    token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()
+    pages = [c.post("/", data={"query": "dune", "csrf_token": token}).data.decode()]
+    pages += [c.get(p).data.decode() for p in ("/", "/wanted", "/status", "/upgrades",
+                                               "/log", "/settings")]
+    for html in pages:
+        assert not re.search(r"<[^>]+\son[a-z]+\s*=", html), "inline handler found"
+    assert "data-fallback-src=" in pages[0] and "js/covers.js" in pages[0]
+
+
 def test_wanted_page_shelves_and_skip_flow(tmp_path):
     """Owned and skipped rows leave the active table for their own collapsed
     shelves; skip/unskip round-trips through the real endpoints."""
@@ -204,8 +229,9 @@ def test_wanted_page_shelves_and_skip_flow(tmp_path):
     assert "1 in the pipeline" in page and "1 in library" in page
     assert 'id="wanted-owned-list"' in page          # done shelf, collapsed
     assert "/wanted/skip/1" in page                  # skip on the queued row
-    assert "/wanted/skip/2" not in page              # no actions on done rows
+    assert "/wanted/skip/2" not in page              # done rows: no queue actions...
     assert "/wanted/research/2" not in page
+    assert "/wanted/reopen/2" in page                # ...just "Search anyway"
 
     token = page.split('name="csrf-token" content="')[1].split('"')[0]
     r = c.post("/wanted/skip/1", data={"csrf_token": token})
@@ -222,6 +248,29 @@ def test_wanted_page_shelves_and_skip_flow(tmp_path):
     assert c.post("/wanted/skip/2", data={"csrf_token": token}).status_code == 409
 
 
+def test_unconfirmed_done_rows_open_the_shelf_and_can_reopen(tmp_path):
+    from abb.wanted import UNCONFIRMED
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    store = app.extensions["abb"].store
+    store.init()
+    store.wanted_upsert({"hc_id": 3, "title": "Dune Messiah", "author": "Frank Herbert",
+                         "status": "owned", "detail": f"{UNCONFIRMED} — no longer matches"})
+
+    c = app.test_client()
+    page = c.get("/wanted").data.decode()
+    assert "1 unconfirmed" in page
+    assert '<div id="wanted-owned-list">' in page     # opened, not hidden
+    assert "no longer matches" in page                 # the why, visible without hover
+
+    token = page.split('name="csrf-token" content="')[1].split('"')[0]
+    assert c.post("/wanted/reopen/3", data={"csrf_token": token}).status_code == 302
+    (row,) = store.wanted_rows()
+    assert row["status"] == "wanted" and row["searched_at"] is None
+    assert c.post("/wanted/reopen/3", data={"csrf_token": token}).status_code == 409
+
+
 def test_manual_recheck_routes_through_autodownload(tmp_path):
     cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
     app = create_app(cfg, start=False)
@@ -231,13 +280,16 @@ def test_manual_recheck_routes_through_autodownload(tmp_path):
     svc.store.wanted_upsert({"hc_id": 1, "title": "Dune", "status": "wanted"})
 
     calls = []
-    svc.wanted.search_and_autodownload = lambda row, sess=None: calls.append(row["hc_id"]) or "found"
+    svc.wanted.search_and_autodownload = \
+        lambda row, sess=None, fresh=False: calls.append((row["hc_id"], fresh)) or "found"
 
     c = app.test_client()
     token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()
     r = c.post("/wanted/research/1", data={"csrf_token": token})
     assert r.status_code == 302
-    assert calls == [1]   # the re-check uses the auto-download-aware path
+    # The re-check uses the auto-download-aware path, and a human asking gets
+    # a fresh AI look (the verdict memory is bypassed).
+    assert calls == [(1, True)]
 
 
 def test_wanted_add_endpoint_owned_and_queued(tmp_path):
@@ -250,7 +302,7 @@ def test_wanted_add_endpoint_owned_and_queued(tmp_path):
     svc.library.owns = lambda title, author: title == "Owned Book"
     svc.wanted.library = svc.library
     # No real scrape in tests: the immediate search comes back unreachable.
-    svc.wanted.search_one = lambda row, sess=None: "unreachable"
+    svc.wanted.search_one = lambda row, sess=None, fresh=False: "unreachable"
 
     c = app.test_client()
     token = c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()
@@ -277,3 +329,59 @@ def test_wanted_add_endpoint_owned_and_queued(tmp_path):
     assert c.post("/wanted/remove/9", data={"csrf_token": token}).status_code == 409
     assert c.post("/wanted/remove/-1", data={"csrf_token": token}).status_code == 302
     assert {r["hc_id"] for r in svc.store.wanted_rows()} == {9}
+
+
+def _nav_positions(page, labels):
+    import re
+    nav = page[:page.index("conn-control")]
+    positions = []
+    for label in labels:
+        m = re.search(r">\s*%s\s*</a>" % re.escape(label), nav)
+        assert m, f"nav is missing {label}"
+        positions.append(m.start())
+    return positions
+
+
+def test_nav_order(client):
+    # Features (and the log) off here: Search, Downloads, Settings remain.
+    page = client.get("/").data.decode()
+    order = _nav_positions(page, ("Search", "Downloads", "Settings"))
+    assert order == sorted(order)
+
+
+def test_nav_order_with_all_features(tmp_path):
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k",
+                      abs_url="http://abs.local", abs_token="t")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    app.extensions["abb"].library.get_index = lambda max_age=None: []  # no network
+    page = app.test_client().get("/").data.decode()
+    order = _nav_positions(page, ("Search", "Wanted", "Downloads",
+                                  "Upgrades", "Log", "Settings"))
+    assert order == sorted(order)
+
+
+def test_status_page_is_an_instant_shell(client):
+    """No blocking download-client call on render — the JS fills it in, so a
+    transient client-API error can't become a full-page failure."""
+    r = client.get("/status")
+    assert r.status_code == 200
+    assert b'data-loading="1"' in r.data and b"Loading downloads" in r.data
+    assert b"Couldn't load downloads" not in r.data
+
+
+def test_wanted_page_load_flips_landed_rows(tmp_path):
+    """The user's own suggestion: small local queries on page load. A sent
+    row whose book is in the already-cached index flips on refresh."""
+    from tests.test_wanted import FakeLibrary
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    svc.wanted.library = FakeLibrary({"Treasure Island": "Robert Louis Stevenson"})
+    svc.store.wanted_upsert({"hc_id": 1, "title": "Treasure Island",
+                             "author": "Robert Louis Stevenson", "status": "sent"})
+    page = app.test_client().get("/wanted").data.decode()
+    assert "In your library" in page and 'id="wanted-owned-list"' in page
+    assert svc.store.wanted_rows()[0]["status"] == "owned"

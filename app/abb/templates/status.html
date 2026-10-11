@@ -1,6 +1,4 @@
 {% extends "base.html" %}
-{% from "macros/download_row.html" import render as download_row %}
-{% from "macros/empty_state.html" import render as empty_state %}
 
 {% block title %}Downloads{% endblock %}
 {% block page_css %}
@@ -22,31 +20,18 @@
     </div>
 </div>
 
-{% if error %}
-<div class="alert alert-error" role="alert">
-    <i data-lucide="alert-circle" aria-hidden="true"></i>
-    <span>Couldn't load downloads: {{ error }}</span>
-</div>
-{% endif %}
-
 <div class="downloads-toolbar">
-    <span id="downloads-count" class="downloads-count">
-        {% if torrents %}
-        {{ torrents | length }} active download{{ 's' if torrents | length != 1 else '' }}
-        {% else %}
-        No active downloads
-        {% endif %}
-    </span>
+    <span id="downloads-count" class="downloads-count">Loading…</span>
     <span id="downloads-updated" class="downloads-updated"></span>
 </div>
 
-<div id="downloads-list" class="downloads-list" role="region" aria-live="polite" aria-label="Active downloads">
-    {% if torrents %}
-        {% for torrent in torrents %}
-        {{ download_row(torrent) }}
-        {% endfor %}
-    {% else %}
-    {{ empty_state('inbox', 'No active downloads', 'Downloads you send will appear here.') }}
-    {% endif %}
+{# The page renders instantly; app.js fills this in from /api/status on load
+   and every 10s, so a transient client-API error is a retry, not a page. #}
+<div id="downloads-list" class="downloads-list" data-loading="1"
+     role="region" aria-live="polite" aria-label="Active downloads">
+    <div class="empty-state">
+        <span class="spinner-icon" aria-hidden="true"></span>
+        <p class="empty-state-title">Loading downloads…</p>
+    </div>
 </div>
 {% endblock %}

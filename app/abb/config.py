@@ -47,20 +47,29 @@ FEATURE_SETTINGS = {
     "ABS_LOW_KBPS": ("abs_low_kbps", "float"),
     "HARDCOVER_API_KEY": ("hardcover_api_key", "secret"),
     "WANTED_AUTO_DOWNLOAD": ("wanted_auto_download", "bool"),
+    "WANTED_AUTO_FORMAT": ("wanted_auto_format", "choice"),
+    "WANTED_AUTO_MIN_KBPS": ("wanted_auto_min_kbps", "float"),
     "WANTED_LLM": ("wanted_llm", "bool"),
     "WANTED_ROUTE": ("wanted_route", "choice"),
 }
 
-WANTED_ROUTE_CHOICES = ("default", "tor", "direct")
+# Valid values per "choice"-kind setting (first entry is the default).
+SETTING_CHOICES = {
+    "WANTED_ROUTE": ("default", "tor", "direct"),
+    "WANTED_AUTO_FORMAT": ("m4b", "any"),
+}
+
+WANTED_ROUTE_CHOICES = SETTING_CHOICES["WANTED_ROUTE"]
 
 
 def is_truthy(value: str | None) -> bool:
     return (value or "").lower() not in ("0", "false", "no", "off", "")
 
 
-def _parse_timeout(raw: str | None) -> float | None:
-    """"45" -> 45.0; "0"/"off"/"none" -> None (unbounded, the old behaviour)."""
-    v = (raw or "45").strip().lower()
+def _parse_timeout(raw: str | None, default: str = "45") -> float | None:
+    """"45" -> 45.0; "0"/"off"/"none" -> None (unbounded, the old behaviour).
+    Unset or empty -> `default`."""
+    v = (raw or default).strip().lower()
     return None if v in ("0", "off", "none") else float(v)
 
 
@@ -114,6 +123,9 @@ class Config:
     rank_model: str = "gemini-3.5-flash"
     smart_prefetch_default: str = "off"     # "on" | "off"
     rank_thinking_budget: int | None = 0
+    # Seconds per Gemini call. The SDK's own default is no timeout at all; a
+    # hung call used to pin a request thread or stall the wanted worker.
+    gemini_timeout: float | None = 60.0
     rank_cache_ttl: int = 900
     preferred_language: str = ""
 
@@ -134,6 +146,11 @@ class Config:
     wanted_research_ttl: int = 86400
     wanted_retry_ttl: int = 1800
     wanted_auto_download: bool = False
+    # Universal auto-download requirements — ONE server policy, applied the
+    # same to Hardcover-synced and app-added books (only the master switch
+    # differs: manual adds always attempt auto-send).
+    wanted_auto_format: str = "m4b"         # "m4b" (strict) | "any"
+    wanted_auto_min_kbps: float = 0.0       # 0 = no minimum; unknown bitrate passes
     wanted_route: str = "default"           # "default" | "tor" | "direct"
     wanted_llm: bool = True
 
@@ -151,7 +168,14 @@ class Config:
     @classmethod
     def from_env(cls, env=None) -> "Config":
         env = os.environ if env is None else env
-        g = env.get
+
+        def g(key, default=None):
+            """The env value, blank treated as unset. docker-compose passes
+            every listed-but-unset key as an empty string (`KEY=${KEY}`), and
+            "" must not beat a default (DL_CATEGORY once arrived as "", so
+            torrents went uncategorized) or crash a number (ABS_LOW_KBPS="")."""
+            value = env.get(key)
+            return default if value is None or not value.strip() else value
 
         dl_url = g("DL_URL")
         dl_scheme, dl_host, dl_port = g("DL_SCHEME", "http"), g("DL_HOST"), g("DL_PORT")
@@ -192,9 +216,12 @@ class Config:
             rank_model=g("RANK_MODEL", "gemini-3.5-flash"),
             smart_prefetch_default="on" if is_truthy(g("SMART_PREFETCH_DEFAULT", "off")) else "off",
             rank_thinking_budget=_parse_thinking_budget(g("RANK_THINKING_BUDGET")),
+            gemini_timeout=_parse_timeout(g("GEMINI_TIMEOUT"), default="60"),
             rank_cache_ttl=int(g("RANK_CACHE_TTL", "900")),
             preferred_language=(g("PREFERRED_LANGUAGE") or "").strip(),
-            log_db_path=g("LOG_DB_PATH", "/data/downloads.db"),
+            # Raw on purpose: an explicitly empty LOG_DB_PATH is the documented
+            # (v1) way to turn the log off — the one key where blank means something.
+            log_db_path=env.get("LOG_DB_PATH", "/data/downloads.db"),
             log_admin_users=frozenset(
                 u.strip() for u in g("LOG_ADMIN_USERS", "").split(",") if u.strip()
             ),
@@ -208,6 +235,9 @@ class Config:
             wanted_research_ttl=int(g("WANTED_RESEARCH_TTL", "86400")),
             wanted_retry_ttl=int(g("WANTED_RETRY_TTL", "1800")),
             wanted_auto_download=is_truthy(g("WANTED_AUTO_DOWNLOAD", "false")),
+            wanted_auto_format=(lambda v: v if v in SETTING_CHOICES["WANTED_AUTO_FORMAT"]
+                                else "m4b")((g("WANTED_AUTO_FORMAT") or "m4b").strip().lower()),
+            wanted_auto_min_kbps=float(g("WANTED_AUTO_MIN_KBPS", "0")),
             wanted_route=(g("WANTED_ROUTE") or "default").strip().lower(),
             wanted_llm=is_truthy(g("WANTED_LLM", "true")),
             secret_key=g("FLASK_SECRET_KEY") or None,
@@ -291,7 +321,8 @@ class Config:
                 f"  put.io: client id {onoff(self.putio_client_id)}, secret {onoff(self.putio_client_secret)}"
                 f", static token {onoff(self.putio_access_token)}, folder {self.putio_save_parent_id or '(root)'}")
         lines += [
-            "Smart sort: " + (f"enabled ({self.rank_model}, thinking={self.rank_thinking_budget})"
+            "Smart sort: " + (f"enabled ({self.rank_model}, thinking={self.rank_thinking_budget}, "
+                              f"timeout {f'{self.gemini_timeout:g}s' if self.gemini_timeout else 'unbounded'})"
                               if self.smart_sort_enabled else "disabled (no GEMINI_API_KEY)"),
             "ABS matching: " + (f"enabled ({self.abs_url})" if self.abs_enabled else "disabled"),
             "Download log: " + (self.log_db_path if self.log_enabled else "disabled (LOG_DB_PATH empty)")
