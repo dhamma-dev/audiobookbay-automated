@@ -37,8 +37,8 @@ class Services:
         self.settings_provenance = {}
         self._started = False
         # Which commit this is (footer, /healthz, boot log). The image's baked
-        # env only here; start() falls back to asking git for local runs.
-        self.build = version.from_env()
+        # file only here; start() falls back to asking git for local runs.
+        self.build = version.from_file()
         self.store = Store(config)
         self.tor = TorManager(config)
         self.outbound = Outbound(config, self.tor)

@@ -27,7 +27,6 @@ COPY app /app
 RUN useradd --uid 1000 --create-home app \
     && mkdir -p /data \
     && chown app:app /data
-USER app
 
 EXPOSE 5078
 
@@ -36,15 +35,18 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=25s \
 
 # Build identity — shown in the UI footer, /healthz and the boot log (see
 # abb/version.py). CI passes these; a plain local `docker build` leaves them
-# empty and the footer just shows no version. Declared last, so a new commit
-# only changes image metadata and never invalidates the layers above.
+# empty and the footer just shows no version. Written to a file, not ENV:
+# Portainer's "Recreate" copies the old container's env onto the new image,
+# so baked APP_* env kept reporting the previous build. Files aren't copied.
+# Declared last, so a new commit only rebuilds this one tiny layer.
 ARG GIT_SHA=""
 ARG GIT_REF=""
 ARG BUILD_DATE=""
 ARG GIT_REPO_URL=""
-ENV APP_GIT_SHA=$GIT_SHA \
-    APP_GIT_REF=$GIT_REF \
-    APP_BUILD_DATE=$BUILD_DATE \
-    APP_GIT_REPO_URL=$GIT_REPO_URL
+RUN python -c "import json, os; json.dump({k: os.environ.get(v, '') for k, v in \
+        {'sha': 'GIT_SHA', 'ref': 'GIT_REF', 'built': 'BUILD_DATE', 'repo_url': 'GIT_REPO_URL'}.items()}, \
+        open('/app/build-info.json', 'w'))"
+
+USER app
 
 CMD ["python", "main.py"]

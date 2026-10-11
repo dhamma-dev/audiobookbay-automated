@@ -21,8 +21,9 @@ Workflow, testing, and deploy details. The essentials are in
 - Tagging: every build gets `:<branch-slug>` (e.g. `:dev`). **Only `main` also
   moves `:latest`.** PRs build for validation but don't push.
 - Build identity: the build step passes `GIT_SHA`, `GIT_REF`, `BUILD_DATE` and
-  `GIT_REPO_URL` as build args; the Dockerfile bakes them into `APP_*` env and
-  `abb/version.py` surfaces them in the footer, `/healthz` and the boot log.
+  `GIT_REPO_URL` as build args; the Dockerfile writes them to
+  `/app/build-info.json` (a file, not env — Portainer's "Recreate" copies the
+  old container's env onto the new image) and `abb/version.py` surfaces them in the footer, `/healthz` and the boot log.
   A local run falls back to the checkout's HEAD (`-dirty` when modified).
 - Consequence: `docker-compose.yaml` pins `:latest` (= `main`). To run/test
   `dev` work, pull the `:dev` tag.
