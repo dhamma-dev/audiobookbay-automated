@@ -7,7 +7,10 @@ def test_defaults_from_empty_env():
     assert c.request_timeout == 45.0
     assert c.use_tor and c.tor_autostart
     assert c.rank_thinking_budget == 0
-    assert not c.smart_sort_enabled and not c.abs_enabled and not c.wanted_enabled
+    assert not c.smart_sort_enabled and not c.abs_enabled and not c.hardcover_enabled
+    # The wanted list only needs the DB — Hardcover is an optional row source.
+    assert c.wanted_enabled
+    assert not Config.from_env({"LOG_DB_PATH": ""}).wanted_enabled
     assert c.log_enabled  # the log defaults ON at /data/downloads.db
 
 

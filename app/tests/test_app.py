@@ -385,3 +385,50 @@ def test_wanted_page_load_flips_landed_rows(tmp_path):
     page = app.test_client().get("/wanted").data.decode()
     assert "In your library" in page and 'id="wanted-owned-list"' in page
     assert svc.store.wanted_rows()[0]["status"] == "owned"
+
+
+def test_wanted_list_works_without_hardcover(tmp_path):
+    """No HARDCOVER_API_KEY: the dashboard, quick add and removal all still
+    work — only the Hardcover sync is off. Leftover Hardcover rows (from a
+    key that was later cleared) become removable, since no sync will ever
+    clear them."""
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"))
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    assert svc.wanted.enabled and not svc.wanted.hardcover
+    svc.store.wanted_upsert({"hc_id": 7, "title": "Dune", "author": "Frank Herbert",
+                             "slug": "dune", "status": "wanted"})
+    c = app.test_client()
+    page = c.get("/wanted").data.decode()
+    assert "Dune" in page and 'href="/wanted"' in page          # nav link + row
+    assert "wanted/sync" not in page                             # no Sync now button
+    assert "/wanted/remove/7" in page                            # leftover row removable
+    tok = _wanted_csrf(c)
+    assert c.post("/wanted/sync", data={"csrf_token": tok}).status_code == 503
+    assert c.post("/wanted/remove/7", data={"csrf_token": tok}).status_code == 302
+    assert svc.store.wanted_rows() == []
+
+
+def test_hardcover_rows_not_removable_while_synced(tmp_path):
+    cfg = make_config(log_db_path=str(tmp_path / "w.db"), hardcover_api_key="k")
+    app = create_app(cfg, start=False)
+    app.config.update(TESTING=True)
+    svc = app.extensions["abb"]
+    svc.store.init()
+    svc.store.wanted_upsert({"hc_id": 7, "title": "Dune", "author": "", "slug": "",
+                             "status": "wanted"})
+    c = app.test_client()
+    assert "/wanted/remove/7" not in c.get("/wanted").data.decode()
+    assert c.post("/wanted/remove/7",
+                  data={"csrf_token": _wanted_csrf(c)}).status_code == 409
+
+
+def test_wanted_off_without_database(client):
+    page = client.get("/wanted").data.decode()
+    assert "The wanted list is off" in page
+
+
+def _wanted_csrf(c):
+    return c.get("/").data.split(b'name="csrf-token" content="')[1].split(b'"')[0].decode()

@@ -149,11 +149,13 @@ def upgrades():
 
 @bp.route("/wanted")
 def wanted():
-    """Hardcover wanted-list dashboard: every 'Want to Read' book with its
-    pipeline status and, when found, the best ABB match ready to send."""
+    """Wanted-list dashboard: every wanted book (app adds, plus Hardcover's
+    'Want to Read' when synced) with its pipeline status and, when found, the
+    best ABB match ready to send."""
     s = svc()
     if not s.wanted.enabled:
-        return render_template("wanted.html", enabled=False, active=[], owned=[],
+        return render_template("wanted.html", enabled=False, hardcover=False,
+                               active=[], owned=[],
                                skipped=[], counts={},
                                auto=s.config.wanted_auto_download, sync_error="")
     s.wanted.sweep_owned_cached()  # local-only: fold in anything already known
@@ -170,6 +172,8 @@ def wanted():
     for r in owned:
         r["unconfirmed"] = (r.get("detail") or "").startswith(UNCONFIRMED)
     skipped = [r for r in rows if r.get("status") == "skipped"]
+    for r in rows:
+        r["removable"] = s.wanted.can_remove(r)
     for r in active:  # manual Search uses the same broad primary query as the worker
         r["search_q"] = wanted_queries(r.get("title") or "", r.get("author") or "")[0]
         try:  # stored candidates beyond the pick become the expandable tray
@@ -184,7 +188,8 @@ def wanted():
     counts = {}
     for r in rows:
         counts[r.get("status") or "wanted"] = counts.get(r.get("status") or "wanted", 0) + 1
-    return render_template("wanted.html", enabled=True, active=active, owned=owned,
+    return render_template("wanted.html", enabled=True, hardcover=s.wanted.hardcover,
+                           active=active, owned=owned,
                            unconfirmed=sum(1 for r in owned if r["unconfirmed"]),
                            skipped=skipped, counts=counts,
                            auto=s.config.wanted_auto_download,

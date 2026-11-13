@@ -172,7 +172,7 @@ def wanted_sync():
     """Refresh the list from Hardcover now and make every open row due for a
     re-search; the background worker drains them a few per minute."""
     s = svc()
-    if not s.wanted.enabled:
+    if not (s.wanted.enabled and s.wanted.hardcover):
         return jsonify({"message": "Hardcover is not configured."}), 503
     try:
         s.wanted.sync_list()
@@ -214,7 +214,8 @@ def wanted_add():
 
 @bp.route("/wanted/remove/<int(signed=True):hc_id>", methods=["POST"])
 def wanted_remove(hc_id):
-    """Delete a manually-added book (Hardcover rows are removed on Hardcover)."""
+    """Delete an app-added book — or any book while the Hardcover sync is off
+    (with it on, Hardcover rows are removed on Hardcover)."""
     s = svc()
     if not s.wanted.enabled:
         return jsonify({"message": "The wanted list is not configured."}), 503
@@ -229,7 +230,7 @@ def wanted_skip(hc_id):
     """Take an unfound book out of the search rotation until re-allowed."""
     s = svc()
     if not s.wanted.enabled:
-        return jsonify({"message": "Hardcover is not configured."}), 503
+        return jsonify({"message": "The wanted list is not configured."}), 503
     ok, message = s.wanted.skip(hc_id)
     if not ok:
         return jsonify({"message": message}), 409
@@ -241,7 +242,7 @@ def wanted_unskip(hc_id):
     """Put a skipped book back in the queue (due immediately)."""
     s = svc()
     if not s.wanted.enabled:
-        return jsonify({"message": "Hardcover is not configured."}), 503
+        return jsonify({"message": "The wanted list is not configured."}), 503
     ok, message = s.wanted.unskip(hc_id)
     if not ok:
         return jsonify({"message": message}), 409
@@ -254,7 +255,7 @@ def wanted_reopen(hc_id):
     library match that claimed it."""
     s = svc()
     if not s.wanted.enabled:
-        return jsonify({"message": "Hardcover is not configured."}), 503
+        return jsonify({"message": "The wanted list is not configured."}), 503
     ok, message = s.wanted.reopen(hc_id, current_user_label())
     if not ok:
         return jsonify({"message": message}), 409
@@ -267,7 +268,7 @@ def wanted_research(hc_id):
     over the requesting browser's route)."""
     s = svc()
     if not s.wanted.enabled:
-        return jsonify({"message": "Hardcover is not configured."}), 503
+        return jsonify({"message": "The wanted list is not configured."}), 503
     row = next((r for r in s.store.wanted_rows() if r["hc_id"] == hc_id), None)
     if not row:
         return jsonify({"message": "Unknown wanted book."}), 404

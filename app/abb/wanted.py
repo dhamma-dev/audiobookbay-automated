@@ -1,5 +1,7 @@
-"""Hardcover wanted list: sync "Want to Read", background-search ABB, rate the
-results once, and (optionally) auto-download.
+"""Wanted list: background-search ABB for wanted books, rate the results
+once, and (optionally) auto-download. Rows come from quick adds in the app
+and, when HARDCOVER_API_KEY is set, a sync of the Hardcover "Want to Read"
+list. Hardcover is only a row SOURCE: without it everything else still runs.
 
 Pipeline per book: wanted -> found -> sent -> owned (or unmatched, re-checked
 daily). A successful search is rated by ONE small Gemini call
@@ -151,7 +153,9 @@ class WantedService:
         self.clients = clients
         self.outbound = outbound
         self.tor = tor
-        self.enabled = config.wanted_enabled
+        # Hardcover only feeds rows in; the list itself needs nothing but
+        # the store (see the `enabled` property).
+        self.hardcover = config.hardcover_enabled
         self.last_sync = 0.0
         self.sync_error = ""     # last sync failure, surfaced on the dashboard
         self._fail_streak = 0
@@ -171,6 +175,12 @@ class WantedService:
         # matched) potentially a double send.
         self._inflight = set()
         self._inflight_lock = threading.Lock()
+
+    @property
+    def enabled(self):
+        """The wanted list runs whenever the SQLite store does — read live,
+        since the store disables itself if its DB can't be opened."""
+        return bool(self.config.wanted_enabled and getattr(self.store, "enabled", False))
 
     # --- Hardcover -------------------------------------------------------------
     def _gql(self, query, variables=None):
@@ -689,13 +699,18 @@ class WantedService:
                  row.get("title"), user, len(ignored))
         return True, ""
 
+    def can_remove(self, row):
+        """App adds are always removable. Hardcover rows are managed on
+        Hardcover while the sync is on (a removal there removes them here);
+        with the sync off nothing would ever clear them, so the app may."""
+        return self.is_manual(row) or not self.hardcover
+
     def remove_manual(self, hc_id):
-        """Delete a manually-added row. Hardcover rows are managed on
-        Hardcover — removing them there removes them here on the next sync."""
+        """Delete a row the app may remove (see can_remove)."""
         row = next((r for r in self.store.wanted_rows() if r["hc_id"] == hc_id), None)
         if not row:
             return False, "Unknown wanted book."
-        if not self.is_manual(row):
+        if not self.can_remove(row):
             return False, ("This book comes from your Hardcover list — remove it "
                            "there and it disappears on the next sync.")
         self.store.wanted_delete(hc_id)
@@ -890,8 +905,8 @@ class WantedService:
         """One worker pass: sync when due, sweep ownership, then up to 3
         searches — unless their route is Tor and Tor isn't up, in which case
         the searches wait (never Direct instead) and the dashboard says so."""
-        if time.monotonic() - self.last_sync > self.config.hardcover_sync_ttl \
-                or self.last_sync == 0:
+        if self.hardcover and (time.monotonic() - self.last_sync
+                               > self.config.hardcover_sync_ttl or self.last_sync == 0):
             try:
                 self.sync_list()
             except Exception as e:
@@ -937,7 +952,7 @@ class WantedService:
 
     def start(self):
         if not self.enabled:
-            log.info("Hardcover wanted list disabled (no HARDCOVER_API_KEY)")
+            log.info("Wanted list disabled (no database — LOG_DB_PATH is empty)")
             return
         try:
             requeued = self.requeue_open()
@@ -945,7 +960,8 @@ class WantedService:
             requeued = 0
             log.warning("wanted requeue at boot failed: %s", e)
         threading.Thread(target=self._worker, daemon=True, name="wanted-worker").start()
-        log.info("Hardcover wanted list enabled; auto-download %s, policy: %s%s",
+        log.info("Wanted list enabled (Hardcover sync %s); auto-download %s, policy: %s%s",
+                 "on" if self.hardcover else "off — app adds only",
                  "ON" if self.config.wanted_auto_download
                  else "off for Hardcover rows (app adds always auto)",
                  self.auto_policy_label(),

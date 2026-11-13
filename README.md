@@ -321,11 +321,14 @@ replace the junk in one send.
 ABS_LOW_KBPS=63   # Optional; flag owned copies at/below this effective bitrate
 ```
 
-### Hardcover wanted list
+### Wanted list (optionally synced from Hardcover)
 
-Connect your [Hardcover](https://hardcover.app) account and your **“Want to
-Read” list becomes a dashboard**: a **Wanted** page appears in the nav where
-every wanted book is pre-searched on AudioBook Bay in the background and moves
+The **Wanted** page in the nav is a background-search dashboard: add books in
+the app (see *Quick add* below) and, optionally, connect your
+[Hardcover](https://hardcover.app) account so your **“Want to Read” list**
+syncs in too. Hardcover is only a source of books — without a key the page,
+quick add, background search and auto-download all still work. Every wanted
+book is pre-searched on AudioBook Bay in the background and moves
 through a pipeline — *Queued → Found → Sent → In your library* (books you
 already own in Audiobookshelf are marked instead of searched). If a book was
 marked *In your library* by mistake, **Search anyway** on that row puts it
@@ -333,8 +336,7 @@ back in the queue and ignores the library match that claimed it; rows the
 current matcher no longer confirms are flagged *Unconfirmed* (never
 re-downloaded on their own — that stays your call).
 
-**Quick add.** The `/wanted` page also has an "Add & fetch" box for books that
-aren't on your Hardcover list: type a title (author optional) and dip out. Your
+**Quick add.** The `/wanted` page has an "Add & fetch" box for any book: type a title (author optional) and dip out. Your
 Audiobookshelf library is checked first — if you already own it, the page says
 so and nothing is added. Otherwise the book is searched immediately and, since
 you won't be coming back to choose, a match meeting the server's auto-download
@@ -360,7 +362,7 @@ selection from the haul, so a comic-edition author or a subtitle can never
 hide the audiobook.
 
 ```env
-HARDCOVER_API_KEY=your-hardcover-token   # hardcover.app → account settings → Hardcover API
+HARDCOVER_API_KEY=your-hardcover-token   # optional: syncs "Want to Read" (hardcover.app → account settings)
 WANTED_AUTO_DOWNLOAD=false               # "true" auto-sends confident M4B matches
 WANTED_ROUTE=default                     # background search route: default | tor | direct
 ```

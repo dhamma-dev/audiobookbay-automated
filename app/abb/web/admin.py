@@ -38,8 +38,10 @@ SECTIONS = [
         ("ABS_LOW_KBPS", "Upgrade threshold (kbps)",
          "Owned copies at or below this effective bitrate are flagged. Default 63."),
     ]),
-    ("Hardcover wanted list", "Background search of your “Want to Read” list.", [
+    ("Wanted list", "Background search for wanted books — added in the app, and "
+                    "optionally synced from your Hardcover “Want to Read” list.", [
         ("HARDCOVER_API_KEY", "Hardcover API key",
+         "Optional — only the Hardcover sync needs it; the wanted list works without. "
          "From hardcover.app account settings. Tokens expire every January 1st."),
         ("WANTED_AUTO_DOWNLOAD", "Auto-download found books",
          "Master switch for Hardcover-synced books. Books added in the app always "

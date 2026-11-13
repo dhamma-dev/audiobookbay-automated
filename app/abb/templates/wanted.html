@@ -10,13 +10,14 @@
 <div class="page-header">
     <div class="page-header-row">
         <div>
-            <span class="page-header-eyebrow">Hardcover</span>
+            {% if hardcover %}<span class="page-header-eyebrow">Hardcover</span>{% endif %}
             <h1>Wanted books</h1>
-            <p>Your Hardcover “Want to Read” list, pre-searched on AudioBook Bay in the
+            <p>{% if hardcover %}Your Hardcover “Want to Read” list plus books added here{% else %}Books added here{% endif %},
+               pre-searched on AudioBook Bay in the
                background. Each book's results are AI-rated once when found, then kept —
                no repeat lookups unless you force a re-check.</p>
         </div>
-        {% if enabled %}
+        {% if enabled and hardcover %}
         <form method="post" action="{{ url_for('actions.wanted_sync') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-secondary" data-busy="Syncing with Hardcover…">
@@ -29,8 +30,8 @@
 </div>
 
 {% if not enabled %}
-{{ empty_state('bookmark', 'Hardcover is not connected',
-               'Set HARDCOVER_API_KEY (from hardcover.app account settings) to sync your Want to Read list.') }}
+{{ empty_state('bookmark', 'The wanted list is off',
+               'It keeps its books in the server database — set LOG_DB_PATH (default /data/downloads.db) to turn it on.') }}
 {% else %}
 
 {% if sync_error %}
@@ -231,11 +232,11 @@
                         </button>
                     </form>
                     {% endif %}
-                    {% if r.hc_id < 0 %}
+                    {% if r.removable %}
                     <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
-                                title="Remove this app-added book from the wanted list">
+                                title="Remove this book from the wanted list">
                             <i data-lucide="trash-2" aria-hidden="true"></i>
                         </button>
                     </form>
@@ -275,8 +276,8 @@
     </table>
 </div>
 {% elif not owned and not skipped %}
-{{ empty_state('bookmark', 'No wanted books found',
-               'Add books to your Want to Read list on Hardcover, then Sync now.') }}
+{{ empty_state('bookmark', 'No wanted books yet',
+               'Add a book above' ~ (', or add it to your Want to Read list on Hardcover and Sync now.' if hardcover else '.')) }}
 {% endif %}
 
 {# Done shelf: owned books are finished — collapsed out of the way and never
@@ -324,11 +325,11 @@
                                     Search anyway
                                 </button>
                             </form>
-                            {% if r.hc_id < 0 %}
+                            {% if r.removable %}
                             <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
-                                        title="Remove this app-added book from the list">
+                                        title="Remove this book from the list">
                                     <i data-lucide="trash-2" aria-hidden="true"></i>
                                 </button>
                             </form>
@@ -377,11 +378,11 @@
                                     Allow again
                                 </button>
                             </form>
-                            {% if r.hc_id < 0 %}
+                            {% if r.removable %}
                             <form method="post" action="{{ url_for('actions.wanted_remove', hc_id=r.hc_id) }}" class="wanted-inline-form">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                 <button type="submit" class="btn btn-secondary btn-upgrade-search" data-busy=""
-                                        title="Remove this app-added book from the list">
+                                        title="Remove this book from the list">
                                     <i data-lucide="trash-2" aria-hidden="true"></i>
                                 </button>
                             </form>
@@ -398,8 +399,8 @@
 
 <p class="upgrades-footnote">
     Books added here in the app auto-download as soon as a match meets the server's
-    auto-download requirements (see Settings) — Hardcover-synced books do the same when
-    auto-download is switched on. “Not available yet”
+    auto-download requirements (see Settings){% if hardcover %} — Hardcover-synced books do the same when
+    auto-download is switched on{% endif %}. “Not available yet”
     books are re-checked about once a day (the AI only sees listings it hasn't already ruled
     out, so an unchanged search costs nothing); skip (✕) takes one out of the
     rotation entirely until you allow it again. Found books are settled — their results and AI

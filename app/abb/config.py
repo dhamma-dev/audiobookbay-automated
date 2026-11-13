@@ -258,6 +258,13 @@ class Config:
 
     @property
     def wanted_enabled(self) -> bool:
+        # The wanted list (dashboard, quick add, background search, auto-
+        # download) only needs the SQLite store. Hardcover is just one source
+        # of rows — see hardcover_enabled.
+        return self.log_enabled
+
+    @property
+    def hardcover_enabled(self) -> bool:
         return bool(self.hardcover_api_key)
 
     @property
@@ -327,9 +334,11 @@ class Config:
             "ABS matching: " + (f"enabled ({self.abs_url})" if self.abs_enabled else "disabled"),
             "Download log: " + (self.log_db_path if self.log_enabled else "disabled (LOG_DB_PATH empty)")
             + (f" (admins: {', '.join(sorted(self.log_admin_users))})" if self.log_admin_users else ""),
-            "Wanted list: " + ("enabled" + (", auto-download ON (M4B-only)" if self.wanted_auto_download
-                                            else ", dashboard only")
-                               if self.wanted_enabled else "disabled (no HARDCOVER_API_KEY)"),
+            "Wanted list: " + ("enabled" + (", Hardcover sync on" if self.hardcover_enabled
+                                            else ", app adds only (no HARDCOVER_API_KEY)")
+                               + (", Hardcover auto-download ON" if self.hardcover_enabled
+                                  and self.wanted_auto_download else "")
+                               if self.wanted_enabled else "disabled (needs LOG_DB_PATH)"),
         ]
         if self.preferred_language:
             lines.append(f"Preferred language: {self.preferred_language}")
