@@ -20,6 +20,11 @@ Workflow, testing, and deploy details. The essentials are in
   GHCR: `ghcr.io/dhamma-dev/audiobookbay-automated`.
 - Tagging: every build gets `:<branch-slug>` (e.g. `:dev`). **Only `main` also
   moves `:latest`.** PRs build for validation but don't push.
+- Build identity: the build step passes `GIT_SHA`, `GIT_REF`, `BUILD_DATE` and
+  `GIT_REPO_URL` as build args; the Dockerfile writes them to
+  `/app/build-info.json` (a file, not env — Portainer's "Recreate" copies the
+  old container's env onto the new image) and `abb/version.py` surfaces them in the footer, `/healthz` and the boot log.
+  A local run falls back to the checkout's HEAD (`-dirty` when modified).
 - Consequence: `docker-compose.yaml` pins `:latest` (= `main`). To run/test
   `dev` work, pull the `:dev` tag.
 
@@ -30,7 +35,9 @@ Workflow, testing, and deploy details. The essentials are in
   container runs as **uid 1000** and reports health via `/healthz`.
 - **Local:** `cd app && python main.py` (waitress on port 5078; `PORT=5178` to
   move it). Needs a reachable tor for ABB search unless the user switches to
-  Direct in the UI. A local `app/.venv/` exists.
+  Direct in the UI (or `USE_TOR=false`) — Tor routing fails closed, so without
+  Tor the search page shows "Tor · down" rather than scraping Direct. A local
+  `app/.venv/` exists.
 - **Run a script inside the live container** (e.g. the matcher spike), which
   reuses the app's Tor and `.env`:
   `docker compose exec audiobookbay-automated python abs_match_spike.py --selftest`
@@ -39,7 +46,7 @@ Workflow, testing, and deploy details. The essentials are in
 
 ```bash
 cd app && python -m pytest -q          # the suite CI runs (needs requirements-dev.txt)
-node --check app/abb/static/js/app.js  # and icons.js if you touched it
+for f in app/abb/static/js/*.js; do node --check "$f"; done   # what CI runs
 python3 app/abs_match_spike.py --selftest   # matcher eval CLI, offline mode
 ```
 

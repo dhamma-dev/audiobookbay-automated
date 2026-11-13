@@ -16,6 +16,9 @@ never a confident "you don't have it". So:
 Precision is protected by *gating title similarity on the author*: a strong
 title match with a mismatched author is rejected (the "same title, different
 book" case). A strong title match with no author to check is capped at MAYBE.
+Then the guards at the bottom demote the "same author, related but different
+item" cases: foreign editions, bundles, other volumes, and sequels whose
+title merely contains the first book's ("Dune" vs "Dune Messiah").
 
 Thresholds are deliberately module-level constants so the eval spike can show
 real scores against them and they can be tuned in one place.
@@ -144,15 +147,24 @@ def parse_series(raw):
     return name, number
 
 
+def _norm_num(n):
+    """Series numbers compare as numbers: '02' -> '2', '3.0' -> '3', '2.50' ->
+    '2.5'. Free-text sequences ("Book 3") yield their first number."""
+    try:
+        return f"{float(n):g}"
+    except (TypeError, ValueError):
+        m = re.search(r"\d+(?:\.\d+)?", str(n))
+        return f"{float(m.group()):g}" if m else str(n).strip().lower()
+
+
 def _series_match(abb_raw, abs_series):
     """abs_series is a list of (name, sequence) tuples from Audiobookshelf."""
     _, abb_num = parse_series(abb_raw)
     if abb_num is None or not abs_series:
         return False
-    for name, seq in abs_series:
-        if seq and str(seq).rstrip("0").rstrip(".") == str(abb_num).rstrip("0").rstrip("."):
-            return True
-    return False
+    target = _norm_num(abb_num)
+    # Numeric comparison: stripping zeros as text once read book 10 as book 1.
+    return any(seq not in (None, "") and _norm_num(seq) == target for _name, seq in abs_series)
 
 
 def split_title_author(raw):
@@ -213,11 +225,117 @@ def is_multi_volume(raw):
     return bool(_RANGE_RE.search(raw) or _HASH_RANGE_RE.search(raw) or _BUNDLE_WORDS_RE.search(raw))
 
 
+# --- Identity guards -----------------------------------------------------------
+# Token-set similarity is deliberately tolerant of extra words (ABB titles
+# carry series prefixes, subtitles and edition cruft), but the same tolerance
+# scores "Dune" against "Dune Messiah" as a perfect 1.0: one title's words are
+# a subset of the other's. With the author agreeing too, owning book 1 used to
+# badge every sequel as owned. These two guards catch that; like the ones
+# above, they only ever demote.
+
+# Words that describe a volume, edition or genre rather than name a work. ABB
+# titles and subtitles carry them freely ("Book 2", "A LitRPG Adventure").
+_FILLER = frozenset({
+    "book", "books", "vol", "volume", "part", "series", "edition", "novel",
+    "novella", "saga", "trilogy", "litrpg", "gamelit", "adventure", "adventures",
+})
+_PAREN_RE = re.compile(r"\(([^)]*)\)|\[([^\]]*)\]")
+# Bare 1–3 digit numbers written in a title ("He Who Fights with Monsters 5",
+# "Catch-22"). Years and ordinals ("2021", "40th") don't count.
+_TITLE_NUM_RE = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d+)?)(?!\w|\.\d)")
+
+
+def _paren_tokens(s):
+    """Words inside a title's parentheses/brackets — usually a series tag
+    ("(The Stormlight Archive, Book 1)"), which normalize() strips."""
+    words = set()
+    for a, b in _PAREN_RE.findall(s or ""):
+        words |= tokens(a or b)
+    return words
+
+
+def _title_numbers(title):
+    """Numbers written in a title outside its parentheses. A lone 1 is
+    dropped: an unnumbered first book reads as volume 1 anyway."""
+    text = _PAREN_RE.sub(" ", title or "")
+    return {_norm_num(n) for n in _TITLE_NUM_RE.findall(text)} - {"1"}
+
+
+def _declared_volume(abb):
+    """The result's explicit number: a canonical seq (smart sort), or "(Series
+    #N)" / "Book N" in its raw title. Returns (series name or None, number or
+    None)."""
+    if abb.get("seq") not in (None, ""):
+        return abb.get("series") or None, _norm_num(abb["seq"])
+    name, num = parse_series(abb.get("raw") or abb.get("title", ""))
+    return name, (_norm_num(num) if num is not None else None)
+
+
+def volume_conflict(abb, item):
+    """True when the result is demonstrably a different volume than the owned
+    copy: its declared number isn't the owned copy's series number, or the
+    numbers written in the two titles disagree ("He Who Fights with Monsters
+    5" vs "... 4", or vs an unnumbered book 1)."""
+    name, num = _declared_volume(abb)
+    owned = [(n, _norm_num(s)) for n, s in item.get("series") or [] if s not in (None, "")]
+    if num is not None:
+        if owned:
+            # Only compare against the same series ("Dune Chronicles" ~ "Dune");
+            # a number from some other series says nothing either way.
+            seqs = {s for n, s in owned if not name or not n or token_set_ratio(name, n) >= 0.8}
+        else:
+            seqs = _title_numbers(item.get("title", "")) or {"1"}
+        if seqs and num not in seqs:
+            return True
+    ours = _title_numbers(abb.get("title", ""))
+    theirs = _title_numbers(item.get("title", ""))
+    declared = {num} if num is not None else set()
+    return bool((ours - theirs - {s for _n, s in owned}) or (theirs - ours - declared))
+
+
+def _subtitle_words(title, series_names):
+    """Words after a title's first colon: usually a subtitle ("The Last Wish:
+    Introducing the Witcher" — Hardcover titles carry them). Except when the
+    part before the colon is a known series name — then the colon follows a
+    series prefix and the rest IS the title ("Artemis Fowl: The Arctic
+    Incident" is book 2, not book 1 with a subtitle)."""
+    head, sep, tail = (title or "").partition(":")
+    if not sep or not tail.strip():
+        return set()
+    if any(token_set_ratio(head, name) >= 0.8 for name in series_names):
+        return set()
+    return tokens(tail)
+
+
+def unexplained_words(abb, item):
+    """Title words on either side that the other side can't account for —
+    exactly the difference between "Dune" and "Dune Messiah". A word is
+    accounted for when it appears in the other title, a series name, a
+    subtitle (the owned copy's, or either title's after-the-colon part), an
+    author credit, or the volume/genre filler. Numbers are volume_conflict's
+    business, so they're ignored here."""
+    declared, _num = _declared_volume(abb)
+    series_names = [n for n, _seq in item.get("series") or [] if n] + ([declared] if declared else [])
+    shared = set(_FILLER)
+    for name in series_names:
+        shared |= tokens(name)
+    shared |= tokens(abb.get("author", "")) | tokens(item.get("author", ""))
+
+    ours_title, theirs_title = abb.get("title", ""), item.get("title", "")
+    ours, theirs = tokens(ours_title), tokens(theirs_title)
+    extra = ((ours - theirs - _paren_tokens(theirs_title) - tokens(item.get("subtitle", ""))
+              - _subtitle_words(ours_title, series_names) - shared)
+             | (theirs - ours - _paren_tokens(abb.get("raw") or ours_title)
+                - _subtitle_words(theirs_title, series_names) - shared))
+    return {w for w in extra if len(w) > 1 and not w.isdigit()}
+
+
 def score_pair(abb, item):
     """Score one ABB result against one ABS item. `abb` and `item` are dicts.
 
-    abb:  {title, author, asin?, isbn?, raw?, language?}
-    item: {title, author, series:[(name,seq)], asin?, isbn?, language?}
+    abb:  {title, author, asin?, isbn?, raw?, language?, series?, seq?}
+          (series/seq: a smart-sort canonical identity's explicit number)
+    item: {title, author, series:[(name,seq)], subtitle?, asin?, isbn?, language?}
 
     Returns (tier, score, reason).
     """
@@ -259,8 +377,9 @@ def score_pair(abb, item):
         tier = NONE
 
     # Ownership guards -- only ever demote a STRONG that would mislead. A foreign
-    # edition (unless the owned item is that same language) or a bundle/range
-    # matched against a single owned volume is not "this item you own".
+    # edition (unless the owned item is that same language), a bundle/range
+    # matched against a single owned volume, another volume of the series, or a
+    # different work whose title merely overlaps is not "this item you own".
     if tier == STRONG:
         abb_raw = abb.get("raw") or abb.get("title", "")
         lang = foreign_edition(abb_raw, abb.get("language"))
@@ -270,6 +389,14 @@ def score_pair(abb, item):
         elif is_multi_volume(abb_raw) and not is_multi_volume(item.get("title", "")):
             tier = MAYBE
             reason_bits.append("bundle/range vs single volume -> not this item")
+        elif volume_conflict(abb, item):
+            tier = MAYBE
+            reason_bits.append("volume number differs -> another book in the series")
+        else:
+            extra = unexplained_words(abb, item)
+            if extra:
+                tier = MAYBE
+                reason_bits.append(f"unmatched words {sorted(extra)} -> a different work?")
 
     return tier, score, "; ".join(reason_bits)
 

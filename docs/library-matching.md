@@ -51,6 +51,24 @@ No import side effects (like everything in the package); usable from the app, th
   - **Bundle/range guard** (`is_multi_volume`) — a bundle/box set matched
     against a single owned volume is demoted (you own book 10, not the 1–10
     bundle).
+  - **Volume guard** (`volume_conflict`) — the result is another volume: its
+    declared number (`(Series #N)`, `Book N`, or a smart-sort canonical `seq`)
+    isn't the owned copy's series number, or the numbers written in the two
+    titles disagree (*He Who Fights with Monsters 5* vs *… 4*, or vs the
+    unnumbered book 1). Numbers compare numerically (`_norm_num`: `02` = `2`).
+  - **Identity guard** (`unexplained_words`) — a title word on either side
+    that the other can't account for: not in its title, a series name, a
+    **subtitle** (the owned copy's ABS subtitle, or either title's
+    after-the-colon part — Hardcover titles carry these — *unless* the part
+    before the colon is the series name: "Artemis Fowl: The Arctic Incident"
+    is book 2, not book 1 with a subtitle), an author credit, or
+    volume/genre filler (`_FILLER`: "Book", "Novel", "A LitRPG Adventure"…). This is the
+    *Dune* / *Dune Messiah* case: token-set similarity scores a title whose
+    words are a subset of the other's at 1.0, and with the author agreeing
+    too, owning book 1 once badged every sequel as owned (and marked wanted
+    sequels owned before they were ever searched). It costs some recall on
+    listings with extra words your library's metadata doesn't explain — by
+    design, and Tier 2's LLM-cleaned identities recover most of it.
 - `best_match(abb, items)` → best `(tier, score, item, reason)`.
 - `candidates(abb, items, k)` → top-k scored items (the cheap "blocker"; kept for
   a possible future LLM-verify path).
@@ -64,14 +82,19 @@ No import side effects (like everything in the package); usable from the app, th
 - `get_index(max_age=None)` — fetches + caches the ABS library in memory
   (`ABS_CACHE_TTL`, default 900s). `max_age` forces a fresher snapshot but still
   fetches ABS at most once per that window across all callers (used by the poll
-  with `max_age=120`). Keeps the last good snapshot on error.
+  with `max_age=120`). Keeps the last good snapshot on error. Each item carries
+  its ABS `id` (stable across refreshes) and `subtitle` (the identity guard
+  forgives a listing's subtitle only when it's the owned copy's).
 - `annotate_matches(books)` — Tier 1. Sets `book['library_match'] =
   {title, author}` for `STRONG` matches. Called in the search route.
 - `resolve_ownership(ranking, index)` — Tier 2. Joins the LLM's `canonical`
   identities to the ABS index locally, adds `ranking['ownership'] =
   [{id, status, detail}]`. Series books join on **(fuzzy series name, seq)**;
   standalones via `best_match`; omnibus `collections` via covers ∩ owned-seqs →
-  `partial "N of M"`. Shared helper `canonical_owned`.
+  `partial "N of M"`. Shared helper `canonical_owned`; when the (series, seq)
+  join misses, its fuzzy fallback passes the canonical number along so the
+  volume guard refuses an owned sibling (canonical *Dune* #1 is not your
+  *Dune Messiah* #2).
 - **`/api/rank`** — when ABS is on, requests the `canonical` block
   (`RankService.rank(..., want_ownership=True)` adds `RANK_CANONICALIZE_INSTRUCTION`
   and the canonical schema block), then runs `resolve_ownership`. The non-ABS
@@ -132,6 +155,19 @@ Surfaces:
   matching is on. On a flip: badge + counts update in place and a quiet toast
   fires.
 
+## Wanted rows: correcting a wrong "owned"
+
+Precision-first means a wrong positive must be correctable, and on the wanted
+list a false "owned" is the costly direction (the book is never searched).
+The done shelf therefore has **Search anyway** (`WantedService.reopen`): the
+row goes back in the queue and the library item(s) that claimed it are stored
+in the row's `owned_ignore` (ABS item ids) — the pre-search check and the
+sweep skip those items, while a genuinely different copy landing later still
+flips the row. Once per worker, `_verify_owned` re-checks the done shelf with
+the current matcher and flags rows it no longer confirms as *Unconfirmed*
+(the shelf opens by itself); it never reopens them automatically, since that
+could re-download a book you do own.
+
 ## Config
 
 `ABS_URL`, `ABS_TOKEN` (enables the feature), `ABS_LIBRARY_ID` (optional; else
@@ -140,16 +176,21 @@ first "book" library), `ABS_CACHE_TTL` (default 900). See README for details.
 ## Evaluating & tuning — `app/abs_match_spike.py`
 
 Standalone CLI (safe to delete). Imports `abb.matching` only.
-- `--selftest` — 9 offline regression cases covering the guards (the same cases
-  live in `tests/test_matching.py`, which CI runs).
+- `--selftest` — offline regression cases covering the guards (the same cases,
+  and more, live in `tests/test_matching.py`, which CI runs).
 - `python abs_match_spike.py "query" …` — live: pulls the ABS library, scrapes a
   real ABB search (through the container's Tor when run via `docker compose
-  exec`), prints each result's best match. `STRONG` rows are what would badge;
-  `maybe`/`none` show recall so you can set thresholds.
+  exec`; it refuses without Tor unless `--direct` is passed), prints each
+  result's best match. `STRONG` rows are what would badge; `maybe`/`none` show
+  recall so you can set thresholds. After matcher changes, run it on a few
+  series you own to see what the guards now hold back.
 
 ## History / decisions
 
 Built in phases (see git log on `dev`): deterministic badge → LLM-canonicalized
 ownership → ownership-aware series selection → live poll. An earlier draft
 considered sending candidate library items to Gemini; that was **rejected** in
-favor of the local join so nothing about the library is transmitted.
+favor of the local join so nothing about the library is transmitted. The v3
+review ([`v3-review.md`](v3-review.md)) found token-set similarity reading
+sequels as book 1 and added the volume + identity guards and the done-shelf
+recovery path.

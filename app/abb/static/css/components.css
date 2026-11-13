@@ -207,6 +207,12 @@
   border-color: rgba(215, 106, 82, 0.32);
 }
 
+.alert-info {
+  background-color: var(--color-info-muted);
+  color: var(--color-info);
+  border-color: var(--color-info-muted);
+}
+
 .alert code {
   background-color: rgba(0, 0, 0, 0.25);
   color: inherit;

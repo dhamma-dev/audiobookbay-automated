@@ -150,3 +150,18 @@ def test_settings_need_the_data_volume(client):
     r = client.get("/settings")
     assert r.status_code == 200
     assert b"can't persist" in r.data
+
+
+def test_boot_report_reflects_app_settings(tmp_path):
+    """The startup config report must describe the EFFECTIVE config: a Gemini
+    key living in app settings reads as enabled, not 'disabled (no
+    GEMINI_API_KEY)' — that exact confusion happened on a real deployment."""
+    app = settings_app(tmp_path)
+    svc = app.extensions["abb"]
+    svc.store.settings_set("GEMINI_API_KEY", "sk-app-key", None, "admin")
+    svc.reload_settings()
+
+    report = "\n".join(svc.config.report())
+    assert "Smart sort: enabled" in report
+    assert "sk-app-key" not in report                     # still masked
+    assert sum(1 for v in svc.settings_provenance.values() if v == "app") == 1

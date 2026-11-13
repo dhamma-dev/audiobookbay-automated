@@ -102,5 +102,9 @@ def api_connection():
 def healthz():
     """Liveness for Docker/monitoring. Cheap on purpose: no outbound calls."""
     s = svc()
+    build = s.build or {}
     return jsonify({"status": "ok", "tor": s.tor.status(),
-                    "client": s.config.download_client or None})
+                    "client": s.config.download_client or None,
+                    # What's deployed: `curl …/healthz` answers it without a browser.
+                    "version": {"commit": build.get("full_sha"), "ref": build.get("ref"),
+                                "built": build.get("built")} if build else None})

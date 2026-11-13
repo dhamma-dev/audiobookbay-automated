@@ -38,9 +38,17 @@ One module per subsystem; each service class owns its own state and locks:
   preserved), `validate_client()` (a bad DOWNLOAD_CLIENT fails loudly at boot
   and in-app), `report()` (startup summary, secrets masked).
 - **`tor.py` / `outbound.py`** — `TorManager` launches/bootstraps tor in the
-  background and renews circuits via the control port; `Outbound` holds the
-  direct + Tor `requests` sessions and resolves the per-request route
-  (`session['route_mode']`, else the `USE_TOR` default).
+  background, renews circuits via the control port, and watches the process
+  for its whole life (a bootstrap slower than `TOR_BOOTSTRAP_TIMEOUT` still
+  flips to ready; an exit flips to unavailable and relaunches with capped
+  backoff). `Outbound` holds the direct + Tor `requests` sessions and resolves
+  the per-request route (`session['route_mode']`, else the `USE_TOR` default).
+  **Routing fails closed**: `route_mode()` is the *intended* route and is never
+  downgraded; `session_for('tor')` without a usable circuit raises
+  `TorUnavailable` instead of handing back the Direct session. Every ABB
+  request (search, `/send`, magnet lookups, `/covers`, the wanted worker) goes
+  through it, so "Tor is down" means paused, never "went Direct". Direct is
+  only ever explicit (a browser's toggle, `USE_TOR=false`, `WANTED_ROUTE=direct`).
 - **`scraper.py`** — `parse_search_page` (pure: HTML → book dicts, tested with
   fixtures); `Scraper.search` (page 1 first, pages 2..N concurrently, `None` =
   mirror unreachable vs `[]` = no results); `extract_magnet_link` (Info Hash +
@@ -57,21 +65,39 @@ One module per subsystem; each service class owns its own state and locks:
   the thinking-budget fallback, and the wanted verdict. `RANK_FIELDS` is the
   only data that ever reaches Gemini.
 - **`wanted.py`** — `WantedService`: Hardcover GraphQL sync, the broad query
-  ladder (`wanted_queries`), the worker loop (≤3 searches/minute-tick,
-  auto circuit renewal after repeated unreachable scrapes), settled found
-  rows, strict auto-download, and a local ownership sweep (every ~5 min,
-  cached ABS index only) that flips rows to "In your library" once the book
-  actually lands in Audiobookshelf. The dashboard shows three shelves:
-  the active pipeline, owned books (done — collapsed, no actions, never
-  touched again), and skipped books (user-curated out of the search rotation
+  ladder (`wanted_queries`), the worker loop (`_tick`: ≤3 searches/minute,
+  auto circuit renewal after repeated unreachable scrapes; when the background
+  route is Tor and Tor isn't up it **pauses** — `background_paused()`, shown on
+  the dashboard — instead of searching Direct), settled found rows, a
+  **verdict memory** for unfound ones (`verdict_cache`: the AI is only sent
+  listings it hasn't judged for that book — a "no match" rules out everything
+  it saw — so unchanged daily re-checks, restarts and Sync now cost no calls;
+  keys are the listing's post + every field the AI reads, the memory resets
+  on a new book identity/model/prompt/language or after 30 days, only coherent
+  verdicts are kept, and the per-row re-check passes `fresh`), strict
+  auto-download (the magnet page is fetched on the same session the search
+  used, and logged with that route), and a local ownership sweep (every ~2
+  min) that flips rows to "In your library" once the book actually lands in
+  Audiobookshelf. The dashboard shows three shelves: the active pipeline,
+  owned books (done — collapsed, never searched again; **Search anyway**
+  (`reopen`) puts a wrongly-owned row back in the queue and records the
+  rejected library item in `owned_ignore` so the sweep won't re-flip it on
+  that match; once per worker, `_verify_owned` flags owned rows the current
+  matcher no longer confirms as *Unconfirmed* — flagged, never reopened
+  automatically), and skipped books (user-curated out of the search rotation
   via `skip`/`unskip` until re-allowed; sync and requeues leave them alone).
   Quick add (`add_manual` + `POST /wanted/add`): manually-added books get
   **negative ids** (Hardcover ids are positive, so every mechanism works on
   both and the v1 schema holds; per-row routes use signed int converters),
   are library- and duplicate-checked at add time, searched immediately over
-  the requester's route, and — being fire-and-forget — always auto-download
-  their best pick regardless of format, logged under the requesting user
-  (`added_by`). Sync never deletes them; `remove_manual` does.
+  the requester's route, and — being fire-and-forget — always attempt
+  auto-download, logged under the requesting user (`added_by`). Sync never
+  deletes them; `remove_manual` does. Auto-download **requirements are one
+  universal server policy** (`_auto_gate_reason`, configurable in Settings):
+  `WANTED_AUTO_FORMAT` (m4b | any) and `WANTED_AUTO_MIN_KBPS` apply
+  identically to Hardcover and app-added rows; only the master switch
+  differs (manual rows always attempt, Hardcover rows need
+  `WANTED_AUTO_DOWNLOAD`). Held picks say why on the row.
 - **`clients.py`** — the download-client registry; `identity.py` — proxy-header
   identity; `security.py` — CSRF/headers/secret key (see below).
 - **`web/`** — blueprints: `pages` (HTML pages + the optional `/covers`
@@ -85,7 +111,10 @@ One module per subsystem; each service class owns its own state and locks:
 1. `Scraper.search(query)` scrapes ABB (through Tor unless the user chose
    Direct). Page 1 is fetched first; pages 2..N are fetched **concurrently**
    (results keep page order, first empty page ends the run), every fetch
-   bounded by `REQUEST_TIMEOUT` (default 45s).
+   bounded by `REQUEST_TIMEOUT` (default 45s). On the Tor route with no Tor it
+   raises `TorUnavailable` before anything goes out: a POST gets a 503 with
+   the reason, a `GET /?q=` renders unsearched (query kept) with the "Tor ·
+   down" banner and a one-click switch to Direct.
 2. Results are sorted (preferred-language and M4B float to the top), each gets
    a stable integer `id`.
 3. `AbsLibrary.annotate_matches(books)` adds `book['library_match']` for
@@ -98,17 +127,21 @@ One module per subsystem; each service class owns its own state and locks:
 ### Send (`POST /send`)
 JSON `{link, title}` → ABB-host check (SSRF guard) → `extract_magnet_link` →
 `ClientRegistry.add` → `Store.record_download`. Errors return JSON messages;
-the log records success and failure. `/send/batch` does the same per item
-under one `batch_id`.
+the log records success and failure (a Tor-route send with Tor down is a 503,
+logged as a failure on route `tor`). `/send/batch` does the same per item
+under one `batch_id`, and refuses the whole batch up front when Tor is down.
 
 ### Smart sort (`POST /api/rank`, optional)
 Client posts `{query, results}` (the slim payload). Server re-sanitizes to
 `id + RANK_FIELDS`, calls `RankService.rank`, returns a JSON verdict the client
 applies **without re-rendering** — it reorders/wraps the existing cards.
 
-`rank` (temperature 0, structured schema; reasoning capped by
-`RANK_THINKING_BUDGET` — default 0, with a retry-without-it fallback; completed
-rankings cached for `RANK_CACHE_TTL`) asks Gemini for:
+`rank` (temperature 0, structured schema; every Gemini call bounded by
+`GEMINI_TIMEOUT` — default 60s, since the SDK's own default is no timeout;
+reasoning capped by `RANK_THINKING_BUDGET` — default 0, retried without it only
+when the model rejects the thinking config (a 400 naming it), never on a
+timeout, 429 or 5xx; completed rankings cached for `RANK_CACHE_TTL`) asks
+Gemini for:
 - `ordering` + `buckets` (strong/possible/unlikely) — relevance sort + filtering.
 - `ambiguous` + `interpretations` — clickable "did you mean" chips.
 - `series` — ordered entries (seq/title/best_id/alt_ids), `collections`
@@ -145,6 +178,8 @@ Defense-in-depth behind the Authentik proxy (which remains the actual gate):
   `HttpOnly` + `SameSite=Lax` (+ `Secure` with `COOKIE_SECURE=true`).
 - **SSRF guards** — `/send` only fetches ABB-host links; `/covers` only
   proxies ABB-hosted images.
+- **Tor fails closed** — see `outbound.py` above: no usable Tor on a Tor
+  route means the ABB request waits or is refused, never sent Direct.
 - **put.io OAuth** — `state` parameter verified in the callback; logout is a
   POST.
 
