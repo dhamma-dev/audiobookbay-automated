@@ -78,7 +78,7 @@ def load_library(library_id):
             md = (it.get("media") or {}).get("metadata") or {}
             authors = md.get("authors") or []
             author = md.get("authorName") or ", ".join(a.get("name", "") for a in authors)
-            series = [(s.get("name"), s.get("sequence")) for s in (md.get("series") or [])]
+            series = abs_match.parse_series_field(md)
             items.append({
                 "title": md.get("title") or "",
                 "subtitle": md.get("subtitle") or "",

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, render_template, request
 
-from .. import matching
+from .. import gapfill, matching
+from ..identity import current_user_label
+from ..outbound import TorUnavailable
 from ..smart_sort import sanitize_results
 from . import svc
+from .pages import _proxied_cover
 
 log = logging.getLogger("abb.api")
 
@@ -72,9 +75,76 @@ def api_ownership():
         if not it.get("author") and not it.get("series"):
             title, author = matching.split_title_author(it.get("title", ""))
             it = {**it, "title": title, "author": author}
-        if s.library.canonical_owned(it, index, owned_series) is not None:
-            ownership.append({"id": rid, "status": "owned"})
+        item = s.library.canonical_owned(it, index, owned_series)
+        if item is not None:
+            ownership.append({"id": rid, "status": "owned",
+                              "match": s.library.match_info(item)})
     return jsonify({"ownership": ownership})
+
+
+@bp.route("/api/series/fill", methods=["POST"])
+def api_series_fill():
+    """Look for books a smart-sort series shelf is missing (see gapfill.py).
+    The client posts the shelf's label/author and the gaps to try — one gap
+    per call for the title searches, so each row can report as it lands, then
+    one `sweep` call (a single author search) for whatever is left. Found
+    books come back as rendered result cards, numbered from `next_id` so they
+    can't collide with the cards already on the page."""
+    s = svc()
+    data = request.get_json(silent=True) or {}
+    label = str(data.get("label") or "").strip()[:200]
+    author = str(data.get("author") or "").strip()[:200]
+    gaps = gapfill.clean_gaps(data.get("gaps"))
+    if not gaps:
+        return jsonify({"message": "No missing books to look for."}), 400
+    try:
+        next_id = max(0, int(data.get("next_id")))
+    except (TypeError, ValueError):
+        next_id = 100000
+    try:
+        fill = gapfill.fill_by_author if data.get("sweep") else gapfill.fill_by_title
+        results = fill(s, label, author, gaps)
+    except TorUnavailable as e:
+        # Same contract as search: on the Tor route with no Tor, refuse —
+        # never look over Direct instead.
+        return jsonify({"message": str(e), "tor_status": s.tor.status()}), 503
+    except Exception as e:
+        log.error("series gap fill failed: %s", e)
+        return jsonify({"message": "Couldn't look for the missing books."}), 502
+
+    for r in results:
+        books = [dict(b) for b in r.pop("books")]
+        for b in books:
+            b["id"] = next_id
+            next_id += 1
+        s.library.annotate_matches(books)
+        r["cards"] = []
+        for b in books:
+            if s.config.cover_proxy:
+                b["cover"] = _proxied_cover(b.get("cover"), s.config) or b.get("cover")
+            r["cards"].append({
+                "id": b["id"], "note": b.get("note") or "",
+                # What the ownership poll needs to re-check this card later.
+                "title": b.get("title") or "", "language": b.get("language") or "",
+                "html": render_template("partials/book_card.html", book=b)})
+    return jsonify({"gaps": results})
+
+
+@bp.route("/api/wanted/add", methods=["POST"])
+def api_wanted_add():
+    """Put a book the gap fill couldn't find on the wanted list, so the
+    background worker keeps looking. Unlike the /wanted quick add this does
+    not search inline — that search just ran and came up empty."""
+    s = svc()
+    if not s.wanted.enabled:
+        return jsonify({"message": "The wanted list is not configured."}), 503
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title") or "").strip()[:300]
+    author = str(data.get("author") or "").strip()[:200]
+    if not title:
+        return jsonify({"message": "Missing title."}), 400
+    outcome, _hc_id = s.wanted.add_manual(title, author, current_user_label())
+    return jsonify({"outcome": outcome})
 
 
 @bp.route("/api/status")

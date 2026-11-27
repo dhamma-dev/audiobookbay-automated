@@ -36,6 +36,11 @@ SERIES_BONUS = 0.08   # score nudge when series name + number both line up
 
 STRONG, MAYBE, NONE = "STRONG", "MAYBE", "NONE"
 
+# Reason marker for a MAYBE that is otherwise a full match (title + author,
+# no stray words) and was held back only because the owned copy carries no
+# volume number. The app shows these as "possibly in your library".
+VOLUME_UNKNOWN = "owned copy has no series number -> can't confirm the volume"
+
 # Words that carry no identifying signal for an audiobook title.
 _STOPWORDS = {"the", "a", "an", "and", "of", "to", "in"}
 # Edition / format noise stripped before comparison.
@@ -145,6 +150,39 @@ def parse_series(raw):
         if m:
             number = m.group(1)
     return name, number
+
+
+_SERIES_SEQ_RE = re.compile(r"^(.*\S)\s+#(\S+)$")
+
+
+def parse_series_field(md):
+    """[(name, sequence)] from an ABS item's metadata, whichever shape it came
+    in. The library LIST endpoint always returns the minified form, which has
+    no `series` array — only `seriesName`, a display string like
+    "The Completionist Chronicles #2, Divine Dungeon #1". Reading just the
+    array (expanded form) left every item seriesless: the (series, number)
+    join never fired, and the volume guard then read each owned sequel as an
+    unnumbered book 1 — so a "Book 2" result never matched the copy you own.
+    A series filter adds a single {name, sequence} object; accept that too."""
+    raw = md.get("series")
+    if isinstance(raw, dict):
+        raw = [raw]
+    if isinstance(raw, list) and raw:
+        return [(s.get("name"), s.get("sequence")) for s in raw if isinstance(s, dict)]
+    out, pending = [], []
+    # Names may themselves contain ", ", so glue pieces together until one
+    # ends in " #<seq>". Whatever trails without a number is a series the
+    # book belongs to with no position.
+    for piece in (md.get("seriesName") or "").split(", "):
+        pending.append(piece)
+        m = _SERIES_SEQ_RE.match(", ".join(pending))
+        if m:
+            out.append((m.group(1).strip(), m.group(2)))
+            pending = []
+    tail = ", ".join(pending).strip()
+    if tail:
+        out.append((tail, None))
+    return out
 
 
 def _norm_num(n):
@@ -271,6 +309,57 @@ def _declared_volume(abb):
     return name, (_norm_num(num) if num is not None else None)
 
 
+def _unnumbered(item):
+    """The owned copy says nothing about which volume it is: no series number
+    in Audiobookshelf (they are often simply never filled in) and none
+    written in its title."""
+    return (not any(s not in (None, "") for _n, s in item.get("series") or [])
+            and not _title_numbers(item.get("title", "")))
+
+
+def _names_same_book(abb, item, series_name):
+    """The result's title IS the owned copy's title, and that title is the
+    book's own name rather than the series' ("Regicide", Completionist
+    Chronicles #2, against an owned "Regicide"). Then a missing number on the
+    owned copy is no reason to doubt it. A title that just repeats the series
+    name ("He Who Fights with Monsters" #5 against an unnumbered copy) could
+    be any volume, so it doesn't qualify — and nor does a result whose series
+    we don't know."""
+    if not series_name:
+        return False
+
+    def words(title):
+        return {w for w in tokens(title) if w not in _FILLER and not w.isdigit()}
+    ours, theirs = words(abb.get("title", "")), words(item.get("title", ""))
+    return bool(ours) and ours == theirs and \
+        token_set_ratio(item.get("title", ""), series_name) < 0.8
+
+
+def _title_segment_is(abb, item):
+    """One delimited piece of the result's title is exactly the owned title:
+    "The Completionist Chronicles, Book 2: Regicide" has a "Regicide" piece.
+    ("Dune Messiah, Book 2" has no "Dune" piece.) With the series name
+    unknown, this is how a raw title shows it names the owned book."""
+    def words(text):
+        return {w for w in tokens(text) if w not in _FILLER and not w.isdigit()}
+    theirs = words(item.get("title", ""))
+    if not theirs:
+        return False
+    pieces = re.split(r"[:,()\[\]]|\s[-–—]\s", abb.get("title", ""))
+    return any(words(piece) == theirs for piece in pieces)
+
+
+def volume_unknown(abb, item):
+    """True when the only thing against a match is that the owned copy is
+    unnumbered while the result declares a volume other than 1. That is not
+    evidence of a different book — just a number nobody entered — so callers
+    may surface it as a *suspected* match for the user to judge."""
+    _name, num = _declared_volume(abb)
+    # ("Book 2" written in the result's title is the declared number itself.)
+    return (num not in (None, "1") and _unnumbered(item)
+            and not (_title_numbers(abb.get("title", "")) - {num}))
+
+
 def volume_conflict(abb, item):
     """True when the result is demonstrably a different volume than the owned
     copy: its declared number isn't the owned copy's series number, or the
@@ -283,6 +372,8 @@ def volume_conflict(abb, item):
             # Only compare against the same series ("Dune Chronicles" ~ "Dune");
             # a number from some other series says nothing either way.
             seqs = {s for n, s in owned if not name or not n or token_set_ratio(name, n) >= 0.8}
+        elif _unnumbered(item) and _names_same_book(abb, item, name):
+            seqs = set()   # same distinctive title: the missing number is no conflict
         else:
             seqs = _title_numbers(item.get("title", "")) or {"1"}
         if seqs and num not in seqs:
@@ -391,7 +482,11 @@ def score_pair(abb, item):
             reason_bits.append("bundle/range vs single volume -> not this item")
         elif volume_conflict(abb, item):
             tier = MAYBE
-            reason_bits.append("volume number differs -> another book in the series")
+            if volume_unknown(abb, item) and (
+                    _title_segment_is(abb, item) or not unexplained_words(abb, item)):
+                reason_bits.append(VOLUME_UNKNOWN)
+            else:
+                reason_bits.append("volume number differs -> another book in the series")
         else:
             extra = unexplained_words(abb, item)
             if extra:

@@ -84,7 +84,7 @@
     {% endfor %}
 </div>
 
-<div id="search-results" class="search-results" role="region" aria-live="polite" aria-label="Search results">
+<div id="search-results" class="search-results"{% if wanted_enabled %} data-wanted="1"{% endif %} role="region" aria-live="polite" aria-label="Search results">
     {% if searched %}
         {% if books %}
         <div class="search-results-bar">

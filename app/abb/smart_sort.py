@@ -61,6 +61,8 @@ RANK_SYSTEM_INSTRUCTION = (
     "beyond the highest one present.\n"
     "- If you confidently know the series' full length, set 'total' to it (so the "
     "UI can say 'X of Y'). Omit 'total' if unsure.\n"
+    "- Set the block's 'author' to the series' author as commonly credited "
+    "(used to look for the missing books). Omit it if unsure.\n"
     "- An omnibus/box-set/collection upload (one file spanning several books) "
     "goes in the 'collections' array, not in 'entries': give its id, a title, and "
     "'covers' = the list of book numbers (seq) it contains. Do not also use that "
@@ -114,6 +116,7 @@ RANK_RESPONSE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "label": {"type": "string"},
+                    "author": {"type": "string"},
                     "total": {"type": "integer"},
                     "entries": {
                         "type": "array",

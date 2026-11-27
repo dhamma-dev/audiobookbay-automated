@@ -64,7 +64,8 @@ def search():
             if proxied:
                 book["cover"] = proxied
     m4b_count = sum(1 for b in books if b.get("is_m4b"))
-    owned_count = sum(1 for b in books if b.get("library_match"))
+    owned_count = sum(1 for b in books if b.get("library_match")
+                      and not b["library_match"].get("suspected"))
     return render_template("search.html", books=books, query=query,
                            searched=searched,
                            result_count=len(books), m4b_count=m4b_count,

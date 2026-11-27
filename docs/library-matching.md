@@ -56,6 +56,14 @@ No import side effects (like everything in the package); usable from the app, th
     isn't the owned copy's series number, or the numbers written in the two
     titles disagree (*He Who Fights with Monsters 5* vs *… 4*, or vs the
     unnumbered book 1). Numbers compare numerically (`_norm_num`: `02` = `2`).
+    **Unnumbered owned copies** (series numbers are often never filled in on
+    the ABS side) get two softenings: when the result's series is known and
+    its title is exactly the owned title — a title of its own, not the series
+    name — the missing number is no conflict (`_names_same_book`: canonical
+    *Regicide*, Completionist Chronicles #2, matches an unnumbered
+    *Regicide*); otherwise, if the missing number is the *only* thing in the
+    way (`volume_unknown`), the result stays `MAYBE` but carries the
+    `VOLUME_UNKNOWN` reason, which the app shows as a **suspected** match.
   - **Identity guard** (`unexplained_words`) — a title word on either side
     that the other can't account for: not in its title, a series name, a
     **subtitle** (the owned copy's ABS subtitle, or either title's
@@ -75,7 +83,14 @@ No import side effects (like everything in the package); usable from the app, th
 - `split_title_author(raw)` — ABB titles are usually `Title - Author`.
 
 **Tuning knobs** are module-level constants at the top: `STRONG_TITLE`,
-`MAYBE_TITLE`, `AUTHOR_MIN`, `SERIES_BONUS`. Only `STRONG` ever becomes a badge.
+`MAYBE_TITLE`, `AUTHOR_MIN`, `SERIES_BONUS`. Only `STRONG` ever becomes an
+"In your library" badge; a `MAYBE` with the `VOLUME_UNKNOWN` reason becomes
+"Possibly in your library".
+
+`parse_series_field(md)` reads an ABS item's series. The library **list**
+endpoint always returns minified metadata: no `series` array, only
+`seriesName` ("Name #2, Other #1"). Reading just the array once left every
+owned book seriesless, so the (series, number) join never fired.
 
 ## App integration — `app/abb/library.py` (`AbsLibrary`)
 
@@ -86,7 +101,12 @@ No import side effects (like everything in the package); usable from the app, th
   its ABS `id` (stable across refreshes) and `subtitle` (the identity guard
   forgives a listing's subtitle only when it's the owned copy's).
 - `annotate_matches(books)` — Tier 1. Sets `book['library_match'] =
-  {title, author}` for `STRONG` matches. Called in the search route.
+  {title, author, series, url?}` (`match_info`) for `STRONG` matches, plus
+  `suspected: True` for a `VOLUME_UNKNOWN` one. Called in the search route.
+- `match_info(item)` — the owned copy a flag points at. Every flag shows it
+  ("matches “Regicide” by Dakota Krout · The Completionist Chronicles #2") so
+  a match can be checked by eye; `url` links the item in ABS when `ABS_URL`
+  looks browser-reachable (not a bare Docker service name).
 - `resolve_ownership(ranking, index)` — Tier 2. Joins the LLM's `canonical`
   identities to the ABS index locally, adds `ranking['ownership'] =
   [{id, status, detail}]`. Series books join on **(fuzzy series name, seq)**;
@@ -94,7 +114,11 @@ No import side effects (like everything in the package); usable from the app, th
   `partial "N of M"`. Shared helper `canonical_owned`; when the (series, seq)
   join misses, its fuzzy fallback passes the canonical number along so the
   volume guard refuses an owned sibling (canonical *Dune* #1 is not your
-  *Dune Messiah* #2).
+  *Dune Messiah* #2). `canonical_lookup` is the same resolution returning
+  `(item, confirmed)`; unconfirmed = suspected. Shelf entries whose
+  (series, seq) join misses fall back to it by title + the shelf's `author`;
+  a shelf **gap** you own is reported in `ranking['owned_gaps']`. Every
+  ownership entry carries `match`.
 - **`/api/rank`** — when ABS is on, requests the `canonical` block
   (`RankService.rank(..., want_ownership=True)` adds `RANK_CANONICALIZE_INSTRUCTION`
   and the canonical schema block), then runs `resolve_ownership`. The non-ABS
@@ -111,6 +135,7 @@ No import side effects (like everything in the package); usable from the app, th
 | `owned_other_edition` | "In library · other edition" | same as owned |
 | `partial` | "Own N of M" (amber) | stays selectable (you lack some) |
 | `upgrade` | "Upgrade available · yours is …" (amber) | **stays ticked** — replacing junk is a wanted download |
+| `suspected` | "Possibly in your library" (neutral, dashed) | **nothing changes** — stays ticked, not hidden, not counted, still polled; it informs and shows the copy |
 | *(none)* | no badge | normal |
 
 ## Upgrade radar (owned-copy quality)

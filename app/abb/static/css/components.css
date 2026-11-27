@@ -402,6 +402,29 @@
   border-color: rgba(224, 139, 60, 0.3);
 }
 
+/* Probably yours, but the owned copy has no series number to confirm the
+   volume — neutral, so it reads as a question rather than a claim. */
+.library-flag-suspected {
+  background-color: transparent;
+  color: var(--color-text-muted);
+  border: 1px dashed var(--color-border-strong);
+}
+
+/* Which Audiobookshelf item a flag matched, for checking by eye. */
+.library-match {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.library-match a {
+  color: var(--color-text-muted);
+  text-decoration: underline;
+}
+
+.library-match a:hover {
+  color: var(--color-accent);
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

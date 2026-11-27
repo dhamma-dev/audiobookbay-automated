@@ -257,12 +257,14 @@
   const smartSortInflight = new Map(); // query -> in-flight /api/rank promise
   let smartSortState = null;           // { query, ranking, expanded, activeInterp }
   let smartClicked = false;            // user asked to apply for the current results
+  const gapIdentities = new Map();     // result id -> identity of cards the gap fill added (ownership poll)
 
   function smartSortReset() {
     smartSortCache.clear();
     smartSortInflight.clear();
     smartSortState = null;
     smartClicked = false;
+    gapIdentities.clear();
   }
 
   // One /api/rank call per (query, result set), de-duped: a background prefetch
@@ -465,11 +467,17 @@
   // Paint (or upgrade) the "In your library" flag on a card. Ownership is
   // computed server-side against the local ABS index; here we just render it,
   // creating the flag for matches the initial deterministic pass didn't catch.
-  function setLibraryFlag(card, status, detail) {
+  // `match` is the owned Audiobookshelf copy the flag points at; it is shown
+  // under the flag so a match (confirmed or only suspected) can be checked.
+  function setLibraryFlag(card, status, detail, match) {
     if (!card) return;
     const state = status === 'partial' ? 'partial'
       : status === 'upgrade' ? 'upgrade'
+      : status === 'suspected' ? 'suspected'
       : status === 'owned_other_edition' ? 'edition' : 'owned';
+    // A suspicion never replaces something firmer already on the card.
+    const current = card.getAttribute('data-in-library');
+    if (state === 'suspected' && current && current !== 'suspected') return;
     card.setAttribute('data-in-library', state);
     const details = card.querySelector('.book-details');
     if (!details) return;
@@ -481,26 +489,49 @@
       if (title) title.insertAdjacentElement('afterend', flag);
       else details.prepend(flag);
     }
-    const icon = state === 'upgrade' ? 'arrow-up-circle' : 'library-big';
+    const icon = state === 'upgrade' ? 'arrow-up-circle'
+      : state === 'suspected' ? 'help-circle' : 'library-big';
     const text = state === 'partial' ? 'Own ' + (detail || 'some')
       : state === 'upgrade' ? 'Upgrade available' + (detail ? ' · yours is ' + detail : '')
       : state === 'edition' ? 'In library · other edition'
+      : state === 'suspected' ? 'Possibly in your library'
       : 'In your library';
     flag.className = 'library-flag'
       + (state === 'partial' ? ' library-flag-partial' : '')
-      + (state === 'upgrade' ? ' library-flag-upgrade' : '');
+      + (state === 'upgrade' ? ' library-flag-upgrade' : '')
+      + (state === 'suspected' ? ' library-flag-suspected' : '');
+    flag.title = state === 'suspected'
+      ? 'Looks like a book in your Audiobookshelf library, but that copy has no series number to confirm which volume it is.'
+      : '';
     flag.innerHTML = '<i data-lucide="' + icon + '" aria-hidden="true"></i>'
       + '<span class="library-flag-text">' + escapeHtml(text) + '</span>';
+    if (!match || !match.title) return;   // keep whatever the server rendered
+    let line = card.querySelector('[data-library-match]');
+    if (!line) {
+      line = document.createElement('div');
+      line.className = 'library-match';
+      line.setAttribute('data-library-match', '');
+      flag.insertAdjacentElement('afterend', line);
+    }
+    const name = '“' + escapeHtml(match.title) + '”';
+    line.innerHTML = 'matches ' +
+      (match.url && /^https?:\/\//.test(match.url)
+        ? '<a href="' + escapeHtml(match.url) + '" target="_blank" rel="noopener noreferrer">' + name + '</a>'
+        : name) +
+      (match.author ? ' by ' + escapeHtml(match.author) : '') +
+      (match.series ? ' · ' + escapeHtml(match.series)
+        : state === 'suspected' ? ' · no series number in Audiobookshelf' : '');
   }
 
   // Apply the "owned" treatment to a single card: badge it, and if it sits in a
   // series shelf, de-select + mark its entry (owned books aren't pre-picked, and
   // "Hide owned" can then drop the whole row). Partly-owned bundles stay picked,
   // and so do upgrades -- replacing a below-par copy is a wanted download.
-  function markOwnedCard(card, status, detail) {
+  function markOwnedCard(card, status, detail, match) {
     if (!card) return;
-    setLibraryFlag(card, status, detail);
-    if (status === 'partial' || status === 'upgrade') return;
+    setLibraryFlag(card, status, detail, match);
+    // A suspected match informs; it never unticks or hides anything.
+    if (status === 'partial' || status === 'upgrade' || status === 'suspected') return;
     const entry = card.closest('.series-entry');
     if (entry && !entry.classList.contains('is-owned')) {
       entry.classList.add('is-owned');
@@ -615,7 +646,7 @@
     const results = document.getElementById('search-results');
     if (!Array.isArray(own) || !results) return;
     own.forEach((o) => {
-      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail);
+      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail, o.match);
     });
     refreshOwnershipCounts();
   }
@@ -634,6 +665,7 @@
         });
       } catch (e) { /* ignore */ }
     }
+    gapIdentities.forEach((idy, id) => map.set(id, idy));   // cards the gap fill added
     const ranking = smartSortState && smartSortState.ranking;
     if (ranking && Array.isArray(ranking.canonical)) {
       ranking.canonical.forEach((c) => {
@@ -659,7 +691,7 @@
     if (!results || !dataEl || !dataEl.dataset.absMatch) return;
     const unowned = Array.prototype.slice
       .call(results.querySelectorAll('.book-card[data-result-id]'))
-      .filter((c) => !c.hasAttribute('data-in-library'));
+      .filter((c) => !c.hasAttribute('data-in-library') || c.dataset.inLibrary === 'suspected');
     if (!unowned.length) return;
     const ids = ownershipIdentities();
     const items = unowned.map((c) => {
@@ -683,7 +715,7 @@
     const own = (data && data.ownership) || [];
     if (!own.length) return;
     own.forEach((o) =>
-      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail));
+      markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail, o.match));
     refreshOwnershipCounts();
     showToast(own.length === 1
       ? 'A book you queued is now in your library.'
@@ -752,34 +784,50 @@
      tray, and a "send selected" batch. Built by moving the existing
      server-rendered cards into group containers — no re-render.
      ---------------------------------------------------------- */
-  function buildSeriesEntry(e, cards, consumed) {
-    const bestKey = e.best_id != null ? String(e.best_id) : null;
-    const bestCard = bestKey && !consumed.has(bestKey) ? cards.get(bestKey) : null;
+  // A book the shelf knows about but has no result for. Three looks: plain
+  // ("not in these results" — the gap fill can go looking), owned (nothing to
+  // look for), and done (looked for, not found).
+  function buildGapEntry(e, owned) {
+    const gap = document.createElement('div');
+    gap.className = 'series-entry is-gap';
+    if (e.seq != null) gap.dataset.seq = String(e.seq);
+    gap.dataset.title = e.title || '';
+    gap.innerHTML =
+      '<div class="series-entry-check series-entry-check--empty" aria-hidden="true"></div>' +
+      '<div class="series-entry-body"><div class="series-gap-row">' +
+      '<span class="series-gap-icon"><i data-lucide="circle-dashed" aria-hidden="true"></i></span>' +
+      '<span class="series-gap-label">' +
+      (e.seq != null ? 'Book ' + escapeHtml(String(e.seq)) : 'This book') +
+      (e.title ? ' · ' + escapeHtml(e.title) : '') + '</span>' +
+      '<span class="series-gap-note">not in these results</span>' +
+      '</div></div>';
+    if (owned) markGapOwned(gap);
+    return gap;
+  }
 
-    // No real candidate for this slot — render a subtle gap marker so a missing
-    // book in the middle of a run is visible without the user hunting for it.
-    if (!bestCard) {
-      const gap = document.createElement('div');
-      gap.className = 'series-entry is-gap';
-      if (e.seq != null) gap.dataset.seq = String(e.seq);
-      gap.innerHTML =
-        '<div class="series-entry-check series-entry-check--empty" aria-hidden="true"></div>' +
-        '<div class="series-entry-body"><div class="series-gap-row">' +
-        '<i data-lucide="circle-dashed" aria-hidden="true"></i>' +
-        '<span class="series-gap-label">' +
-        (e.seq != null ? 'Book ' + escapeHtml(String(e.seq)) : 'This book') +
-        (e.title ? ' · ' + escapeHtml(e.title) : '') + '</span>' +
-        '<span class="series-gap-note">not in these results</span>' +
-        '</div></div>';
-      return { el: gap, available: false };
-    }
+  function setGapNote(gap, text, busy) {
+    const note = gap.querySelector('.series-gap-note');
+    if (!note) return;
+    note.innerHTML = (busy ? '<span class="spinner-icon" aria-hidden="true"></span> ' : '') +
+      escapeHtml(text);
+  }
 
-    consumed.add(bestKey);
-    const altCards = (e.alt_ids || [])
-      .map((id) => String(id))
-      .filter((id) => cards.has(id) && !consumed.has(id))
-      .map((id) => { consumed.add(id); return cards.get(id); });
+  // A gap you already own counts toward "own N" and follows "Hide owned",
+  // like any owned entry — and is never searched for.
+  function markGapOwned(gap) {
+    gap.classList.add('is-gap-owned', 'is-owned');
+    gap.classList.remove('is-gap-done');
+    gap.dataset.owned = '1';
+    const icon = gap.querySelector('.series-gap-icon');
+    if (icon) icon.innerHTML = '<i data-lucide="library-big" aria-hidden="true"></i>';
+    const want = gap.querySelector('.series-gap-want');
+    if (want) want.remove();
+    setGapNote(gap, 'in your library', false);
+  }
 
+  // One real book on the shelf: tick box, caption, the chosen card, and an
+  // alternatives tray. `note` marks an entry the gap fill found.
+  function buildFilledEntry(e, bestCard, altCards, note) {
     const entry = document.createElement('div');
     entry.className = 'series-entry';
     if (e.seq != null) entry.dataset.seq = String(e.seq);
@@ -797,7 +845,8 @@
     caption.className = 'series-entry-caption';
     caption.innerHTML =
       (e.seq != null ? '<span class="series-seq">Book ' + escapeHtml(String(e.seq)) + '</span>' : '') +
-      (e.title ? '<span class="series-entry-title">' + escapeHtml(e.title) + '</span>' : '');
+      (e.title ? '<span class="series-entry-title">' + escapeHtml(e.title) + '</span>' : '') +
+      (note ? '<span class="series-found-note">' + escapeHtml(note) + '</span>' : '');
 
     const main = document.createElement('div');
     main.className = 'series-entry-main';
@@ -823,7 +872,23 @@
 
     entry.appendChild(gutter);
     entry.appendChild(body);
-    return { el: entry, available: true };
+    return entry;
+  }
+
+  function buildSeriesEntry(e, cards, consumed, ownedGap) {
+    const bestKey = e.best_id != null ? String(e.best_id) : null;
+    const bestCard = bestKey && !consumed.has(bestKey) ? cards.get(bestKey) : null;
+
+    // No real candidate for this slot — render a subtle gap marker so a missing
+    // book in the middle of a run is visible without the user hunting for it.
+    if (!bestCard) return { el: buildGapEntry(e, ownedGap), available: false };
+
+    consumed.add(bestKey);
+    const altCards = (e.alt_ids || [])
+      .map((id) => String(id))
+      .filter((id) => cards.has(id) && !consumed.has(id))
+      .map((id) => { consumed.add(id); return cards.get(id); });
+    return { el: buildFilledEntry(e, bestCard, altCards, ''), available: true };
   }
 
   // An omnibus / box set: one file covering several books. Rendered at the top
@@ -984,14 +1049,19 @@
     sentinel.style.display = 'none';
     results.insertBefore(sentinel, anchorAfter ? anchorAfter.nextSibling : results.firstChild);
 
-    series.forEach((s) => {
+    series.forEach((s, si) => {
       const group = document.createElement('section');
       group.className = 'series-group';
       group.dataset.label = s.label || '';
+      group.dataset.author = s.author || '';
+
+      // Gaps the server already knows you own (ranking.owned_gaps).
+      const ownedGaps = new Set();
+      (ranking.owned_gaps || []).forEach((g) => { if (g.series === si) ownedGaps.add(String(g.seq)); });
 
       const built = [];
       (s.entries || []).forEach((e) => {
-        const r = buildSeriesEntry(e, cards, consumed);
+        const r = buildSeriesEntry(e, cards, consumed, ownedGaps.has(String(e.seq)));
         if (r) built.push(r);
       });
       const availableCount = built.filter((b) => b.available).length;
@@ -1014,10 +1084,7 @@
       });
 
       // "X of Y" only when we trust a larger canonical total; otherwise "N books".
-      const total = (typeof s.total === 'number' && s.total > availableCount) ? s.total : null;
-      const countText = total
-        ? availableCount + ' of ' + total + ' available'
-        : availableCount + ' book' + (availableCount === 1 ? '' : 's');
+      if (typeof s.total === 'number') group.dataset.total = String(s.total);
 
       const header = document.createElement('div');
       header.className = 'series-group-header';
@@ -1026,7 +1093,7 @@
         'aria-label="Select all books in ' + escapeHtml(s.label || 'this series') + '"></label>' +
         '<div class="series-group-heading"><i data-lucide="library" aria-hidden="true"></i>' +
         '<span class="series-group-title">' + escapeHtml(s.label || 'Series') + '</span>' +
-        '<span class="series-group-count">' + countText + '</span></div>' +
+        '<span class="series-group-count"><span class="series-count-text"></span></span></div>' +
         '<button type="button" class="btn btn-primary series-send-btn" data-action="series-send">' +
         '<i data-lucide="download" aria-hidden="true"></i> Send <span class="series-send-count">' +
         availableCount + '</span> selected</button>';
@@ -1041,11 +1108,228 @@
       results.insertBefore(group, sentinel);
 
       built.forEach((b) => { if (b.available) decorateEntry(b.el); });
+      updateSeriesAvailable(group);
+      updateFillButton(group);
       updateSeriesCount(group);
     });
 
     sentinel.remove();
     refreshIcons();
+  }
+
+  // "X of Y available" when we trust a larger canonical total, else "N books".
+  // Recomputed whenever the gap fill adds a book.
+  function updateSeriesAvailable(group) {
+    const text = group.querySelector('.series-count-text');
+    if (!text) return;
+    const n = group.querySelectorAll('.series-entry:not(.is-gap):not(.is-collection)').length;
+    const total = Number(group.dataset.total);
+    text.textContent = (total > n)
+      ? n + ' of ' + total + ' available'
+      : n + ' book' + (n === 1 ? '' : 's');
+  }
+
+  /* ----------------------------------------------------------
+     Series gap fill: look for the books a shelf is missing.
+     A series-name search misses volumes uploaded under their own
+     title; this asks the server to try a few targeted searches for
+     just those books (title first, then one author search). Only on
+     a click — every search is a real request to the mirror.
+     ---------------------------------------------------------- */
+  const FILL_BATCH = 8;                 // gaps per click (the server caps it too)
+
+  function openGaps(group) {
+    return Array.prototype.slice.call(
+      group.querySelectorAll('.series-entry.is-gap:not(.is-gap-owned):not(.is-gap-done)'));
+  }
+
+  function updateFillButton(group) {
+    const n = openGaps(group).length;
+    let btn = group.querySelector('[data-action="series-fill"]');
+    if (!n) { if (btn) btn.remove(); return; }
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-secondary series-fill-btn';
+      btn.dataset.action = 'series-fill';
+      btn.title = 'Search AudioBook Bay for these books by title, then by author';
+      const send = group.querySelector('.series-send-btn');
+      send.parentNode.insertBefore(btn, send);
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i data-lucide="search" aria-hidden="true"></i> Find ' + n + ' missing';
+  }
+
+  function gapInfo(gap) {
+    return { seq: gap.dataset.seq, title: gap.dataset.title || '' };
+  }
+
+  function nextResultId() {
+    let max = -1;
+    document.querySelectorAll('.book-card[data-result-id]').forEach((c) => {
+      const id = Number(c.dataset.resultId);
+      if (id > max) max = id;
+    });
+    return max + 1;
+  }
+
+  async function requestFill(group, gaps, sweep) {
+    const res = await fetch('/api/series/fill', Object.assign({
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        label: group.dataset.label || '', author: group.dataset.author || '',
+        gaps, sweep, next_id: nextResultId(),
+      }),
+    }, fetchTimeout(180000)));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'Couldn’t look for the missing books.');
+    return data.gaps || [];
+  }
+
+  // Turn one server result into shelf state. Returns 'found', 'owned' or
+  // 'missing'; throws when the mirror didn't answer (so the run stops and the
+  // gap stays open for another try).
+  function applyFillResult(group, gap, r) {
+    if (!r || r.status === 'unreachable') {
+      throw new Error('AudioBook Bay didn’t respond — try again in a moment.');
+    }
+    if (r.status === 'owned') { markGapOwned(gap); return 'owned'; }
+    if (r.status !== 'found') return 'missing';
+
+    // Skip anything already on the page (smart sort filed it elsewhere).
+    const onPage = new Set();
+    document.querySelectorAll('.book-card [data-action="download"]').forEach((d) => onPage.add(d.dataset.link));
+    const fresh = [];
+    (r.cards || []).forEach((c) => {
+      const tpl = document.createElement('template');
+      tpl.innerHTML = c.html || '';
+      const card = tpl.content.querySelector('.book-card');
+      const dl = card && card.querySelector('[data-action="download"]');
+      if (!dl || onPage.has(dl.dataset.link)) return;
+      onPage.add(dl.dataset.link);
+      gapIdentities.set(String(c.id), {
+        title: gap.dataset.title || c.title, author: group.dataset.author || '',
+        series: group.dataset.label || '', seq: Number(gap.dataset.seq), language: c.language,
+      });
+      fresh.push({ card, note: c.note });
+    });
+    if (!fresh.length) return 'missing';
+
+    const e = { seq: gap.dataset.seq, title: gap.dataset.title || '' };
+    const note = 'found by search' + (fresh[0].note ? ' · ' + fresh[0].note : '');
+    const entry = buildFilledEntry(e, fresh[0].card, fresh.slice(1).map((f) => f.card), note);
+    gap.replaceWith(entry);
+    decorateEntry(entry);
+    const state = fresh[0].card.dataset.inLibrary;   // the server's deterministic badge
+    if (state) markOwnedCard(fresh[0].card, state);
+    return 'found';
+  }
+
+  // Looked for and not found: say so, and offer the wanted list (its worker
+  // keeps checking) when that feature is on.
+  function markGapDone(gap) {
+    gap.classList.add('is-gap-done');
+    setGapNote(gap, 'not found on AudioBook Bay', false);
+    const results = document.getElementById('search-results');
+    const row = gap.querySelector('.series-gap-row');
+    if (results && results.dataset.wanted && row && !row.querySelector('.series-gap-want')) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-ghost series-gap-want';
+      btn.dataset.action = 'series-gap-want';
+      btn.innerHTML = '<i data-lucide="bookmark" aria-hidden="true"></i> Add to wanted';
+      row.appendChild(btn);
+    }
+  }
+
+  async function handleSeriesFill(btn) {
+    const group = btn.closest('.series-group');
+    if (!group || group.dataset.filling) return;
+    const pending = openGaps(group).slice(0, FILL_BATCH);
+    if (!pending.length) return;
+    group.dataset.filling = '1';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span> Looking…';
+
+    let found = 0, owned = 0, failed = null;
+    const tried = [];   // gaps the title searches didn't settle
+    try {
+      // One gap per request, so each row reports as soon as it lands.
+      for (const gap of pending) {
+        setGapNote(gap, 'searching…', true);
+        const rs = await requestFill(group, [gapInfo(gap)], false);
+        const outcome = applyFillResult(group, gap, rs[0]);
+        if (outcome === 'found') found++;
+        else if (outcome === 'owned') owned++;
+        else { tried.push(gap); setGapNote(gap, 'not found by title', false); }
+        refreshIcons();
+      }
+      // Then ONE author search for everything still missing.
+      if (tried.length && group.dataset.author) {
+        tried.forEach((gap) => setGapNote(gap, 'checking the author’s uploads…', true));
+        const rs = await requestFill(group, tried.map(gapInfo), true);
+        const bySeq = new Map(rs.map((r) => [String(r.seq), r]));
+        tried.slice().forEach((gap) => {
+          if (applyFillResult(group, gap, bySeq.get(gap.dataset.seq)) === 'found') {
+            found++;
+            tried.splice(tried.indexOf(gap), 1);
+          }
+        });
+      }
+      tried.forEach(markGapDone);
+    } catch (err) {
+      failed = err;
+      // Anything not settled stays an open gap, ready for another try.
+      pending.forEach((gap) => {
+        if (gap.isConnected && !gap.classList.contains('is-gap-owned')) setGapNote(gap, 'not in these results', false);
+      });
+    } finally {
+      delete group.dataset.filling;
+    }
+    if (!group.isConnected) return;     // a new search replaced these results
+
+    updateSeriesAvailable(group);
+    updateFillButton(group);
+    syncCollections(group);
+    refreshOwnershipCounts();
+    if (failed) { showToast(failed.message || 'Couldn’t look for the missing books.', 'error'); return; }
+    const bits = [];
+    if (found) bits.push('found ' + found + ' missing book' + (found === 1 ? '' : 's'));
+    if (owned) bits.push(owned + ' already in your library');
+    if (bits.length) {
+      const msg = bits.join(', ') + '.';
+      showToast(msg.charAt(0).toUpperCase() + msg.slice(1), 'success');
+    } else {
+      showToast('No missing books turned up on AudioBook Bay.', 'info');
+    }
+  }
+
+  async function handleGapWant(btn) {
+    const gap = btn.closest('.series-entry.is-gap');
+    const group = btn.closest('.series-group');
+    if (!gap || !group) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/wanted/add', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ title: gap.dataset.title || '', author: group.dataset.author || '' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Couldn’t add it to the wanted list.');
+      if (data.outcome === 'owned') {
+        markGapOwned(gap);
+        refreshOwnershipCounts();
+      } else {
+        btn.remove();
+        setGapNote(gap, data.outcome === 'duplicate'
+          ? 'already on your wanted list' : 'on your wanted list — we’ll keep looking', false);
+      }
+    } catch (err) {
+      btn.disabled = false;
+      showToast(err.message || 'Couldn’t add it to the wanted list.', 'error');
+    }
   }
 
   // Standalone books that appear as several uploads: fold the duplicates into a
@@ -1480,6 +1764,12 @@
 
     const seriesSend = e.target.closest('[data-action="series-send"]');
     if (seriesSend) { handleSeriesSend(seriesSend); return; }
+
+    const seriesFill = e.target.closest('[data-action="series-fill"]');
+    if (seriesFill) { handleSeriesFill(seriesFill); return; }
+
+    const gapWant = e.target.closest('[data-action="series-gap-want"]');
+    if (gapWant) { handleGapWant(gapWant); return; }
 
     const useEdition = e.target.closest('[data-action="series-use-edition"]');
     if (useEdition) { handleUseEdition(useEdition); return; }

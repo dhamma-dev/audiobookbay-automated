@@ -145,8 +145,8 @@ Gemini for:
 - `ordering` + `buckets` (strong/possible/unlikely) — relevance sort + filtering.
 - `ambiguous` + `interpretations` — clickable "did you mean" chips.
 - `series` — ordered entries (seq/title/best_id/alt_ids), `collections`
-  (omnibus with `covers`), and `total`; renders as a "shelf" with per-book
-  selection and a batch send.
+  (omnibus with `covers`), `total` and `author`; renders as a "shelf" with
+  per-book selection and a batch send.
 - `editions` — group multiple uploads of one standalone work, best + alts.
 - `canonical` — **only when ABS matching is on**; per-result clean identity
   used for the local ownership join (see the matching doc).
@@ -154,6 +154,21 @@ Gemini for:
 Privacy: only `RANK_FIELDS` (`title, format, bitrate, language, size,
 keywords`) are ever sent. The feature is invisible unless `GEMINI_API_KEY` is
 set.
+
+**Series gap fill** (`POST /api/series/fill`, `abb/gapfill.py`). A shelf's
+gaps (entries with no result) can be searched for on request — the "Find N
+missing" button; never automatic, since each search is a real request to the
+mirror. The client posts one gap per call (rows report as they land): the
+server skips a gap the library already has, then runs the wanted list's query
+ladder (`wanted_queries`: bare title, then title + surname, 2 pages each).
+Whatever is still missing goes into ONE `sweep` call — a single author search
+checked against every remaining gap. Listings are matched by the author-gated
+matcher (the gap is a one-item "library" carrying its series number); when it
+finds nothing, `RankService.wanted_verdict` judges the listings (public
+metadata only; off with `WANTED_LLM=false`). Found books come back as
+server-rendered cards and replace the gap as a normal entry; unfound gaps
+offer "Add to wanted" (`POST /api/wanted/add`, no inline search). Same route
+rules as search: Tor route with no Tor → 503, never Direct.
 
 **Speculative prefetch.** Because the call takes a few seconds, a per-browser
 setting ("Prepare automatically", persisted via `/settings/prefetch` →

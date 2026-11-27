@@ -194,10 +194,14 @@ individually. A few niceties for big series:
 - **Gaps are obvious** — a book missing from the middle of a run shows as a
   subtle placeholder at its spot in reading order, and the shelf header reads
   e.g. "11 of 12 available" so you notice before sending.
+- **Find missing** — a series-name search often misses volumes uploaded under
+  their own title. The shelf's **Find N missing** button searches for just
+  those books (by title, then one search of the author's uploads) and drops
+  what it finds into the shelf. Books already in your library are marked
+  instead of searched, and anything still missing can go on the wanted list.
 
 Series grouping leans on Gemini's own knowledge of reading order and series
-length; it only ever offers real listings to download, and gap markers are
-informational, never something you can click.
+length; it only ever offers real listings to download.
 
 **Prepare automatically (prefetch).** Smart sort takes a few seconds. In the
 settings popover (the shield menu) you can turn on **Prepare automatically**: it
