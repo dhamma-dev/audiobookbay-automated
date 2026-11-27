@@ -925,3 +925,25 @@
   align-items: center;
   gap: var(--space-4);
 }
+
+/* "Set series: Name #2" — writes the label a shelf worked out onto the owned
+   Audiobookshelf copy. Quiet, like the line it sits in. */
+.library-label-btn {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-2);
+  font: inherit;
+  color: var(--color-accent);
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.library-label-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.library-label-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

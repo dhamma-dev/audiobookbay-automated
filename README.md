@@ -194,6 +194,11 @@ individually. A few niceties for big series:
 - **Gaps are obvious** — a book missing from the middle of a run shows as a
   subtle placeholder at its spot in reading order, and the shelf header reads
   e.g. "11 of 12 available" so you notice before sending.
+- **Label your library** — when a shelf recognises a book you own that has no
+  series or number in Audiobookshelf, admins get a **Set series: Name #2**
+  button beside the match (and **Label N in Audiobookshelf** for the whole
+  shelf). It only fills blanks — an existing number is never changed — and
+  needs an Audiobookshelf API token that is allowed to update books.
 - **Find missing** — a series-name search often misses volumes uploaded under
   their own title. The shelf's **Find N missing** button searches for just
   those books (by title, then one search of the author's uploads) and drops

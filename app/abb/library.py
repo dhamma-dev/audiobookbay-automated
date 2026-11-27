@@ -35,6 +35,20 @@ def norm_seq(seq):
     return s[:-2] if s.endswith(".0") else s
 
 
+_SEQ_RE = re.compile(r"\d{1,4}(\.\d{1,2})?")
+
+
+def _same_series(a, b):
+    """Two series names for the same series ("The Expanse" / "Expanse") —
+    the same looseness the ownership join uses."""
+    a, b = matching.normalize(a or ""), matching.normalize(b or "")
+    return bool(a and b) and (a == b or matching.token_set_ratio(a, b) >= 0.8)
+
+
+class AbsWriteError(Exception):
+    """A series label couldn't be written; the message is safe to show."""
+
+
 class AbsLibrary:
     def __init__(self, config):
         self.config = config
@@ -47,6 +61,13 @@ class AbsLibrary:
         r = requests.get(f"{self.config.abs_url}{path}",
                          headers={"Authorization": f"Bearer {self.config.abs_token}"},
                          params=params, timeout=20)
+        r.raise_for_status()
+        return r.json()
+
+    def _patch(self, path, body):
+        r = requests.patch(f"{self.config.abs_url}{path}",
+                           headers={"Authorization": f"Bearer {self.config.abs_token}"},
+                           json=body, timeout=20)
         r.raise_for_status()
         return r.json()
 
@@ -196,6 +217,67 @@ class AbsLibrary:
             info["url"] = f"{self.config.abs_url}/item/{item['id']}"
         return info
 
+    # --- Series labels (the one thing we write to ABS) ---------------------------
+    def label_proposal(self, item, series_name, seq):
+        """The series label a shelf would put on this owned copy:
+        {item, series, seq} — or None when there is no blank to fill. Blanks
+        only: a copy that already has a number in this series is left alone,
+        and a copy filed under a near-identical series name keeps ABS's name."""
+        name = " ".join(str(series_name or "").split())[:200]
+        seq = norm_seq(seq) if seq is not None else ""
+        if not item.get("id") or not name or not _SEQ_RE.fullmatch(seq):
+            return None
+        for sname, sseq in item.get("series") or []:
+            if _same_series(sname, name):
+                if sseq not in (None, ""):
+                    return None
+                name = sname
+                break
+        return {"item": item["id"], "series": name, "seq": seq}
+
+    def set_series(self, item_id, series_name, seq):
+        """Write one series label to an owned copy in Audiobookshelf. Returns
+        ("set" | "already", item). Decided against the item as ABS has it NOW,
+        not the cache, and only ever fills a blank. ABS replaces a book's whole
+        series list on update, so the list is sent back complete."""
+        item = next((i for i in self.get_index() if i.get("id") == item_id), None)
+        if item is None:
+            raise AbsWriteError("That book isn't in the Audiobookshelf library.")
+        name = " ".join(str(series_name or "").split())[:200]
+        seq = norm_seq(seq) if seq is not None else ""
+        if not name or not _SEQ_RE.fullmatch(seq):
+            raise AbsWriteError("Missing series name or number.")
+        try:
+            live = self._get(f"/api/items/{item_id}")
+            current = ((live.get("media") or {}).get("metadata") or {}).get("series")
+            if not isinstance(current, list):
+                raise AbsWriteError("Audiobookshelf didn't return that book's series.")
+            series = [{"name": x["name"], "sequence": x.get("sequence")}
+                      for x in current if isinstance(x, dict) and x.get("name")]
+            slot = next((x for x in series if _same_series(x["name"], name)), None)
+            if slot is not None and slot["sequence"] not in (None, ""):
+                outcome = "already"
+            else:
+                if slot is None:
+                    series.append({"name": name, "sequence": seq})
+                else:
+                    slot["sequence"] = seq   # ABS stores only string sequences
+                self._patch(f"/api/items/{item_id}/media", {"metadata": {"series": series}})
+                outcome = "set"
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code == 403:
+                raise AbsWriteError("The Audiobookshelf API token isn't allowed to "
+                                    "edit books (it needs update permission).") from e
+            raise AbsWriteError(f"Audiobookshelf refused the change (HTTP {code}).") from e
+        except requests.RequestException as e:
+            raise AbsWriteError("Couldn't reach Audiobookshelf.") from e
+        # Keep the cached copy in step, so the next search joins on the number.
+        with self._lock:
+            item["series"] = [(x["name"], x["sequence"] or None) for x in series]
+        log.info("set series %r #%s on Audiobookshelf item %s (%s)", name, seq, item_id, outcome)
+        return outcome, item
+
     # --- Deterministic badge (Tier 1) --------------------------------------------
     def annotate_matches(self, books):
         """Tag each result we confidently own with book['library_match'].
@@ -295,7 +377,7 @@ class AbsLibrary:
             return item, False
         return None, False
 
-    def resolve_ownership(self, ranking, index, results=None):
+    def resolve_ownership(self, ranking, index, results=None, offer_labels=False):
         """Compute ownership LOCALLY, joining the LLM's canonicalized *public*
         results (ranking['canonical']) to the ABS index. Adds
         ranking['ownership'] = [{id, status, detail}]. Nothing about the
@@ -309,6 +391,9 @@ class AbsLibrary:
           status 'suspected'. Every entry carries `match` (the owned copy).
         - Shelf gaps (an entry with no result) you own -> ranking['owned_gaps']
           = [{series: block index, seq}].
+        - `offer_labels` (admins only): an owned copy a shelf places in a
+          series, with no number there in ABS, gets match['label'] — the
+          series label a click would write (see set_series).
         - When `results` (the sanitized rank payload) is given, an owned result
           that would improve on a below-par copy is reported as 'upgrade'
           instead of 'owned', so the UI can invite replacing junk."""
@@ -322,8 +407,15 @@ class AbsLibrary:
                 fmt = (r.get("format") or "").lower()
                 return {"is_m4b": "m4b" in fmt, "bitrate": r.get("bitrate")}
 
-            def _verdict(rid, item, confirmed=True):
+            def _match(item, series, seq):
                 match = self.match_info(item)
+                label = offer_labels and self.label_proposal(item, series, seq)
+                if label:
+                    match["label"] = label
+                return match
+
+            def _verdict(rid, item, confirmed=True, series=None, seq=None):
+                match = _match(item, series, seq)
                 if not confirmed:
                     return {"status": "suspected", "match": match}
                 if rid in by_id and self.is_upgrade_result(_book_for(rid), item):
@@ -339,7 +431,8 @@ class AbsLibrary:
                     continue
                 item, confirmed = self.canonical_lookup(c, index, owned_series)
                 if item is not None:
-                    ownership[rid] = _verdict(rid, item, confirmed)
+                    ownership[rid] = _verdict(rid, item, confirmed,
+                                              c.get("series"), c.get("seq"))
             owned_gaps = []
             for bi, block in enumerate(ranking.get("series") or []):
                 seqs = self.owned_seqs_for(block.get("label", ""), owned_series)
@@ -370,9 +463,11 @@ class AbsLibrary:
                         # A gap in the shelf that you already own: nothing to
                         # go looking for (the shelf says so instead of
                         # "not in these results").
-                        owned_gaps.append({"series": bi, "seq": eseq})
+                        owned_gaps.append({"series": bi, "seq": eseq,
+                                           "match": _match(item, block.get("label"), eseq)})
                     for rid in rids:
-                        ownership.setdefault(rid, _verdict(rid, item, confirmed))
+                        ownership.setdefault(rid, _verdict(rid, item, confirmed,
+                                                           block.get("label"), eseq))
                 for col in block.get("collections") or []:
                     cid, covers = col.get("id"), col.get("covers") or []
                     if cid is None or not covers:

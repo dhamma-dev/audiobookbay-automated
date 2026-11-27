@@ -1,8 +1,15 @@
 """The ownership join and Upgrade Radar logic, exercised against a fake index —
 no Audiobookshelf, no network."""
 
-from abb.library import AbsLibrary, norm_seq, parse_kbps
+import pytest
+import requests
+
+from abb.library import AbsLibrary, AbsWriteError, norm_seq, parse_kbps
 from tests.conftest import make_config
+
+
+ADMINS = frozenset({"boss"})
+USER_HEADER = "X-authentik-username"
 
 
 def lib():
@@ -190,7 +197,9 @@ def test_shelf_entry_title_fallback_and_owned_gaps():
                                        {"seq": 4, "title": "Raze", "best_id": 1}]}]}
     L.resolve_ownership(ranking, index, [])
     assert [o["id"] for o in ranking["ownership"]] == [0]
-    assert ranking["owned_gaps"] == [{"series": 0, "seq": 2}]
+    (gap,) = ranking["owned_gaps"]
+    assert (gap["series"], gap["seq"], gap["match"]["title"]) == (0, 2, "Regicide")
+    assert "label" not in gap["match"]          # never offered unless asked for
 
 
 def test_unnumbered_owned_copy_exact_title_and_suspected():
@@ -240,3 +249,125 @@ def test_match_info_link_only_for_browser_reachable_hosts():
                                       "url": "http://abs.local/item/li_9"}
     docker = AbsLibrary(make_config(abs_url="http://audiobookshelf:80", abs_token="t"))
     assert "url" not in docker.match_info(item)
+
+
+# --- Series labels: the one write to Audiobookshelf -----------------------------
+
+def test_label_proposal_fills_blanks_only():
+    L = lib()
+    bare = dict(owned("Regicide", "Dakota Krout"), id="li_2")
+    assert L.label_proposal(bare, "The Completionist Chronicles", 2.0) == {
+        "item": "li_2", "series": "The Completionist Chronicles", "seq": "2"}
+    # In the series with no number: keep Audiobookshelf's own name for it.
+    unnumbered = dict(bare, series=[("Completionist Chronicles", None)])
+    assert L.label_proposal(unnumbered, "The Completionist Chronicles", 2)["series"] == \
+        "Completionist Chronicles"
+    # Already numbered there (even differently): not ours to change.
+    numbered = dict(bare, series=[("Completionist Chronicles", "3")])
+    assert L.label_proposal(numbered, "The Completionist Chronicles", 2) is None
+    # Nothing to write without an id, a name, or a real number.
+    assert L.label_proposal(owned("Regicide", "x"), "S", 2) is None
+    assert L.label_proposal(bare, "", 2) is None
+    assert L.label_proposal(bare, "S", None) is None
+    assert L.label_proposal(bare, "S", "two") is None
+
+
+def test_shelf_offers_labels_only_when_asked():
+    L = lib()
+    index = [dict(owned("Ritualist", "Dakota Krout"), id="li_1"),
+             dict(owned("Regicide", "Dakota Krout"), id="li_2"),
+             dict(owned("Rexus", "Dakota Krout", [("The Completionist Chronicles", "3")]), id="li_3")]
+    def ranking():
+        return {"series": [{"label": "The Completionist Chronicles", "author": "Dakota Krout",
+                            "entries": [{"seq": 1, "title": "Ritualist", "best_id": 0},
+                                        {"seq": 2, "title": "Regicide"},
+                                        {"seq": 3, "title": "Rexus", "best_id": 1}]}]}
+    r = ranking()
+    L.resolve_ownership(r, index, [], offer_labels=True)
+    by_id = {o["id"]: o for o in r["ownership"]}
+    assert by_id[0]["match"]["label"] == {
+        "item": "li_1", "series": "The Completionist Chronicles", "seq": "1"}
+    assert "label" not in by_id[1]["match"]            # already numbered in ABS
+    assert r["owned_gaps"][0]["match"]["label"]["item"] == "li_2"
+    r = ranking()
+    L.resolve_ownership(r, index, [])
+    assert all("label" not in o["match"] for o in r["ownership"])
+
+
+def _abs_stub(L, live_series, calls, patch_error=None):
+    L._get = lambda path, **kw: {"media": {"metadata": {"series": live_series}}}
+
+    def patch(path, body):
+        calls.append((path, body))
+        if patch_error:
+            raise patch_error
+        return {"updated": True}
+    L._patch = patch
+
+
+def test_set_series_sends_the_whole_list_and_updates_the_cache():
+    L = lib()
+    item = dict(owned("Regicide", "Dakota Krout", [("Krout Universe", "7")]), id="li_2")
+    L.get_index = lambda max_age=None: [item]
+    calls = []
+    # ABS replaces the whole list on update: the existing series must go back too.
+    _abs_stub(L, [{"id": "s1", "name": "Krout Universe", "sequence": "7"}], calls)
+    assert L.set_series("li_2", "The Completionist Chronicles", 2.0) == ("set", item)
+    assert calls == [("/api/items/li_2/media", {"metadata": {"series": [
+        {"name": "Krout Universe", "sequence": "7"},
+        {"name": "The Completionist Chronicles", "sequence": "2"}]}})]
+    assert item["series"] == [("Krout Universe", "7"), ("The Completionist Chronicles", "2")]
+    assert L.match_info(item)["series"] == "Krout Universe #7, The Completionist Chronicles #2"
+
+
+def test_set_series_never_overwrites_a_number():
+    L = lib()
+    item = dict(owned("Regicide", "Dakota Krout"), id="li_2")   # stale cache: no series
+    L.get_index = lambda max_age=None: [item]
+    calls = []
+    # Someone numbered it in ABS since the cache was filled.
+    _abs_stub(L, [{"id": "s1", "name": "Completionist Chronicles", "sequence": "2"}], calls)
+    assert L.set_series("li_2", "The Completionist Chronicles", 5)[0] == "already"
+    assert calls == [] and item["series"] == [("Completionist Chronicles", "2")]
+    # In the series, number blank: the number is filled under ABS's own name.
+    _abs_stub(L, [{"id": "s1", "name": "Completionist Chronicles", "sequence": None}], calls)
+    assert L.set_series("li_2", "The Completionist Chronicles", 2)[0] == "set"
+    assert calls[0][1] == {"metadata": {"series": [
+        {"name": "Completionist Chronicles", "sequence": "2"}]}}
+
+
+def test_set_series_errors_are_plain():
+    L = lib()
+    item = dict(owned("Regicide", "Dakota Krout"), id="li_2")
+    L.get_index = lambda max_age=None: [item]
+    with pytest.raises(AbsWriteError):
+        L.set_series("nope", "S", 1)
+    with pytest.raises(AbsWriteError):
+        L.set_series("li_2", "S", "two")
+    resp = requests.Response()
+    resp.status_code = 403
+    _abs_stub(L, [], [], patch_error=requests.HTTPError(response=resp))
+    with pytest.raises(AbsWriteError, match="update permission"):
+        L.set_series("li_2", "S", 1)
+    assert item["series"] == []                       # cache untouched on failure
+
+
+def test_series_label_endpoint_is_admin_only():
+    from abb import create_app
+    app = create_app(make_config(abs_url="http://abs.local", abs_token="t",
+                                 log_admin_users=ADMINS), start=False)
+    s = app.extensions["abb"]
+    item = dict(owned("Regicide", "Dakota Krout"), id="li_2")
+    s.library.get_index = lambda max_age=None: [item]
+    calls = []
+    _abs_stub(s.library, [], calls)
+    c = app.test_client()
+    body = {"item": "li_2", "series": "The Completionist Chronicles", "seq": 2}
+    r = c.post("/api/library/series", json=body, headers={USER_HEADER: "guest"})
+    assert r.status_code == 403 and calls == []
+    r = c.post("/api/library/series", json=body, headers={USER_HEADER: "boss"})
+    assert r.get_json() == {"outcome": "set", "match": {
+        "title": "Regicide", "author": "Dakota Krout",
+        "series": "The Completionist Chronicles #2", "url": "http://abs.local/item/li_2"}}
+    r = c.post("/api/library/series", json=dict(body, item="nope"), headers={USER_HEADER: "boss"})
+    assert r.status_code == 502 and "isn't in" in r.get_json()["message"]

@@ -469,6 +469,32 @@
   // creating the flag for matches the initial deterministic pass didn't catch.
   // `match` is the owned Audiobookshelf copy the flag points at; it is shown
   // under the flag so a match (confirmed or only suspected) can be checked.
+  // The line under a library flag: which Audiobookshelf copy it matched, and
+  // (admins, when a shelf knows the series number that copy lacks) a button
+  // that writes the label to Audiobookshelf.
+  function matchLineHtml(match, state) {
+    const name = '“' + escapeHtml(match.title) + '”';
+    return 'matches ' +
+      (match.url && /^https?:\/\//.test(match.url)
+        ? '<a href="' + escapeHtml(match.url) + '" target="_blank" rel="noopener noreferrer">' + name + '</a>'
+        : name) +
+      (match.author ? ' by ' + escapeHtml(match.author) : '') +
+      (match.series ? ' · ' + escapeHtml(match.series)
+        : state === 'suspected' ? ' · no series number in Audiobookshelf' : '') +
+      labelButtonHtml(match);
+  }
+
+  function labelButtonHtml(match) {
+    const l = match && match.label;
+    if (!l || !l.item || !l.series) return '';
+    const what = l.series + ' #' + l.seq;
+    return ' <button type="button" class="library-label-btn" data-action="library-label"' +
+      ' data-item="' + escapeHtml(l.item) + '" data-series="' + escapeHtml(l.series) + '"' +
+      ' data-seq="' + escapeHtml(String(l.seq)) + '" data-title="' + escapeHtml(match.title || '') + '"' +
+      ' title="Write this series and number to the book in Audiobookshelf">' +
+      'Set series: ' + escapeHtml(what) + '</button>';
+  }
+
   function setLibraryFlag(card, status, detail, match) {
     if (!card) return;
     const state = status === 'partial' ? 'partial'
@@ -513,14 +539,7 @@
       line.setAttribute('data-library-match', '');
       flag.insertAdjacentElement('afterend', line);
     }
-    const name = '“' + escapeHtml(match.title) + '”';
-    line.innerHTML = 'matches ' +
-      (match.url && /^https?:\/\//.test(match.url)
-        ? '<a href="' + escapeHtml(match.url) + '" target="_blank" rel="noopener noreferrer">' + name + '</a>'
-        : name) +
-      (match.author ? ' by ' + escapeHtml(match.author) : '') +
-      (match.series ? ' · ' + escapeHtml(match.series)
-        : state === 'suspected' ? ' · no series number in Audiobookshelf' : '');
+    line.innerHTML = matchLineHtml(match, state);
   }
 
   // Apply the "owned" treatment to a single card: badge it, and if it sits in a
@@ -649,6 +668,7 @@
       markOwnedCard(results.querySelector('.book-card[data-result-id="' + o.id + '"]'), o.status, o.detail, o.match);
     });
     refreshOwnershipCounts();
+    refreshLabelButtons();
   }
 
   // Identity for each result id: the slim server payload (title + language),
@@ -801,7 +821,7 @@
       (e.title ? ' · ' + escapeHtml(e.title) : '') + '</span>' +
       '<span class="series-gap-note">not in these results</span>' +
       '</div></div>';
-    if (owned) markGapOwned(gap);
+    if (owned) markGapOwned(gap, owned.match);
     return gap;
   }
 
@@ -814,7 +834,7 @@
 
   // A gap you already own counts toward "own N" and follows "Hide owned",
   // like any owned entry — and is never searched for.
-  function markGapOwned(gap) {
+  function markGapOwned(gap, match) {
     gap.classList.add('is-gap-owned', 'is-owned');
     gap.classList.remove('is-gap-done');
     gap.dataset.owned = '1';
@@ -823,6 +843,10 @@
     const want = gap.querySelector('.series-gap-want');
     if (want) want.remove();
     setGapNote(gap, 'in your library', false);
+    const row = gap.querySelector('.series-gap-row');
+    if (row && match && !row.querySelector('.library-label-btn')) {
+      row.insertAdjacentHTML('beforeend', labelButtonHtml(match));
+    }
   }
 
   // One real book on the shelf: tick box, caption, the chosen card, and an
@@ -1056,12 +1080,12 @@
       group.dataset.author = s.author || '';
 
       // Gaps the server already knows you own (ranking.owned_gaps).
-      const ownedGaps = new Set();
-      (ranking.owned_gaps || []).forEach((g) => { if (g.series === si) ownedGaps.add(String(g.seq)); });
+      const ownedGaps = new Map();
+      (ranking.owned_gaps || []).forEach((g) => { if (g.series === si) ownedGaps.set(String(g.seq), g); });
 
       const built = [];
       (s.entries || []).forEach((e) => {
-        const r = buildSeriesEntry(e, cards, consumed, ownedGaps.has(String(e.seq)));
+        const r = buildSeriesEntry(e, cards, consumed, ownedGaps.get(String(e.seq)));
         if (r) built.push(r);
       });
       const availableCount = built.filter((b) => b.available).length;
@@ -1114,6 +1138,7 @@
     });
 
     sentinel.remove();
+    refreshLabelButtons();
     refreshIcons();
   }
 
@@ -1303,6 +1328,106 @@
     } else {
       showToast('No missing books turned up on AudioBook Bay.', 'info');
     }
+  }
+
+  /* ----------------------------------------------------------
+     Series labels: an owned copy a shelf places in a series, with
+     no number there in Audiobookshelf, can have it written — one
+     click per book, or one confirmed click for the whole shelf.
+     The server only ever fills a blank.
+     ---------------------------------------------------------- */
+  function labelButtons(root, item) {
+    return Array.prototype.slice.call(root.querySelectorAll('[data-action="library-label"]'))
+      .filter((b) => item == null || b.dataset.item === item);
+  }
+
+  // One button per owned copy (a book and its alternates share the copy).
+  function shelfLabels(group) {
+    const seen = new Map();
+    labelButtons(group).forEach((b) => { if (!seen.has(b.dataset.item)) seen.set(b.dataset.item, b); });
+    return Array.from(seen.values());
+  }
+
+  function refreshLabelButtons() {
+    document.querySelectorAll('.series-group').forEach((group) => {
+      const n = shelfLabels(group).length;
+      let btn = group.querySelector('[data-action="series-label-all"]');
+      if (n < 2) { if (btn) btn.remove(); return; }
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-secondary series-label-btn';
+        btn.dataset.action = 'series-label-all';
+        btn.title = 'Write this series and each book’s number to your owned copies in Audiobookshelf';
+        const send = group.querySelector('.series-send-btn');
+        if (!send) return;
+        send.parentNode.insertBefore(btn, send);
+      }
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="bookmark" aria-hidden="true"></i> Label ' + n + ' in Audiobookshelf';
+    });
+  }
+
+  // Write one label. Returns true when Audiobookshelf now has it.
+  async function writeLabel(btn) {
+    const item = btn.dataset.item;
+    const res = await fetch('/api/library/series', {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ item: item, series: btn.dataset.series, seq: btn.dataset.seq }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'Couldn’t update Audiobookshelf.');
+    // Every place this copy is shown: drop the offer, show the new label, and
+    // firm up a "possibly" — the number that was missing is there now.
+    labelButtons(document, item).forEach((b) => {
+      const card = b.closest('.book-card');
+      if (!card) { b.remove(); return; }
+      if (card.getAttribute('data-in-library') === 'suspected') {
+        markOwnedCard(card, 'owned', '', data.match);
+      } else {
+        const line = b.closest('[data-library-match]');
+        if (line && data.match) line.innerHTML = matchLineHtml(data.match, '');
+        else b.remove();
+      }
+    });
+    return true;
+  }
+
+  async function handleLibraryLabel(btn) {
+    btn.disabled = true;
+    const what = btn.dataset.series + ' #' + btn.dataset.seq;
+    try {
+      await writeLabel(btn);
+      showToast('Set “' + (btn.dataset.title || 'the book') + '” to ' + what + ' in Audiobookshelf.', 'success');
+    } catch (err) {
+      btn.disabled = false;
+      showToast(err.message || 'Couldn’t update Audiobookshelf.', 'error');
+    }
+    refreshOwnershipCounts();
+    refreshLabelButtons();
+    refreshIcons();
+  }
+
+  async function handleSeriesLabelAll(btn) {
+    const group = btn.closest('.series-group');
+    if (!group) return;
+    const todo = shelfLabels(group);
+    if (!todo.length) return;
+    const lines = todo.map((b) => '  ' + (b.dataset.title || '?') + '  →  ' + b.dataset.series + ' #' + b.dataset.seq);
+    if (!window.confirm('Write these series labels to Audiobookshelf?\n\n' + lines.join('\n'))) return;
+    btn.disabled = true;
+    let done = 0;
+    let failure = '';
+    for (const b of todo) {
+      try { await writeLabel(b); done += 1; }
+      catch (err) { failure = err.message || 'Couldn’t update Audiobookshelf.'; break; }
+    }
+    if (failure) showToast((done ? done + ' labelled, then: ' : '') + failure, 'error');
+    else showToast('Labelled ' + done + ' book' + (done === 1 ? '' : 's') + ' in Audiobookshelf.', 'success');
+    refreshOwnershipCounts();
+    refreshLabelButtons();
+    refreshIcons();
   }
 
   async function handleGapWant(btn) {
@@ -1770,6 +1895,12 @@
 
     const gapWant = e.target.closest('[data-action="series-gap-want"]');
     if (gapWant) { handleGapWant(gapWant); return; }
+
+    const libLabel = e.target.closest('[data-action="library-label"]');
+    if (libLabel) { e.preventDefault(); handleLibraryLabel(libLabel); return; }
+
+    const labelAll = e.target.closest('[data-action="series-label-all"]');
+    if (labelAll) { handleSeriesLabelAll(labelAll); return; }
 
     const useEdition = e.target.closest('[data-action="series-use-edition"]');
     if (useEdition) { handleUseEdition(useEdition); return; }

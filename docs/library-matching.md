@@ -193,6 +193,35 @@ the current matcher and flags rows it no longer confirms as *Unconfirmed*
 (the shelf opens by itself); it never reopens them automatically, since that
 could re-download a book you do own.
 
+## Series labels: the one write to Audiobookshelf
+
+Missing series numbers are what force the *suspected* state, and a smart-sort
+shelf often knows them. So `resolve_ownership(..., offer_labels=True)` (admins
+only — `is_log_admin`, like `/settings`) attaches `match.label =
+{item, series, seq}` to an owned copy the shelf places in a series when ABS
+has no number for it there (`label_proposal`); owned gaps carry it too. The UI
+turns that into **Set series: Name #2** on the match line and, with two or
+more on a shelf, **Label N in Audiobookshelf** (one confirm listing every
+write).
+
+`POST /api/library/series` → `AbsLibrary.set_series`:
+
+- **Blanks only.** Decided against the item as ABS has it *now* (`GET
+  /api/items/:id`), not the cache: a copy already numbered in that series
+  (names compared as loosely as the ownership join) answers `already` and
+  nothing is sent. A copy in the series with no number keeps ABS's own name.
+- **The whole list goes back.** ABS's `PATCH /api/items/:id/media` *replaces*
+  a book's series with `metadata.series`, matching by name — so the existing
+  series are re-sent with the new one. Sequences must be strings (ABS stores
+  anything else as null).
+- On success the cached item is updated in place, so the next search joins on
+  the number without waiting for the cache TTL.
+- A 403 means the ABS token's user lacks update permission; the message says so.
+
+Nothing here changes the privacy rule: the label comes from the public shelf,
+and it is written to the user's own server. There is deliberately no
+whole-library sweep — that would mean sending library titles out for lookup.
+
 ## Config
 
 `ABS_URL`, `ABS_TOKEN` (enables the feature), `ABS_LIBRARY_ID` (optional; else

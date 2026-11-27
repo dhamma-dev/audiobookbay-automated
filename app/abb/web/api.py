@@ -7,7 +7,8 @@ import logging
 from flask import Blueprint, jsonify, render_template, request
 
 from .. import gapfill, matching
-from ..identity import current_user_label
+from ..identity import current_user_label, is_log_admin
+from ..library import AbsWriteError
 from ..outbound import TorUnavailable
 from ..smart_sort import sanitize_results
 from . import svc
@@ -42,7 +43,10 @@ def api_rank():
     try:
         ranking = s.rank.rank(query, results, want_ownership=s.library.enabled)
         if s.library.enabled:
-            s.library.resolve_ownership(ranking, s.library.get_index(), results)
+            # Only admins are offered the "set series in Audiobookshelf" write.
+            s.library.resolve_ownership(
+                ranking, s.library.get_index(), results,
+                offer_labels=is_log_admin(current_user_label(), s.config))
         return jsonify(ranking)
     except Exception as e:
         log.error("smart sort failed: %s", e)
@@ -145,6 +149,29 @@ def api_wanted_add():
         return jsonify({"message": "Missing title."}), 400
     outcome, _hc_id = s.wanted.add_manual(title, author, current_user_label())
     return jsonify({"outcome": outcome})
+
+
+@bp.route("/api/library/series", methods=["POST"])
+def api_library_series():
+    """Write a series name + number onto an owned Audiobookshelf copy that a
+    smart-sort shelf placed in that series. The only write this app makes to
+    ABS: one click per book, admins only (gated like /settings), and it only
+    fills a blank — see AbsLibrary.set_series."""
+    s = svc()
+    if not s.library.enabled:
+        return jsonify({"message": "Audiobookshelf is not configured."}), 503
+    if not is_log_admin(current_user_label(), s.config):
+        return jsonify({"message": "Only an admin can edit the library."}), 403
+    data = request.get_json(silent=True) or {}
+    try:
+        outcome, item = s.library.set_series(
+            str(data.get("item") or ""), data.get("series"), data.get("seq"))
+    except AbsWriteError as e:
+        return jsonify({"message": str(e)}), 502
+    except Exception as e:
+        log.error("series label failed: %s", e)
+        return jsonify({"message": "Couldn't update Audiobookshelf."}), 502
+    return jsonify({"outcome": outcome, "match": s.library.match_info(item)})
 
 
 @bp.route("/api/status")
