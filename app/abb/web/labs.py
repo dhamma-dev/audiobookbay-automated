@@ -63,11 +63,13 @@ def _back(**args):
 @bp.route("/labs/series")
 def series_page():
     s = _sweep_or_404()
-    tab = "history" if request.args.get("tab") == "history" else "review"
-    rows, counts = s.sweep.queue()
+    tab = request.args.get("tab")
+    tab = tab if tab in ("history", "none") else "review"
+    groups, counts, stats = s.sweep.grouped()
     return render_template(
-        "labs_series.html", tab=tab, rows=rows, counts=counts,
+        "labs_series.html", tab=tab, groups=groups, counts=counts, stats=stats,
         history=s.sweep.history() if tab == "history" else [],
+        unmatched=s.sweep.unmatched() if tab == "none" else [],
         job=s.sweep.status(), abs_enabled=s.library.enabled,
         apply_max=APPLY_MAX, notice=request.args.get("notice"),
         error=request.args.get("error"))

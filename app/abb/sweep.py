@@ -326,6 +326,62 @@ class SeriesSweep:
                                     (r["series"] or "").lower(), _seq_key(r["seq"])))
         return pending, counts
 
+    def grouped(self):
+        """The review queue as series, each with the books of that series the
+        library already has numbered — so a proposal is judged in context
+        ("#2 fits between the #1 and #3 I own") rather than one row at a time.
+        Returns (groups, counts, stats). Groups with most to label come first."""
+        pending, counts = self.queue()
+        index = self.s.library.get_index()
+        groups = []
+        for row in pending:
+            g = next((g for g in groups if _same_series(g["series"], row["series"])), None)
+            if g is None:
+                g = {"series": row["series"], "rows": []}
+                groups.append(g)
+            g["rows"].append(row)
+        for n, g in enumerate(groups):
+            ids = {r["item_id"] for r in g["rows"]}
+            owned = [{"owned": True, "title": it.get("title") or "", "seq": norm_seq(q),
+                      "author": it.get("author") or ""}
+                     for it in index if it.get("id") not in ids
+                     for name, q in it.get("series") or []
+                     if q not in (None, "") and _same_series(name, g["series"])]
+            taken = Counter(e["seq"] for e in owned) + Counter(r["seq"] for r in g["rows"])
+            for r in g["rows"]:
+                # Two books on one number: one of them is wrong.
+                r["clash"] = taken[r["seq"]] > 1
+            g["entries"] = sorted(owned + g["rows"], key=lambda e: (_seq_key(e["seq"]),
+                                                                    not e.get("owned")))
+            g["key"] = f"g{n}"
+            g["owned_count"] = len(owned)
+            g["best"] = min((r["confidence"] for r in g["rows"]),
+                            key=lambda c: {"high": 0, "medium": 1, "low": 2}.get(c, 3))
+        groups.sort(key=lambda g: (-len(g["rows"]), -g["owned_count"], g["series"].lower()))
+        labelled = sum(1 for it in index if it.get("id") and not needs_label(it))
+        stats = {"library": len(index), "numbered": labelled}
+        return groups, counts, stats
+
+    def unmatched(self):
+        """Books the sweep found no series for, with why — most are simply
+        standalones. Sorted by author then title."""
+        rows = []
+        for row in self.s.store.proposals().values():
+            if row["status"] != "none":
+                continue
+            ev = _load(row.get("evidence"))
+            a = ev.get("audible") or {}
+            if a.get("title"):
+                why = f"On Audible as “{a['title']}”, which lists no numbered series"
+            elif ev.get("audible_at"):
+                why = "No confident match on Audible"
+            else:
+                why = "No series in its subtitle (Audible not asked yet)"
+            rows.append(dict(row, why=why,
+                             abs_url=self.s.library.match_info({"id": row["item_id"]}).get("url", "")))
+        rows.sort(key=lambda r: ((r["author"] or "").lower(), (r["title"] or "").lower()))
+        return rows
+
     def apply(self, picks, user):
         """Write approved rows: picks = [{item, series, seq}] (series/seq as
         possibly edited on the page). Returns (written, already, errors)."""

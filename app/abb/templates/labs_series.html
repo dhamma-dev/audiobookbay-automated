@@ -80,23 +80,33 @@
 <nav class="labs-tabs" aria-label="Sweep views">
     <a href="{{ url_for('labs.series_page') }}" class="{% if tab == 'review' %}active{% endif %}">
         To review <span class="labs-tab-count">{{ counts['pending'] }}</span></a>
+    <a href="{{ url_for('labs.series_page', tab='none') }}" class="{% if tab == 'none' %}active{% endif %}">
+        No series found <span class="labs-tab-count">{{ counts['none'] }}</span></a>
     <a href="{{ url_for('labs.series_page', tab='history') }}" class="{% if tab == 'history' %}active{% endif %}">
         History</a>
 </nav>
 
 {% if tab == 'review' %}
+{# What the numbers mean, in one place. #}
+<dl class="labs-stats">
+    <div><dt>{{ stats.library }}</dt><dd>books in your library</dd></div>
+    <div><dt>{{ stats.numbered }}</dt><dd>already have a series number</dd></div>
+    <div><dt>{{ counts['pending'] }}</dt><dd>have no number, and a label is proposed below</dd></div>
+    <div><dt>{{ counts['none'] }}</dt><dd>have no number, and no series was found — mostly standalones</dd></div>
+    <div><dt>{{ counts['applied'] }}</dt><dd>labelled by this app so far</dd></div>
+</dl>
+{% if counts['standalone'] or counts['skipped'] %}
 <p class="labs-summary">
-    {{ counts['applied'] }} labelled ·
-    {{ counts['none'] }} with nothing found
     {% if counts['standalone'] %}
-    · {{ counts['standalone'] }} marked not a series
+    {{ counts['standalone'] }} marked not a series
     <button type="submit" form="restore-standalone" class="labs-link-btn">bring back</button>
     {% endif %}
     {% if counts['skipped'] %}
-    · {{ counts['skipped'] }} skipped
+    {% if counts['standalone'] %}·{% endif %} {{ counts['skipped'] }} skipped
     <button type="submit" form="restore-skipped" class="labs-link-btn">bring back</button>
     {% endif %}
 </p>
+{% endif %}
 {% for which in ('standalone', 'skipped') %}
 <form method="post" action="{{ url_for('labs.series_restore') }}" id="restore-{{ which }}" hidden>
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -104,7 +114,7 @@
 </form>
 {% endfor %}
 
-{% if not rows %}
+{% if not groups %}
 {{ empty_state('library-big', 'Nothing to review',
    'Run a sweep to look for unlabelled books.' if not (counts['applied'] or counts['none'])
    else 'Every proposal has been dealt with. Run a sweep again after adding books.') }}
@@ -113,7 +123,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="labs-toolbar">
         <input type="search" id="sweep-filter" placeholder="Filter by title, author or series"
-               aria-label="Filter rows">
+               aria-label="Filter">
         <select id="sweep-confidence" aria-label="Confidence">
             <option value="">All confidence</option>
             <option value="high">High only</option>
@@ -128,63 +138,95 @@
             Label <span id="sweep-picked">0</span> in Audiobookshelf
         </button>
     </div>
-    <div class="log-table-wrap">
-        <table class="log-table labs-table">
-            <thead>
-                <tr>
-                    <th><span class="sr-only">Apply</span></th>
-                    <th>Book</th>
-                    <th>Series</th>
-                    <th>#</th>
-                    <th>Confidence</th>
-                    <th>Why</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr data-confidence="{{ r.confidence }}"
-                    data-text="{{ (r.title ~ ' ' ~ r.author ~ ' ' ~ r.series)|lower }}">
-                    <td><input type="checkbox" name="item" value="{{ r.item_id }}"
-                               aria-label="Label {{ r.title }}"></td>
-                    <td>
-                        <div class="labs-book">
-                            {% if r.abs_url %}<a href="{{ r.abs_url }}" target="_blank" rel="noopener noreferrer">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}
-                        </div>
-                        <div class="labs-sub">{{ r.author }}{% if r.current %} · now: {{ r.current }}{% endif %}</div>
-                    </td>
-                    <td><input type="text" name="series-{{ r.item_id }}" value="{{ r.series }}"
-                               class="labs-input" maxlength="200" aria-label="Series for {{ r.title }}"></td>
-                    <td><input type="text" name="seq-{{ r.item_id }}" value="{{ r.seq }}"
-                               class="labs-input labs-input-seq" inputmode="decimal" maxlength="7"
-                               aria-label="Number for {{ r.title }}"></td>
-                    <td><span class="badge {{ 'badge-success' if r.confidence == 'high'
-                                             else 'badge-info' if r.confidence == 'medium'
-                                             else 'badge-warning' }}">{{ r.confidence }}</span></td>
-                    <td>
-                        <div>{{ r.source }}</div>
-                        {% if r.audible and r.audible.title %}
-                        <div class="labs-sub">
-                            Audible:
-                            {% if r.audible_url %}<a href="{{ r.audible_url }}" target="_blank" rel="noopener noreferrer">{{ r.audible.title }}</a>{% else %}{{ r.audible.title }}{% endif %}
-                            {% if r.audible.author %}by {{ r.audible.author }}{% endif %}
-                        </div>
-                        {% endif %}
-                        {% if r.note %}<div class="labs-sub labs-note">{{ r.note }}</div>{% endif %}
-                    </td>
-                    <td class="labs-row-actions">
-                        <button type="submit" name="skipped" value="{{ r.item_id }}" class="labs-link-btn"
-                                title="Hide until the next sweep">Skip</button>
-                        <button type="submit" name="standalone" value="{{ r.item_id }}" class="labs-link-btn"
-                                title="This book isn't part of a series — never propose it again">Not a series</button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    <p class="settings-help">Series and number can be edited before applying. Up to {{ apply_max }} books per click.</p>
+
+    {% for g in groups %}
+    <section class="labs-group" data-group>
+        <header class="labs-group-head">
+            <input type="checkbox" data-sweep="group-tick"
+                   aria-label="Tick every book proposed for {{ g.series }}">
+            <i data-lucide="library" aria-hidden="true"></i>
+            {# One name for the whole series: edits are copied to each book. #}
+            <input type="text" class="labs-input labs-group-name" value="{{ g.series }}"
+                   maxlength="200" data-sweep="group-name" aria-label="Series name">
+            <span class="labs-group-count">
+                {{ g.rows|length }} to label{% if g.owned_count %} · {{ g.owned_count }} already numbered in your library{% endif %}
+            </span>
+        </header>
+        <ol class="labs-entries">
+            {% for r in g.entries %}
+            {% if r.owned %}
+            <li class="labs-entry is-owned" data-owned>
+                <span></span>
+                <span class="labs-seq-fixed">{{ r.seq }}</span>
+                <span class="labs-entry-book">
+                    <span class="labs-book">{{ r.title }}</span>
+                    <span class="labs-sub">{{ r.author }}</span>
+                </span>
+                <span class="labs-sub labs-entry-why">already numbered in Audiobookshelf</span>
+            </li>
+            {% else %}
+            <li class="labs-entry" data-row data-confidence="{{ r.confidence }}"
+                data-text="{{ (r.title ~ ' ' ~ r.author ~ ' ' ~ r.series)|lower }}">
+                <input type="checkbox" name="item" value="{{ r.item_id }}"
+                       aria-label="Label {{ r.title }}">
+                <input type="text" name="seq-{{ r.item_id }}" value="{{ r.seq }}"
+                       class="labs-input labs-input-seq" inputmode="decimal" maxlength="7"
+                       aria-label="Number for {{ r.title }}">
+                <input type="hidden" name="series-{{ r.item_id }}" value="{{ r.series }}" data-series>
+                <span class="labs-entry-book">
+                    <span class="labs-book">
+                        {% if r.abs_url %}<a href="{{ r.abs_url }}" target="_blank" rel="noopener noreferrer">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}
+                    </span>
+                    <span class="labs-sub">{{ r.author }}{% if r.current %} · now: {{ r.current }}{% endif %}</span>
+                </span>
+                <span class="labs-entry-why">
+                    <span class="badge {{ 'badge-success' if r.confidence == 'high'
+                                         else 'badge-info' if r.confidence == 'medium'
+                                         else 'badge-warning' }}">{{ r.confidence }}</span>
+                    <span class="labs-sub">
+                        {{ r.source }}{% if r.audible and r.audible.title %} ·
+                        {% if r.audible_url %}<a href="{{ r.audible_url }}" target="_blank" rel="noopener noreferrer">{{ r.audible.title }}</a>{% else %}{{ r.audible.title }}{% endif %}{% if r.audible.author %} by {{ r.audible.author }}{% endif %}{% endif %}
+                    </span>
+                    {% if r.clash %}<span class="labs-sub labs-note">another book here has #{{ r.seq }} — one of them is wrong</span>{% endif %}
+                    {% if r.note %}<span class="labs-sub labs-note">{{ r.note }}</span>{% endif %}
+                </span>
+                <span class="labs-row-actions">
+                    <button type="submit" name="skipped" value="{{ r.item_id }}" class="labs-link-btn"
+                            title="Hide until the next sweep">Skip</button>
+                    <button type="submit" name="standalone" value="{{ r.item_id }}" class="labs-link-btn"
+                            title="This book isn't part of a series — never propose it again">Not a series</button>
+                </span>
+            </li>
+            {% endif %}
+            {% endfor %}
+        </ol>
+    </section>
+    {% endfor %}
+    <p class="settings-help">Books are shown in series order alongside the ones you already have numbered.
+       Series names and numbers can be edited before applying. Up to {{ apply_max }} books per click.</p>
 </form>
+{% endif %}
+
+{% elif tab == 'none' %}
+<p class="labs-summary">These books have no series number, and the sweep found no series for them.
+   Most are simply standalone books; nothing is proposed or written for any of them.</p>
+{% if not unmatched %}
+{{ empty_state('library-big', 'Nothing here', 'Every unlabelled book the sweep looked at got a proposal.') }}
+{% else %}
+<div class="log-table-wrap">
+    <table class="log-table">
+        <thead><tr><th>Book</th><th>Author</th><th>What the sweep found</th></tr></thead>
+        <tbody>
+            {% for r in unmatched %}
+            <tr>
+                <td>{% if r.abs_url %}<a href="{{ r.abs_url }}" target="_blank" rel="noopener noreferrer">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}{% if r.current %} <span class="labs-sub">· now: {{ r.current }}</span>{% endif %}</td>
+                <td>{{ r.author }}</td>
+                <td class="labs-sub">{{ r.why }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 {% endif %}
 
 {% else %}

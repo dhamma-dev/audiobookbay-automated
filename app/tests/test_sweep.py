@@ -218,6 +218,29 @@ def test_dismissed_rows(s):
     assert [r["title"] for r in s.sweep.queue()[0]] == ["Rexus"]
 
 
+def test_review_is_grouped_by_series_with_library_context(s):
+    s.index = [book("1", "Ritualist", series=[("Completionist Chronicles", "1")]),
+               book("3", "Rexus", subtitle=f"{CC}, Book 3"),
+               book("2", "Regicide", subtitle=f"{CC}, Book 2"),
+               book("9", "Wrong", subtitle=f"{CC}, Book 1"),          # #1 is taken
+               book("u", "Unsouled", author="Will Wight", subtitle="Cradle, Book 1"),
+               book("x", "Dungeon Born")]
+    s.sweep.sweep("local")
+    groups, counts, stats = s.sweep.grouped()
+    assert [g["series"] for g in groups] == ["Completionist Chronicles", "Cradle"]
+    cc = groups[0]
+    # In series order, the owned book shown beside the proposals.
+    assert [(e["seq"], e["title"], bool(e.get("owned"))) for e in cc["entries"]] == [
+        ("1", "Ritualist", True), ("1", "Wrong", False),
+        ("2", "Regicide", False), ("3", "Rexus", False)]
+    assert cc["owned_count"] == 1
+    assert [r["clash"] for r in cc["rows"] if r["title"] == "Wrong"] == [True]
+    assert not any(r["clash"] for r in cc["rows"] if r["title"] != "Wrong")
+    assert stats == {"library": 6, "numbered": 1} and counts["none"] == 1
+    (none,) = s.sweep.unmatched()
+    assert none["title"] == "Dungeon Born" and "Audible not asked" in none["why"]
+
+
 # --- the pages ---------------------------------------------------------------------------
 def form_client(app):
     """A test client whose form POSTs carry the session's CSRF token."""
@@ -254,7 +277,8 @@ def test_review_page_apply_and_undo_through_the_forms(app, s):
     s.sweep.sweep("local")
     c = form_client(app)
     page = c.get("/labs/series", headers=ADMIN).data.decode()
-    assert 'name="series-3"' in page and "Rexus" in page
+    assert 'name="series-3"' in page and "Rexus" in page and "data-group" in page
+    assert c.get("/labs/series?tab=none", headers=ADMIN).status_code == 200
     # The number was corrected on the page before applying.
     r = c.post("/labs/series/apply", headers=ADMIN, data={
         "item": ["3"], "series-3": CC, "seq-3": "4", "series-5": CC, "seq-5": "5"})

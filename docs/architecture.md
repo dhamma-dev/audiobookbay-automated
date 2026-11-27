@@ -245,7 +245,10 @@ blanks-only, whole-list-resent rules in library-matching.md hold). Each write
 is recorded in `series_writes` with the series list before and after;
 `restore_series` undoes one only if the live list still equals `after`.
 
-The review page is server-rendered forms; `static/js/labs.js` (its own small
+The review page shows `grouped()`: proposals clustered by series, merged in
+sequence order with the library's already-numbered books of that series
+(context only), flagging two books on one number. `unmatched()` feeds the
+"No series found" tab. The page is server-rendered forms; `static/js/labs.js` (its own small
 IIFE, loaded only there) adds filtering, tick helpers and the progress poll.
 
 ## Frontend model (`app/abb/static/js/app.js`)

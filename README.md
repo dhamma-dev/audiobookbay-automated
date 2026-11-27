@@ -343,9 +343,13 @@ have no series, or a series with no number, and proposes the label:
   Expanse, Book 2"), and Audible's public catalogue — by the book's Audible ID
   when it has one, otherwise by title and author (accepted only when the
   author matches).
-- **You review everything.** Each row shows the proposed series and number, a
-  confidence (high / medium / low), and what it was matched against. Series
-  and number are editable; nothing is written until you tick rows and apply.
+- **You review everything, a series at a time.** Proposals are grouped by
+  series and listed in order beside the books of that series you already have
+  numbered, so a wrong number stands out. Each book shows a confidence (high /
+  medium / low) and what it was matched against. The series name (once per
+  series) and each number are editable; nothing is written until you tick
+  books and apply. The **No series found** tab lists the unlabelled books the
+  sweep had no proposal for — mostly standalones.
   **Skip** hides a row until the next sweep; **Not a series** hides it for good.
 - **Blanks only.** A number that already exists in Audiobookshelf is never
   changed, and a book's other series are kept.

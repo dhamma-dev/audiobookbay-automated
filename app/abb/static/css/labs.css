@@ -212,3 +212,113 @@
   outline: none;
   border-color: var(--color-border-focus);
 }
+
+/* What the sweep's numbers mean. */
+.labs-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+}
+
+.labs-stats > div {
+  flex: 1 1 9rem;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.labs-stats dt {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.labs-stats dd {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+/* One proposed series, its books in order beside the ones already numbered. */
+.labs-group {
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.labs-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.labs-group-name {
+  flex: 1 1 14rem;
+  width: auto;
+  font-weight: 700;
+  font-size: var(--text-base);
+}
+
+.labs-group-count {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.labs-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.labs-entry {
+  display: grid;
+  grid-template-columns: 1.25rem 4.5rem minmax(10rem, 1.2fr) minmax(10rem, 1.5fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+}
+
+.labs-entry:last-child {
+  border-bottom: none;
+}
+
+.labs-entry[hidden] {
+  display: none;
+}
+
+.labs-entry.is-owned {
+  color: var(--color-text-muted);
+}
+
+.labs-seq-fixed {
+  padding: 0 var(--space-2);
+  color: var(--color-text-subtle);
+}
+
+.labs-entry-book,
+.labs-entry-why {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .labs-entry {
+    grid-template-columns: 1.25rem 4.5rem 1fr;
+  }
+
+  .labs-entry-why,
+  .labs-row-actions {
+    grid-column: 3;
+  }
+}
