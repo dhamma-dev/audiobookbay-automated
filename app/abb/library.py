@@ -10,6 +10,7 @@ index. See docs/library-matching.md.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -55,6 +56,8 @@ class AbsLibrary:
         self.enabled = config.abs_enabled
         self._cache = {"items": [], "fetched_at": 0.0}
         self._lock = threading.Lock()
+        # Set by the factory: records each series write (Store.series_write_record).
+        self.history = None
 
     # --- ABS API ---------------------------------------------------------------
     def _get(self, path, **params):
@@ -235,7 +238,44 @@ class AbsLibrary:
                 break
         return {"item": item["id"], "series": name, "seq": seq}
 
-    def set_series(self, item_id, series_name, seq):
+    @staticmethod
+    def _live_series(live):
+        current = ((live.get("media") or {}).get("metadata") or {}).get("series")
+        if not isinstance(current, list):
+            raise AbsWriteError("Audiobookshelf didn't return that book's series.")
+        return [{"name": x["name"], "sequence": x.get("sequence") or None}
+                for x in current if isinstance(x, dict) and x.get("name")]
+
+    @staticmethod
+    def _write_error(e):
+        if isinstance(e, requests.HTTPError):
+            code = e.response.status_code if e.response is not None else 0
+            if code == 403:
+                return AbsWriteError("The Audiobookshelf API token isn't allowed to "
+                                     "edit books (it needs update permission).")
+            return AbsWriteError(f"Audiobookshelf refused the change (HTTP {code}).")
+        return AbsWriteError("Couldn't reach Audiobookshelf.")
+
+    def restore_series(self, item_id, before, after):
+        """Undo one recorded write: put the book's series back to `before`,
+        but only if they are still exactly what that write left (`after`) —
+        anything edited since is not ours to revert."""
+        key = lambda lst: sorted((x["name"], x.get("sequence") or "") for x in lst)
+        try:
+            live = self._live_series(self._get(f"/api/items/{item_id}"))
+            if key(live) != key(after):
+                raise AbsWriteError("That book's series changed in Audiobookshelf "
+                                    "since this label was written — not undone.")
+            self._patch(f"/api/items/{item_id}/media", {"metadata": {"series": before}})
+        except requests.RequestException as e:
+            raise self._write_error(e) from e
+        item = next((i for i in self.peek_index() if i.get("id") == item_id), None)
+        if item is not None:
+            with self._lock:
+                item["series"] = [(x["name"], x.get("sequence") or None) for x in before]
+        log.info("undid series label on Audiobookshelf item %s", item_id)
+
+    def set_series(self, item_id, series_name, seq, user="", source="shelf"):
         """Write one series label to an owned copy in Audiobookshelf. Returns
         ("set" | "already", item). Decided against the item as ABS has it NOW,
         not the cache, and only ever fills a blank. ABS replaces a book's whole
@@ -248,12 +288,8 @@ class AbsLibrary:
         if not name or not _SEQ_RE.fullmatch(seq):
             raise AbsWriteError("Missing series name or number.")
         try:
-            live = self._get(f"/api/items/{item_id}")
-            current = ((live.get("media") or {}).get("metadata") or {}).get("series")
-            if not isinstance(current, list):
-                raise AbsWriteError("Audiobookshelf didn't return that book's series.")
-            series = [{"name": x["name"], "sequence": x.get("sequence")}
-                      for x in current if isinstance(x, dict) and x.get("name")]
+            series = self._live_series(self._get(f"/api/items/{item_id}"))
+            before = json.dumps(series)
             slot = next((x for x in series if _same_series(x["name"], name)), None)
             if slot is not None and slot["sequence"] not in (None, ""):
                 outcome = "already"
@@ -264,14 +300,11 @@ class AbsLibrary:
                     slot["sequence"] = seq   # ABS stores only string sequences
                 self._patch(f"/api/items/{item_id}/media", {"metadata": {"series": series}})
                 outcome = "set"
-        except requests.HTTPError as e:
-            code = e.response.status_code if e.response is not None else 0
-            if code == 403:
-                raise AbsWriteError("The Audiobookshelf API token isn't allowed to "
-                                    "edit books (it needs update permission).") from e
-            raise AbsWriteError(f"Audiobookshelf refused the change (HTTP {code}).") from e
+                if self.history:
+                    self.history(item_id, item.get("title") or "", before,
+                                 json.dumps(series), user, source)
         except requests.RequestException as e:
-            raise AbsWriteError("Couldn't reach Audiobookshelf.") from e
+            raise self._write_error(e) from e
         # Keep the cached copy in step, so the next search joins on the number.
         with self._lock:
             item["series"] = [(x["name"], x["sequence"] or None) for x in series]

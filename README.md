@@ -330,6 +330,37 @@ replace the junk in one send.
 ABS_LOW_KBPS=63   # Optional; flag owned copies at/below this effective bitrate
 ```
 
+### Labs
+
+**Labs** (admins only, in the nav) holds experiments that aren't part of the
+main app yet. Each one is **off until you switch it on**, and each card says
+exactly what it sends out of your server.
+
+**Library series sweep** — finds books in your Audiobookshelf library that
+have no series, or a series with no number, and proposes the label:
+
+- **Where proposals come from:** the book's own subtitle or title ("The
+  Expanse, Book 2"), and Audible's public catalogue — by the book's Audible ID
+  when it has one, otherwise by title and author (accepted only when the
+  author matches).
+- **You review everything.** Each row shows the proposed series and number, a
+  confidence (high / medium / low), and what it was matched against. Series
+  and number are editable; nothing is written until you tick rows and apply.
+  **Skip** hides a row until the next sweep; **Not a series** hides it for good.
+- **Blanks only.** A number that already exists in Audiobookshelf is never
+  changed, and a book's other series are kept.
+- **History and undo.** Every label the app writes (from the sweep or from a
+  search shelf's *Set series* button) is listed under **History** with an
+  **Undo**, which restores the book's series exactly — unless they've been
+  edited in Audiobookshelf since.
+- **What leaves your server:** for each unlabelled book, its Audible ID or its
+  title and author, sent directly to Audible (not via Tor). This is the one
+  place the app sends anything about your library out, which is why it's
+  opt-in. **Subtitles only** runs the sweep without contacting anyone.
+
+Needs Audiobookshelf configured with an API token that may update books, and
+the `/data` volume (Labs switches and the review queue live in SQLite).
+
 ### Wanted list (optionally synced from Hardcover)
 
 The **Wanted** page in the nav is a background-search dashboard: add books in

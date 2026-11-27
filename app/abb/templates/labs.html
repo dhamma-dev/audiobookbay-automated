@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% from "macros/empty_state.html" import render as empty_state %}
+
+{% block title %}Labs{% endblock %}
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/labs.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <span class="page-header-eyebrow">Admin</span>
+    <h1>Labs</h1>
+    <p>Experiments that aren't part of the main app yet. Each one is off until
+       you switch it on here, and each says exactly what it sends out of this
+       box — some do things the rest of the app never does.</p>
+</div>
+
+{% if not allowed %}
+{{ empty_state('shield', 'Admins only', 'Your user is not in LOG_ADMIN_USERS, which gates this page.') }}
+{% else %}
+
+{% if not available %}
+<div class="alert alert-warning" role="alert">
+    <i data-lucide="alert-triangle" aria-hidden="true"></i>
+    <span>Labs needs the data volume (LOG_DB_PATH) to remember what's switched on.
+          Fix the <code>/data</code> mount to use it.</span>
+</div>
+{% endif %}
+
+<div class="labs-cards">
+    {% for card in cards %}
+    <section class="labs-card{% if card.enabled %} is-on{% endif %}">
+        <div class="labs-card-head">
+            <i data-lucide="{{ card.icon }}" aria-hidden="true"></i>
+            <h2>{{ card.name }}</h2>
+            <span class="badge {{ 'badge-success' if card.enabled else 'badge-neutral' }}">{{ 'On' if card.enabled else 'Off' }}</span>
+        </div>
+        <p>{{ card.summary }}</p>
+        <dl class="labs-facts">
+            <dt>What leaves this box</dt>
+            <dd>{{ card.leaves }}</dd>
+            <dt>Needs</dt>
+            <dd>{{ card.needs }}</dd>
+        </dl>
+        <div class="labs-card-actions">
+            <form method="post" action="{{ url_for('labs.labs_toggle') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="key" value="{{ card.key }}">
+                <input type="hidden" name="on" value="{{ '0' if card.enabled else '1' }}">
+                <button type="submit" class="btn {{ 'btn-secondary' if card.enabled else 'btn-primary' }}"
+                        {% if not available %}disabled{% endif %}>
+                    {{ 'Switch off' if card.enabled else 'Switch on' }}
+                </button>
+            </form>
+            {% if card.enabled %}
+            <a class="btn btn-primary" href="{{ url_for(card.endpoint) }}">
+                Open
+            </a>
+            {% endif %}
+        </div>
+    </section>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

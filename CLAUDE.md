@@ -38,12 +38,14 @@ why v2 looks like this.
 | `app/abb/library.py` | `AbsLibrary`: ABS index cache, ownership joins, Upgrade Radar, series-label write (`set_series`). |
 | `app/abb/smart_sort.py` | `RankService`: Gemini schemas/instructions, rank cache, wanted verdict. `RANK_FIELDS` is the privacy allowlist. |
 | `app/abb/gapfill.py` | Series gap fill: on-request searches for a shelf's missing books (title ladder per gap, then one author sweep); matcher first, wanted verdict as fallback. |
+| `app/abb/labs.py` | Labs registry (`EXPERIMENTS`) + per-experiment on/off flags in SQLite. Opt-in, admin-only; each entry states what it sends out. |
+| `app/abb/sweep.py` | Labs experiment: library series sweep — proposes series labels for unlabelled owned books (own subtitle, then **Audible's public catalogue**), review queue, apply, write history + undo. |
 | `app/abb/wanted.py` | `WantedService`: Hardcover sync, query ladder, worker thread, auto-download. |
 | `app/abb/clients.py` | Download-client registry (add/list per client) + put.io token logic. |
 | `app/abb/identity.py`, `security.py` | Proxy-header identity; CSRF, security headers, persisted secret key. |
 | `app/abb/settings.py` | In-app settings overlay: `FEATURE_SETTINGS` overrides from SQLite, most-recently-set-wins vs env (snapshot comparison). UI in `web/admin.py`. |
 | `app/abb/version.py` | Build identity (commit/branch/build time) from the image's `APP_*` env (CI build args), else the local git checkout → footer, `/healthz`, boot log. |
-| `app/abb/web/` | Blueprints: `pages` (HTML), `actions` (send/settings/wanted POSTs), `api` (JSON + `/healthz`), `putio` (OAuth). |
+| `app/abb/web/` | Blueprints: `pages` (HTML), `labs` (`/labs`, `/labs/series`), `actions` (send/settings/wanted POSTs), `api` (JSON + `/healthz`), `putio` (OAuth). |
 | `app/abb/templates/`, `static/` | Jinja + design-system CSS (`tokens.css` vars — always use these) + `js/app.js` (one IIFE, `data-action` delegation) + vendored icons (`icons.js` + `images/icons.svg` — **no CDN scripts**) + `covers.js` (cover fallbacks; in `<head>` so it's listening before images load). **No inline event handlers** (`onerror=` etc.) — the CSP blocks them. |
 | `app/tests/` | pytest suite; CI gates image builds on it. |
 | `app/abs_match_spike.py` | Standalone matcher eval CLI; imports `abb.matching` only. |
@@ -62,6 +64,7 @@ why v2 looks like this.
 - **Auth deployment** — behind Authentik forward-auth via Nginx Proxy Manager; `X-authentik-username` etc. arrive as request headers.
 - **Security layer (v2)** — CSRF on all form POSTs (`X-CSRF-Token` header on fetches), CSP/security headers, SameSite=Lax cookies, secret key persisted under `/data`.
 - **In-app settings (v2.1)** — `/settings` (gated like `/log`) edits the *feature* keys (Gemini/ABS/Hardcover/wanted) live, no restart; env vs app precedence = whichever was set most recently (see `abb/settings.py`). Deployment plumbing stays env-only, and `LOG_ADMIN_USERS` is deliberately not editable from the page it gates.
+- **Labs** — `/labs` (admin-only, gated like `/settings`): experiments off by default, switched on per experiment; an experiment's routes 404 while off. The first is the **library series sweep** (`/labs/series`): finds owned books with no series/number, proposes labels with a confidence and its evidence, and writes only the rows an admin approves (same blanks-only `set_series`). Every series write — sweep or shelf button — is recorded and undoable. Plain form POSTs; `js/labs.js` is a small page-only script.
 
 ## Dev workflow (important)
 
@@ -102,6 +105,10 @@ python3 app/abs_match_spike.py --selftest     # matcher eval CLI, offline mode
     links/covers/hostname.
   - ABS matching **never** sends the user's library anywhere. The LLM
     canonicalizes *public* results; the ownership join runs locally.
+  - **The one exception is opt-in:** the Labs library series sweep sends an
+    unlabelled book's ASIN (or title + author) to Audible, directly. It is off
+    by default and says so on its card; its "subtitles only" mode sends
+    nothing. Don't let that lookup leak into any always-on path.
 - **Matching is precision-first:** only ever assert "you own this" when
   confident. A missing badge is never a claim you *don't* own something.
 - **Compatibility:** v1 env vars, URL paths, JSON shapes, and the SQLite schema

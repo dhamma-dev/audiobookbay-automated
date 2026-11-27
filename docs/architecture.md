@@ -212,6 +212,42 @@ its next tick). Deployment plumbing (client creds, Tor, LOG_*, PORT) is
 deliberately env-only, secrets are write-only in the UI, and `LOG_ADMIN_USERS`
 cannot be edited from the page it gates.
 
+## Labs (`labs.py`, `sweep.py`, `web/labs.py`)
+
+`/labs` is an admin-only page of opt-in experiments. `labs.EXPERIMENTS` is the
+registry — name, summary, **what leaves the box**, and the endpoint to open —
+and the on/off flags live in the `labs` table. Adding an experiment is one
+registry entry plus its own routes, which call `labs.enabled(key)` and 404
+while it is off.
+
+### Library series sweep
+
+`SeriesSweep.sweep(mode, recheck)` runs in a daemon thread started by a click
+(one at a time; `status()` feeds the progress poll, `cancel()` stops it):
+
+1. Take every indexed ABS item where `needs_label` (no series, or a series
+   with no number).
+2. `parse_local` reads the book's own subtitle / title tail — free, local.
+3. In `mode="audible"`, `lookup` asks `api.audible.com/1.0/catalog/products`
+   — `/{asin}` when the item has an ASIN, else a title + author search whose
+   results go through `matching.best_match` (author-gated, roles swapped: our
+   book is the query). About one book a second; the slimmed answer is cached
+   in the proposal row for `RECHECK_DAYS`.
+4. `propose` (pure) combines them: ASIN → high; subtitle and Audible agree →
+   high; one source → medium; a MAYBE-tier search hit or a disagreement →
+   low. The series name prefers the one the book is already filed under, then
+   the library's existing spelling (`library_name`).
+5. Rows land in `series_proposals` (`pending` / `none`); `applied` and
+   `standalone` rows persist as decisions, `skipped` returns on the next sweep.
+
+`apply` writes approved rows through `AbsLibrary.set_series` (so the
+blanks-only, whole-list-resent rules in library-matching.md hold). Each write
+is recorded in `series_writes` with the series list before and after;
+`restore_series` undoes one only if the live list still equals `after`.
+
+The review page is server-rendered forms; `static/js/labs.js` (its own small
+IIFE, loaded only there) adds filtering, tick helpers and the progress poll.
+
 ## Frontend model (`app/abb/static/js/app.js`)
 
 One IIFE. Global event delegation: a single `click`/`change`/`submit` listener

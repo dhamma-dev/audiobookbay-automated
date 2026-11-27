@@ -165,7 +165,8 @@ def api_library_series():
     data = request.get_json(silent=True) or {}
     try:
         outcome, item = s.library.set_series(
-            str(data.get("item") or ""), data.get("series"), data.get("seq"))
+            str(data.get("item") or ""), data.get("series"), data.get("seq"),
+            user=current_user_label())
     except AbsWriteError as e:
         return jsonify({"message": str(e)}), 502
     except Exception as e:

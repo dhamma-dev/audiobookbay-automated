@@ -219,8 +219,10 @@ write).
 - A 403 means the ABS token's user lacks update permission; the message says so.
 
 Nothing here changes the privacy rule: the label comes from the public shelf,
-and it is written to the user's own server. There is deliberately no
-whole-library sweep — that would mean sending library titles out for lookup.
+and it is written to the user's own server. A whole-library sweep needs
+lookups about books that were never searched for, so it lives in Labs as an
+opt-in experiment (see architecture.md → Labs). Every write from either path
+is recorded (`series_writes`) and can be undone from the sweep's History tab.
 
 ## Config
 

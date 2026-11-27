@@ -13,7 +13,9 @@ from . import version
 from .clients import ClientRegistry
 from .config import CLIENT_LABELS, Config
 from .identity import current_user_label, is_log_admin
+from .labs import Labs
 from .library import AbsLibrary
+from .sweep import SeriesSweep
 from .outbound import Outbound
 from .scraper import Scraper
 from .security import init_security, load_secret_key
@@ -48,6 +50,9 @@ class Services:
         self.clients = ClientRegistry(config)
         self.wanted = WantedService(config, self.store, self.scraper, self.library,
                                     self.rank, self.clients, self.outbound, self.tor)
+        self.labs = Labs(self.store)
+        self.sweep = SeriesSweep(self)      # reads self.library at call time
+        self.library.history = self.store.series_write_record
 
     def reload_settings(self):
         """Recompute the effective config from env + stored overrides and
@@ -62,6 +67,7 @@ class Services:
         self.config = cfg
         self.rank = RankService(cfg)
         self.library = AbsLibrary(cfg)
+        self.library.history = self.store.series_write_record
         old_wanted = self.wanted
         self.wanted = WantedService(cfg, self.store, self.scraper, self.library,
                                     self.rank, self.clients, self.outbound, self.tor)
@@ -120,12 +126,13 @@ def create_app(config: Config | None = None, start: bool = True) -> Flask:
     services = Services(config)
     app.extensions["abb"] = services
 
-    from .web import actions, admin, api, pages, putio
+    from .web import actions, admin, api, labs, pages, putio
     app.register_blueprint(pages.bp)
     app.register_blueprint(actions.bp)
     app.register_blueprint(api.bp)
     app.register_blueprint(putio.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(labs.bp)
 
     @app.context_processor
     def inject_app_config():
