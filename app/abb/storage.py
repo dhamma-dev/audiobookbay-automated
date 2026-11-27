@@ -75,7 +75,12 @@ class Store:
                         detail TEXT
                     )
                 """)
-                self._migrate(conn, "wanted", ("candidates", "verdict", "added_by"))
+                # owned_ignore: library matches the user said are NOT this
+                # book (JSON list of identities; see WantedService.reopen).
+                # verdict_cache: listings the AI already judged for this book
+                # (JSON; see WantedService._verdict_memory).
+                self._migrate(conn, "wanted", ("candidates", "verdict", "added_by",
+                                               "owned_ignore", "verdict_cache"))
                 # In-app feature settings (see abb/settings.py). env_snapshot
                 # is the env value seen at save time — the key to the
                 # most-recently-set-wins precedence.
@@ -86,6 +91,47 @@ class Store:
                         env_snapshot TEXT,
                         updated_at TEXT,
                         updated_by TEXT
+                    )
+                """)
+                # Labs (see abb/labs.py): which experiments are switched on.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS labs (
+                        key TEXT PRIMARY KEY,
+                        enabled TEXT,
+                        updated_at TEXT,
+                        updated_by TEXT
+                    )
+                """)
+                # Library series sweep (abb/sweep.py): one row per owned book
+                # it has looked at — the review queue and the lookup cache.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS series_proposals (
+                        item_id TEXT PRIMARY KEY,
+                        title TEXT,
+                        author TEXT,
+                        current TEXT,
+                        series TEXT,
+                        seq TEXT,
+                        confidence TEXT,
+                        source TEXT,
+                        evidence TEXT,
+                        status TEXT,
+                        checked_at TEXT
+                    )
+                """)
+                # Every series label this app wrote to Audiobookshelf, with
+                # the book's series before and after, so a write can be undone.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS series_writes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts TEXT NOT NULL,
+                        user TEXT,
+                        source TEXT,
+                        item_id TEXT NOT NULL,
+                        title TEXT,
+                        before TEXT,
+                        after TEXT,
+                        undone_at TEXT
                     )
                 """)
             log.info("download log at %s", self.config.log_db_path)
@@ -154,7 +200,8 @@ class Store:
                 self._wanted_mem[row["hc_id"]] = {**self._wanted_mem.get(row["hc_id"], {}), **row}
             return
         cols = ("hc_id", "title", "author", "slug", "status", "best_link", "best_title",
-                "best_meta", "searched_at", "detail", "candidates", "verdict", "added_by")
+                "best_meta", "searched_at", "detail", "candidates", "verdict", "added_by",
+                "owned_ignore", "verdict_cache")
         with self._lock, self._connect() as conn:
             existing = conn.execute("SELECT * FROM wanted WHERE hc_id = ?",
                                     (row["hc_id"],)).fetchone()
@@ -193,6 +240,74 @@ class Store:
             return
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+    # --- labs + library series sweep ------------------------------------------
+    @staticmethod
+    def _now():
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def _rows(self, sql, args=()):
+        """Read helper for the labs tables: [] when the store is off/broken."""
+        if not self.enabled:
+            return []
+        try:
+            with self._lock, self._connect() as conn:
+                return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        except Exception as e:
+            log.warning("labs read failed: %s", e)
+            return []
+
+    def _exec(self, sql, args=()):
+        if not self.enabled:
+            return
+        with self._lock, self._connect() as conn:
+            conn.execute(sql, args)
+
+    def labs_enabled(self):
+        return {r["key"] for r in self._rows("SELECT key FROM labs WHERE enabled = '1'")}
+
+    def labs_set(self, key, on, user):
+        self._exec("INSERT OR REPLACE INTO labs (key, enabled, updated_at, updated_by)"
+                   " VALUES (?, ?, ?, ?)", (key, "1" if on else "0", self._now(), user))
+
+    PROPOSAL_COLS = ("item_id", "title", "author", "current", "series", "seq",
+                     "confidence", "source", "evidence", "status", "checked_at")
+
+    def proposals(self):
+        return {r["item_id"]: r for r in self._rows("SELECT * FROM series_proposals")}
+
+    def proposal_upsert(self, row):
+        cols = self.PROPOSAL_COLS
+        self._exec(f"INSERT OR REPLACE INTO series_proposals ({', '.join(cols)})"
+                   f" VALUES ({', '.join('?' * len(cols))})",
+                   tuple(row.get(c) for c in cols))
+
+    def proposal_status(self, item_id, status):
+        self._exec("UPDATE series_proposals SET status = ? WHERE item_id = ?",
+                   (status, item_id))
+
+    def proposal_delete(self, item_id):
+        self._exec("DELETE FROM series_proposals WHERE item_id = ?", (item_id,))
+
+    def series_write_record(self, item_id, title, before, after, user, source):
+        """`before`/`after` are JSON strings of the book's full series list."""
+        try:
+            self._exec("INSERT INTO series_writes (ts, user, source, item_id, title, before, after)"
+                       " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (self._now(), user, source, item_id, title, before, after))
+        except Exception as e:      # history is best-effort; the write happened
+            log.warning("couldn't record series write: %s", e)
+
+    def series_writes(self, limit=300):
+        return self._rows("SELECT * FROM series_writes ORDER BY id DESC LIMIT ?", (limit,))
+
+    def series_write(self, write_id):
+        rows = self._rows("SELECT * FROM series_writes WHERE id = ?", (write_id,))
+        return rows[0] if rows else None
+
+    def series_write_undone(self, write_id):
+        self._exec("UPDATE series_writes SET undone_at = ? WHERE id = ?",
+                   (self._now(), write_id))
 
     def wanted_delete(self, hc_id):
         """Drop one row (used for removing manually-added books)."""

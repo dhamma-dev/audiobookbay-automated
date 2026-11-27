@@ -10,10 +10,12 @@ index. See docs/library-matching.md.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 import time
+from urllib.parse import urlparse
 
 import requests
 
@@ -34,18 +36,41 @@ def norm_seq(seq):
     return s[:-2] if s.endswith(".0") else s
 
 
+_SEQ_RE = re.compile(r"\d{1,4}(\.\d{1,2})?")
+
+
+def _same_series(a, b):
+    """Two series names for the same series ("The Expanse" / "Expanse") —
+    the same looseness the ownership join uses."""
+    a, b = matching.normalize(a or ""), matching.normalize(b or "")
+    return bool(a and b) and (a == b or matching.token_set_ratio(a, b) >= 0.8)
+
+
+class AbsWriteError(Exception):
+    """A series label couldn't be written; the message is safe to show."""
+
+
 class AbsLibrary:
     def __init__(self, config):
         self.config = config
         self.enabled = config.abs_enabled
         self._cache = {"items": [], "fetched_at": 0.0}
         self._lock = threading.Lock()
+        # Set by the factory: records each series write (Store.series_write_record).
+        self.history = None
 
     # --- ABS API ---------------------------------------------------------------
     def _get(self, path, **params):
         r = requests.get(f"{self.config.abs_url}{path}",
                          headers={"Authorization": f"Bearer {self.config.abs_token}"},
                          params=params, timeout=20)
+        r.raise_for_status()
+        return r.json()
+
+    def _patch(self, path, body):
+        r = requests.patch(f"{self.config.abs_url}{path}",
+                           headers={"Authorization": f"Bearer {self.config.abs_token}"},
+                           json=body, timeout=20)
         r.raise_for_status()
         return r.json()
 
@@ -68,12 +93,17 @@ class AbsLibrary:
                 md = media.get("metadata") or {}
                 authors = md.get("authors") or []
                 author = md.get("authorName") or ", ".join(a.get("name", "") for a in authors)
-                series = [(s.get("name"), s.get("sequence")) for s in (md.get("series") or [])]
+                series = matching.parse_series_field(md)
                 size = media.get("size") or 0
                 duration = media.get("duration") or 0
                 tracks = media.get("numTracks") or media.get("numAudioFiles") or 0
                 items.append({
+                    "id": it.get("id") or "",   # stable across refreshes (wanted reopen)
                     "title": md.get("title") or "",
+                    # The matcher's identity guard forgives a result's subtitle
+                    # only when it matches the owned copy's ("Atomic Habits: An
+                    # Easy & Proven Way..." is still the Atomic Habits you own).
+                    "subtitle": md.get("subtitle") or "",
                     "author": author,
                     "series": series,
                     "asin": md.get("asin") or "",
@@ -113,6 +143,11 @@ class AbsLibrary:
                 log.warning("Audiobookshelf library fetch failed: %s", e)
                 self._cache["fetched_at"] = now  # back off before retrying
             return self._cache["items"]
+
+    def peek_index(self):
+        """Whatever is already cached, without ever fetching — for page-load
+        nudges that must stay instant and local."""
+        return self._cache["items"] if self.enabled else []
 
     # --- Owned-copy quality ("Upgrade Radar") ------------------------------------
     def quality_flag(self, item):
@@ -168,6 +203,114 @@ class AbsLibrary:
         flagged.sort(key=lambda f: (f["kbps"] is None, f["kbps"] or 0.0, -f["tracks"]))
         return flagged
 
+    # --- What a badge matched ------------------------------------------------------
+    def match_info(self, item):
+        """The owned copy a badge points at — shown beside every "in your
+        library" / "possibly in your library" flag so the user can check the
+        match themselves. Goes only to the user's own browser. `url` opens
+        the item in Audiobookshelf when ABS_URL looks reachable from a
+        browser (a bare Docker service name wouldn't be)."""
+        series = ", ".join(
+            f"{n} #{norm_seq(q)}" if q not in (None, "") else n
+            for n, q in item.get("series") or [] if n)
+        info = {"title": item.get("title") or "", "author": item.get("author") or "",
+                "series": series}
+        host = urlparse(self.config.abs_url).hostname or ""
+        if item.get("id") and ("." in host or host == "localhost"):
+            info["url"] = f"{self.config.abs_url}/item/{item['id']}"
+        return info
+
+    # --- Series labels (the one thing we write to ABS) ---------------------------
+    def label_proposal(self, item, series_name, seq):
+        """The series label a shelf would put on this owned copy:
+        {item, series, seq} — or None when there is no blank to fill. Blanks
+        only: a copy that already has a number in this series is left alone,
+        and a copy filed under a near-identical series name keeps ABS's name."""
+        name = " ".join(str(series_name or "").split())[:200]
+        seq = norm_seq(seq) if seq is not None else ""
+        if not item.get("id") or not name or not _SEQ_RE.fullmatch(seq):
+            return None
+        for sname, sseq in item.get("series") or []:
+            if _same_series(sname, name):
+                if sseq not in (None, ""):
+                    return None
+                name = sname
+                break
+        return {"item": item["id"], "series": name, "seq": seq}
+
+    @staticmethod
+    def _live_series(live):
+        current = ((live.get("media") or {}).get("metadata") or {}).get("series")
+        if not isinstance(current, list):
+            raise AbsWriteError("Audiobookshelf didn't return that book's series.")
+        return [{"name": x["name"], "sequence": x.get("sequence") or None}
+                for x in current if isinstance(x, dict) and x.get("name")]
+
+    @staticmethod
+    def _write_error(e):
+        if isinstance(e, requests.HTTPError):
+            code = e.response.status_code if e.response is not None else 0
+            if code == 403:
+                return AbsWriteError("The Audiobookshelf API token isn't allowed to "
+                                     "edit books (it needs update permission).")
+            return AbsWriteError(f"Audiobookshelf refused the change (HTTP {code}).")
+        return AbsWriteError("Couldn't reach Audiobookshelf.")
+
+    def restore_series(self, item_id, before, after):
+        """Undo one recorded write: put the book's series back to `before`,
+        but only if they are still exactly what that write left (`after`) —
+        anything edited since is not ours to revert."""
+        key = lambda lst: sorted((x["name"], x.get("sequence") or "") for x in lst)
+        try:
+            live = self._live_series(self._get(f"/api/items/{item_id}"))
+            if key(live) != key(after):
+                raise AbsWriteError("That book's series changed in Audiobookshelf "
+                                    "since this label was written — not undone.")
+            self._patch(f"/api/items/{item_id}/media", {"metadata": {"series": before}})
+        except requests.RequestException as e:
+            raise self._write_error(e) from e
+        item = next((i for i in self.peek_index() if i.get("id") == item_id), None)
+        if item is not None:
+            with self._lock:
+                item["series"] = [(x["name"], x.get("sequence") or None) for x in before]
+        log.info("undid series label on Audiobookshelf item %s", item_id)
+
+    def set_series(self, item_id, series_name, seq, user="", source="shelf"):
+        """Write one series label to an owned copy in Audiobookshelf. Returns
+        ("set" | "already", item). Decided against the item as ABS has it NOW,
+        not the cache, and only ever fills a blank. ABS replaces a book's whole
+        series list on update, so the list is sent back complete."""
+        item = next((i for i in self.get_index() if i.get("id") == item_id), None)
+        if item is None:
+            raise AbsWriteError("That book isn't in the Audiobookshelf library.")
+        name = " ".join(str(series_name or "").split())[:200]
+        seq = norm_seq(seq) if seq is not None else ""
+        if not name or not _SEQ_RE.fullmatch(seq):
+            raise AbsWriteError("Missing series name or number.")
+        try:
+            series = self._live_series(self._get(f"/api/items/{item_id}"))
+            before = json.dumps(series)
+            slot = next((x for x in series if _same_series(x["name"], name)), None)
+            if slot is not None and slot["sequence"] not in (None, ""):
+                outcome = "already"
+            else:
+                if slot is None:
+                    series.append({"name": name, "sequence": seq})
+                else:
+                    slot["sequence"] = seq   # ABS stores only string sequences
+                self._patch(f"/api/items/{item_id}/media", {"metadata": {"series": series}})
+                outcome = "set"
+                if self.history:
+                    self.history(item_id, item.get("title") or "", before,
+                                 json.dumps(series), user, source)
+        except requests.RequestException as e:
+            raise self._write_error(e) from e
+        # Keep the cached copy in step, so the next search joins on the number.
+        with self._lock:
+            item["series"] = [(x["name"], x["sequence"] or None) for x in series]
+        log.info("set series %r #%s on Audiobookshelf item %s (%s)", name, seq, item_id, outcome)
+        return outcome, item
+
     # --- Deterministic badge (Tier 1) --------------------------------------------
     def annotate_matches(self, books):
         """Tag each result we confidently own with book['library_match'].
@@ -184,9 +327,13 @@ class AbsLibrary:
                 title, author = matching.split_title_author(raw)
                 abb = {"raw": raw, "title": title, "author": author,
                        "language": book.get("language", "")}
-                tier, _score, item, _ = matching.best_match(abb, index)
-                if tier == matching.STRONG and item:
-                    match = {"title": item["title"], "author": item["author"]}
+                tier, _score, item, reason = matching.best_match(abb, index)
+                if tier == matching.MAYBE and item and matching.VOLUME_UNKNOWN in reason:
+                    # Everything lines up except a volume number the owned
+                    # copy doesn't carry: say "possibly", and show the copy.
+                    book["library_match"] = dict(self.match_info(item), suspected=True)
+                elif tier == matching.STRONG and item:
+                    match = self.match_info(item)
                     # Owned, but this result would improve on a below-par copy:
                     # surface it as an invitation rather than a "you have this".
                     if self.is_upgrade_result(book, item):
@@ -238,17 +385,32 @@ class AbsLibrary:
         owned library item (None when not owned). Series books join exactly on
         (fuzzy series name, seq); everything else falls back to the local
         author-gated matcher. Shared by smart sort and the ownership poll."""
+        item, confirmed = self.canonical_lookup(c, index, owned_series)
+        return item if confirmed else None
+
+    def canonical_lookup(self, c, index, owned_series):
+        """(item, confirmed) for one canonical identity. confirmed=False is a
+        *suspected* match: all there but a volume number the owned copy
+        doesn't carry (matching.VOLUME_UNKNOWN). (None, False) when nothing."""
         series, seq = c.get("series"), c.get("seq")
         if series and seq is not None:
             hit = self.owned_seqs_for(series, owned_series).get(norm_seq(seq))
             if hit is not None:
-                return hit
+                return hit, True
+        # The fallback carries the canonical number too, so the matcher's
+        # volume guard can refuse a sibling: canonical "Dune" #1 must not
+        # resolve to an owned "Dune Messiah" (#2) just because the titles overlap.
         abb = {"raw": c.get("title", ""), "title": c.get("title", ""),
-               "author": c.get("author", ""), "language": c.get("language", "")}
-        tier, _s, item, _r = matching.best_match(abb, index)
-        return item if tier == matching.STRONG else None
+               "author": c.get("author", ""), "language": c.get("language", ""),
+               "series": series, "seq": seq}
+        tier, _s, item, reason = matching.best_match(abb, index)
+        if tier == matching.STRONG:
+            return item, True
+        if tier == matching.MAYBE and item and matching.VOLUME_UNKNOWN in reason:
+            return item, False
+        return None, False
 
-    def resolve_ownership(self, ranking, index, results=None):
+    def resolve_ownership(self, ranking, index, results=None, offer_labels=False):
         """Compute ownership LOCALLY, joining the LLM's canonicalized *public*
         results (ranking['canonical']) to the ABS index. Adds
         ranking['ownership'] = [{id, status, detail}]. Nothing about the
@@ -258,6 +420,13 @@ class AbsLibrary:
         - Series books: exact join on (fuzzy series name, seq).
         - Standalones: the local author-gated matcher.
         - Omnibus/box-set collections: covers ∩ owned seqs -> partial.
+        - A match held back only by a volume number the owned copy lacks ->
+          status 'suspected'. Every entry carries `match` (the owned copy).
+        - Shelf gaps (an entry with no result) you own -> ranking['owned_gaps']
+          = [{series: block index, seq}].
+        - `offer_labels` (admins only): an owned copy a shelf places in a
+          series, with no number there in ABS, gets match['label'] — the
+          series label a click would write (see set_series).
         - When `results` (the sanitized rank payload) is given, an owned result
           that would improve on a below-par copy is reported as 'upgrade'
           instead of 'owned', so the UI can invite replacing junk."""
@@ -271,10 +440,21 @@ class AbsLibrary:
                 fmt = (r.get("format") or "").lower()
                 return {"is_m4b": "m4b" in fmt, "bitrate": r.get("bitrate")}
 
-            def _verdict(rid, item):
+            def _match(item, series, seq):
+                match = self.match_info(item)
+                label = offer_labels and self.label_proposal(item, series, seq)
+                if label:
+                    match["label"] = label
+                return match
+
+            def _verdict(rid, item, confirmed=True, series=None, seq=None):
+                match = _match(item, series, seq)
+                if not confirmed:
+                    return {"status": "suspected", "match": match}
                 if rid in by_id and self.is_upgrade_result(_book_for(rid), item):
-                    return {"status": "upgrade", "detail": self.quality_flag(item)}
-                return {"status": "owned"}
+                    return {"status": "upgrade", "detail": self.quality_flag(item),
+                            "match": match}
+                return {"status": "owned", "match": match}
 
             owned_series = self.owned_series_index(index)
             ownership = {}
@@ -282,10 +462,12 @@ class AbsLibrary:
                 rid = c.get("id")
                 if rid is None:
                     continue
-                item = self.canonical_owned(c, index, owned_series)
+                item, confirmed = self.canonical_lookup(c, index, owned_series)
                 if item is not None:
-                    ownership[rid] = _verdict(rid, item)
-            for block in ranking.get("series") or []:
+                    ownership[rid] = _verdict(rid, item, confirmed,
+                                              c.get("series"), c.get("seq"))
+            owned_gaps = []
+            for bi, block in enumerate(ranking.get("series") or []):
                 seqs = self.owned_seqs_for(block.get("label", ""), owned_series)
                 # Series members: the shelf already carries each book's number,
                 # so we join (series, seq) locally — no per-result canonical
@@ -296,12 +478,29 @@ class AbsLibrary:
                     eseq = entry.get("seq")
                     if eseq is None:
                         continue
-                    item = seqs.get(norm_seq(eseq))
+                    item, confirmed = seqs.get(norm_seq(eseq)), True
+                    if item is None and entry.get("title"):
+                        # The owned copy may carry no series metadata (or file
+                        # it under another name): fall back to the author-gated
+                        # title match, with the number so the volume guard
+                        # still refuses a sibling.
+                        item, confirmed = self.canonical_lookup(
+                            {"title": entry["title"], "author": block.get("author") or "",
+                             "series": block.get("label") or "", "seq": eseq},
+                            index, owned_series)
                     if item is None:
                         continue
-                    for rid in [entry.get("best_id")] + list(entry.get("alt_ids") or []):
-                        if rid is not None:
-                            ownership.setdefault(rid, _verdict(rid, item))
+                    rids = [r for r in [entry.get("best_id")] + list(entry.get("alt_ids") or [])
+                            if r is not None]
+                    if not rids and confirmed:
+                        # A gap in the shelf that you already own: nothing to
+                        # go looking for (the shelf says so instead of
+                        # "not in these results").
+                        owned_gaps.append({"series": bi, "seq": eseq,
+                                           "match": _match(item, block.get("label"), eseq)})
+                    for rid in rids:
+                        ownership.setdefault(rid, _verdict(rid, item, confirmed,
+                                                           block.get("label"), eseq))
                 for col in block.get("collections") or []:
                     cid, covers = col.get("id"), col.get("covers") or []
                     if cid is None or not covers:
@@ -313,5 +512,6 @@ class AbsLibrary:
                         ownership[cid] = {"status": "partial",
                                           "detail": f"{owned_n} of {len(covers)}"}
             ranking["ownership"] = [dict(id=rid, **info) for rid, info in ownership.items()]
+            ranking["owned_gaps"] = owned_gaps
         except Exception as e:
             log.warning("ownership resolution failed: %s", e)

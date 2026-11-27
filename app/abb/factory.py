@@ -9,10 +9,13 @@ import logging
 
 from flask import Flask, session
 
+from . import version
 from .clients import ClientRegistry
 from .config import CLIENT_LABELS, Config
 from .identity import current_user_label, is_log_admin
+from .labs import Labs
 from .library import AbsLibrary
+from .sweep import SeriesSweep
 from .outbound import Outbound
 from .scraper import Scraper
 from .security import init_security, load_secret_key
@@ -33,7 +36,11 @@ class Services:
         # after in-app settings overlay (reload_settings). They start equal.
         self.base_config = config
         self.config = config
+        self.settings_provenance = {}
         self._started = False
+        # Which commit this is (footer, /healthz, boot log). The image's baked
+        # file only here; start() falls back to asking git for local runs.
+        self.build = version.from_file()
         self.store = Store(config)
         self.tor = TorManager(config)
         self.outbound = Outbound(config, self.tor)
@@ -43,6 +50,9 @@ class Services:
         self.clients = ClientRegistry(config)
         self.wanted = WantedService(config, self.store, self.scraper, self.library,
                                     self.rank, self.clients, self.outbound, self.tor)
+        self.labs = Labs(self.store)
+        self.sweep = SeriesSweep(self)      # reads self.library at call time
+        self.library.history = self.store.series_write_record
 
     def reload_settings(self):
         """Recompute the effective config from env + stored overrides and
@@ -52,23 +62,38 @@ class Services:
         store/clients) bind env-only settings and are left alone."""
         from .settings import effective_config
 
-        cfg, _prov = effective_config(self.base_config, self.store)
+        cfg, prov = effective_config(self.base_config, self.store)
+        self.settings_provenance = prov
         self.config = cfg
         self.rank = RankService(cfg)
         self.library = AbsLibrary(cfg)
+        self.library.history = self.store.series_write_record
         old_wanted = self.wanted
         self.wanted = WantedService(cfg, self.store, self.scraper, self.library,
                                     self.rank, self.clients, self.outbound, self.tor)
         if self._started:
             old_wanted.stop()       # the retired worker exits at its next tick
             self.wanted.start()
+            log.info("in-app settings applied — rank/library/wanted services rebuilt")
 
     def start(self):
         """The side effects, in dependency order: database, settings overlay,
         Tor (background bootstrap — serving starts immediately), then the
         wanted worker."""
+        if self.build is None:
+            self.build = version.from_git_checkout()
+        log.info("Build: %s", version.describe(self.build))
         self.store.init()
         self.reload_settings()      # not yet _started: rebuild only, no threads
+        # The config report describes the EFFECTIVE config — env plus in-app
+        # settings — so what it says matches what actually runs. (Logging it
+        # from the env-only view confused a real deployment: "Smart sort:
+        # disabled (no GEMINI_API_KEY)" while the key sat in app settings.)
+        for line in self.config.report():
+            log.info("%s", line)
+        overrides = sum(1 for v in self.settings_provenance.values() if v == "app")
+        if overrides:
+            log.info("In-app settings: %d override(s) active (see /settings)", overrides)
         self.tor.start()
         self.wanted.start()
         self._started = True
@@ -82,6 +107,10 @@ def _setup_logging(level_name: str):
             "%(asctime)s %(levelname).1s [%(name)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
         root.addHandler(handler)
     root.setLevel(getattr(logging, level_name, logging.INFO))
+    # Third-party per-request chatter ("AFC is enabled", every httpx POST)
+    # drowns the app's own log at INFO; real problems still land as WARNING+.
+    for noisy in ("httpx", "httpcore", "google_genai"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def create_app(config: Config | None = None, start: bool = True) -> Flask:
@@ -97,12 +126,13 @@ def create_app(config: Config | None = None, start: bool = True) -> Flask:
     services = Services(config)
     app.extensions["abb"] = services
 
-    from .web import actions, admin, api, pages, putio
+    from .web import actions, admin, api, labs, pages, putio
     app.register_blueprint(pages.bp)
     app.register_blueprint(actions.bp)
     app.register_blueprint(api.bp)
     app.register_blueprint(putio.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(labs.bp)
 
     @app.context_processor
     def inject_app_config():
@@ -137,12 +167,10 @@ def create_app(config: Config | None = None, start: bool = True) -> Flask:
             # The Settings nav entry follows the same gate as the page itself.
             "is_settings_admin": is_log_admin(current_user_label(), c),
             "page_title_suffix": "AudiobookBay",
+            "build": services.build,        # footer: which commit is deployed
         }
 
-    for line in config.report():
-        log.info("%s", line)
-
     if start:
-        services.start()
+        services.start()   # logs the effective-config report once settings overlay
 
     return app

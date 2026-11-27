@@ -186,3 +186,6 @@ data/
 
 # Local dev compose override (build-from-source; not for deploy)
 docker-compose.override.yml
+
+# Build identity file (written by the Docker build, not committed)
+app/build-info.json

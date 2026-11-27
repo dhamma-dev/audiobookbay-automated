@@ -38,9 +38,17 @@ One module per subsystem; each service class owns its own state and locks:
   preserved), `validate_client()` (a bad DOWNLOAD_CLIENT fails loudly at boot
   and in-app), `report()` (startup summary, secrets masked).
 - **`tor.py` / `outbound.py`** — `TorManager` launches/bootstraps tor in the
-  background and renews circuits via the control port; `Outbound` holds the
-  direct + Tor `requests` sessions and resolves the per-request route
-  (`session['route_mode']`, else the `USE_TOR` default).
+  background, renews circuits via the control port, and watches the process
+  for its whole life (a bootstrap slower than `TOR_BOOTSTRAP_TIMEOUT` still
+  flips to ready; an exit flips to unavailable and relaunches with capped
+  backoff). `Outbound` holds the direct + Tor `requests` sessions and resolves
+  the per-request route (`session['route_mode']`, else the `USE_TOR` default).
+  **Routing fails closed**: `route_mode()` is the *intended* route and is never
+  downgraded; `session_for('tor')` without a usable circuit raises
+  `TorUnavailable` instead of handing back the Direct session. Every ABB
+  request (search, `/send`, magnet lookups, `/covers`, the wanted worker) goes
+  through it, so "Tor is down" means paused, never "went Direct". Direct is
+  only ever explicit (a browser's toggle, `USE_TOR=false`, `WANTED_ROUTE=direct`).
 - **`scraper.py`** — `parse_search_page` (pure: HTML → book dicts, tested with
   fixtures); `Scraper.search` (page 1 first, pages 2..N concurrently, `None` =
   mirror unreachable vs `[]` = no results); `extract_magnet_link` (Info Hash +
@@ -57,21 +65,39 @@ One module per subsystem; each service class owns its own state and locks:
   the thinking-budget fallback, and the wanted verdict. `RANK_FIELDS` is the
   only data that ever reaches Gemini.
 - **`wanted.py`** — `WantedService`: Hardcover GraphQL sync, the broad query
-  ladder (`wanted_queries`), the worker loop (≤3 searches/minute-tick,
-  auto circuit renewal after repeated unreachable scrapes), settled found
-  rows, strict auto-download, and a local ownership sweep (every ~5 min,
-  cached ABS index only) that flips rows to "In your library" once the book
-  actually lands in Audiobookshelf. The dashboard shows three shelves:
-  the active pipeline, owned books (done — collapsed, no actions, never
-  touched again), and skipped books (user-curated out of the search rotation
+  ladder (`wanted_queries`), the worker loop (`_tick`: ≤3 searches/minute,
+  auto circuit renewal after repeated unreachable scrapes; when the background
+  route is Tor and Tor isn't up it **pauses** — `background_paused()`, shown on
+  the dashboard — instead of searching Direct), settled found rows, a
+  **verdict memory** for unfound ones (`verdict_cache`: the AI is only sent
+  listings it hasn't judged for that book — a "no match" rules out everything
+  it saw — so unchanged daily re-checks, restarts and Sync now cost no calls;
+  keys are the listing's post + every field the AI reads, the memory resets
+  on a new book identity/model/prompt/language or after 30 days, only coherent
+  verdicts are kept, and the per-row re-check passes `fresh`), strict
+  auto-download (the magnet page is fetched on the same session the search
+  used, and logged with that route), and a local ownership sweep (every ~2
+  min) that flips rows to "In your library" once the book actually lands in
+  Audiobookshelf. The dashboard shows three shelves: the active pipeline,
+  owned books (done — collapsed, never searched again; **Search anyway**
+  (`reopen`) puts a wrongly-owned row back in the queue and records the
+  rejected library item in `owned_ignore` so the sweep won't re-flip it on
+  that match; once per worker, `_verify_owned` flags owned rows the current
+  matcher no longer confirms as *Unconfirmed* — flagged, never reopened
+  automatically), and skipped books (user-curated out of the search rotation
   via `skip`/`unskip` until re-allowed; sync and requeues leave them alone).
   Quick add (`add_manual` + `POST /wanted/add`): manually-added books get
   **negative ids** (Hardcover ids are positive, so every mechanism works on
   both and the v1 schema holds; per-row routes use signed int converters),
   are library- and duplicate-checked at add time, searched immediately over
-  the requester's route, and — being fire-and-forget — always auto-download
-  their best pick regardless of format, logged under the requesting user
-  (`added_by`). Sync never deletes them; `remove_manual` does.
+  the requester's route, and — being fire-and-forget — always attempt
+  auto-download, logged under the requesting user (`added_by`). Sync never
+  deletes them; `remove_manual` does. Auto-download **requirements are one
+  universal server policy** (`_auto_gate_reason`, configurable in Settings):
+  `WANTED_AUTO_FORMAT` (m4b | any) and `WANTED_AUTO_MIN_KBPS` apply
+  identically to Hardcover and app-added rows; only the master switch
+  differs (manual rows always attempt, Hardcover rows need
+  `WANTED_AUTO_DOWNLOAD`). Held picks say why on the row.
 - **`clients.py`** — the download-client registry; `identity.py` — proxy-header
   identity; `security.py` — CSRF/headers/secret key (see below).
 - **`web/`** — blueprints: `pages` (HTML pages + the optional `/covers`
@@ -85,7 +111,10 @@ One module per subsystem; each service class owns its own state and locks:
 1. `Scraper.search(query)` scrapes ABB (through Tor unless the user chose
    Direct). Page 1 is fetched first; pages 2..N are fetched **concurrently**
    (results keep page order, first empty page ends the run), every fetch
-   bounded by `REQUEST_TIMEOUT` (default 45s).
+   bounded by `REQUEST_TIMEOUT` (default 45s). On the Tor route with no Tor it
+   raises `TorUnavailable` before anything goes out: a POST gets a 503 with
+   the reason, a `GET /?q=` renders unsearched (query kept) with the "Tor ·
+   down" banner and a one-click switch to Direct.
 2. Results are sorted (preferred-language and M4B float to the top), each gets
    a stable integer `id`.
 3. `AbsLibrary.annotate_matches(books)` adds `book['library_match']` for
@@ -98,22 +127,26 @@ One module per subsystem; each service class owns its own state and locks:
 ### Send (`POST /send`)
 JSON `{link, title}` → ABB-host check (SSRF guard) → `extract_magnet_link` →
 `ClientRegistry.add` → `Store.record_download`. Errors return JSON messages;
-the log records success and failure. `/send/batch` does the same per item
-under one `batch_id`.
+the log records success and failure (a Tor-route send with Tor down is a 503,
+logged as a failure on route `tor`). `/send/batch` does the same per item
+under one `batch_id`, and refuses the whole batch up front when Tor is down.
 
 ### Smart sort (`POST /api/rank`, optional)
 Client posts `{query, results}` (the slim payload). Server re-sanitizes to
 `id + RANK_FIELDS`, calls `RankService.rank`, returns a JSON verdict the client
 applies **without re-rendering** — it reorders/wraps the existing cards.
 
-`rank` (temperature 0, structured schema; reasoning capped by
-`RANK_THINKING_BUDGET` — default 0, with a retry-without-it fallback; completed
-rankings cached for `RANK_CACHE_TTL`) asks Gemini for:
+`rank` (temperature 0, structured schema; every Gemini call bounded by
+`GEMINI_TIMEOUT` — default 60s, since the SDK's own default is no timeout;
+reasoning capped by `RANK_THINKING_BUDGET` — default 0, retried without it only
+when the model rejects the thinking config (a 400 naming it), never on a
+timeout, 429 or 5xx; completed rankings cached for `RANK_CACHE_TTL`) asks
+Gemini for:
 - `ordering` + `buckets` (strong/possible/unlikely) — relevance sort + filtering.
 - `ambiguous` + `interpretations` — clickable "did you mean" chips.
 - `series` — ordered entries (seq/title/best_id/alt_ids), `collections`
-  (omnibus with `covers`), and `total`; renders as a "shelf" with per-book
-  selection and a batch send.
+  (omnibus with `covers`), `total` and `author`; renders as a "shelf" with
+  per-book selection and a batch send.
 - `editions` — group multiple uploads of one standalone work, best + alts.
 - `canonical` — **only when ABS matching is on**; per-result clean identity
   used for the local ownership join (see the matching doc).
@@ -121,6 +154,21 @@ rankings cached for `RANK_CACHE_TTL`) asks Gemini for:
 Privacy: only `RANK_FIELDS` (`title, format, bitrate, language, size,
 keywords`) are ever sent. The feature is invisible unless `GEMINI_API_KEY` is
 set.
+
+**Series gap fill** (`POST /api/series/fill`, `abb/gapfill.py`). A shelf's
+gaps (entries with no result) can be searched for on request — the "Find N
+missing" button; never automatic, since each search is a real request to the
+mirror. The client posts one gap per call (rows report as they land): the
+server skips a gap the library already has, then runs the wanted list's query
+ladder (`wanted_queries`: bare title, then title + surname, 2 pages each).
+Whatever is still missing goes into ONE `sweep` call — a single author search
+checked against every remaining gap. Listings are matched by the author-gated
+matcher (the gap is a one-item "library" carrying its series number); when it
+finds nothing, `RankService.wanted_verdict` judges the listings (public
+metadata only; off with `WANTED_LLM=false`). Found books come back as
+server-rendered cards and replace the gap as a normal entry; unfound gaps
+offer "Add to wanted" (`POST /api/wanted/add`, no inline search). Same route
+rules as search: Tor route with no Tor → 503, never Direct.
 
 **Speculative prefetch.** Because the call takes a few seconds, a per-browser
 setting ("Prepare automatically", persisted via `/settings/prefetch` →
@@ -145,6 +193,8 @@ Defense-in-depth behind the Authentik proxy (which remains the actual gate):
   `HttpOnly` + `SameSite=Lax` (+ `Secure` with `COOKIE_SECURE=true`).
 - **SSRF guards** — `/send` only fetches ABB-host links; `/covers` only
   proxies ABB-hosted images.
+- **Tor fails closed** — see `outbound.py` above: no usable Tor on a Tor
+  route means the ABB request waits or is refused, never sent Direct.
 - **put.io OAuth** — `state` parameter verified in the callback; logout is a
   POST.
 
@@ -161,6 +211,45 @@ rebuilds the rank/library/wanted services (the retired wanted worker exits at
 its next tick). Deployment plumbing (client creds, Tor, LOG_*, PORT) is
 deliberately env-only, secrets are write-only in the UI, and `LOG_ADMIN_USERS`
 cannot be edited from the page it gates.
+
+## Labs (`labs.py`, `sweep.py`, `web/labs.py`)
+
+`/labs` is an admin-only page of opt-in experiments. `labs.EXPERIMENTS` is the
+registry — name, summary, **what leaves the box**, and the endpoint to open —
+and the on/off flags live in the `labs` table. Adding an experiment is one
+registry entry plus its own routes, which call `labs.enabled(key)` and 404
+while it is off.
+
+### Library series sweep
+
+`SeriesSweep.sweep(mode, recheck)` runs in a daemon thread started by a click
+(one at a time; `status()` feeds the progress poll, `cancel()` stops it):
+
+1. Take every indexed ABS item where `needs_label` (no series, or a series
+   with no number).
+2. `parse_local` reads the book's own subtitle / title tail — free, local.
+3. In `mode="audible"`, `lookup` asks `api.audible.com/1.0/catalog/products`
+   — `/{asin}` when the item has an ASIN, else a title + author search whose
+   results go through `matching.best_match` (author-gated, roles swapped: our
+   book is the query). About one book a second; the slimmed answer is cached
+   in the proposal row for `RECHECK_DAYS`.
+4. `propose` (pure) combines them: ASIN → high; subtitle and Audible agree →
+   high; one source → medium; a MAYBE-tier search hit or a disagreement →
+   low. The series name prefers the one the book is already filed under, then
+   the library's existing spelling (`library_name`).
+5. Rows land in `series_proposals` (`pending` / `none`); `applied` and
+   `standalone` rows persist as decisions, `skipped` returns on the next sweep.
+
+`apply` writes approved rows through `AbsLibrary.set_series` (so the
+blanks-only, whole-list-resent rules in library-matching.md hold). Each write
+is recorded in `series_writes` with the series list before and after;
+`restore_series` undoes one only if the live list still equals `after`.
+
+The review page shows `grouped()`: proposals clustered by series, merged in
+sequence order with the library's already-numbered books of that series
+(context only), flagging two books on one number. `unmatched()` feeds the
+"No series found" tab. The page is server-rendered forms; `static/js/labs.js` (its own small
+IIFE, loaded only there) adds filtering, tick helpers and the progress poll.
 
 ## Frontend model (`app/abb/static/js/app.js`)
 

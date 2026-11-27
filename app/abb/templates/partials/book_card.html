@@ -1,0 +1,4 @@
+{# One result card on its own: the series gap fill (/api/series/fill) returns
+   these so a found book drops into the shelf as a normal card. #}
+{% from "macros/book_card.html" import render as book_card %}
+{{ book_card(book, download_client_label) }}

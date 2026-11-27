@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, redirect, request, session, url_for
 
 from ..clients import PutioNotConnected
 from ..identity import current_user_label
+from ..outbound import TorUnavailable
 from ..scraper import infohash_from_magnet
 from . import svc
 
@@ -45,7 +46,7 @@ def send():
         return jsonify({"message": s.clients.config_error}), 503
 
     try:
-        magnet_link = s.scraper.extract_magnet_link(details_url)
+        magnet_link = s.scraper.extract_magnet_link(details_url, title=title)
         if not magnet_link:
             s.store.record_download(user, title, details_url, None, "error",
                                     "Failed to extract magnet link", route=route)
@@ -57,6 +58,11 @@ def send():
         s.wanted.mark_sent_by_link(details_url)
         return jsonify({"message": "Download added successfully! This may take some time, "
                                    "the download will show in Audiobookshelf when completed."})
+    except TorUnavailable as e:
+        # The detail page is an AudioBook Bay request like any other: on the
+        # Tor route it waits for Tor rather than going out direct.
+        s.store.record_download(user, title, details_url, None, "error", str(e), route=route)
+        return jsonify({"message": str(e)}), 503
     except PutioNotConnected as e:
         s.store.record_download(user, title, details_url, None, "error", str(e), route=route)
         return jsonify({"message": str(e)}), 401
@@ -82,6 +88,10 @@ def send_batch():
         return jsonify({"message": "No items to send"}), 400
     if not s.clients.ok:
         return jsonify({"message": s.clients.config_error}), 503
+    try:
+        s.outbound.scrape_session()  # Tor route but no Tor: refuse the batch up front
+    except TorUnavailable as e:
+        return jsonify({"message": str(e)}), 503
 
     batch_id = uuid.uuid4().hex[:12]
     results, sent = [], 0
@@ -100,7 +110,7 @@ def send_batch():
                             "error": "Not an AudiobookBay link"})
             continue
         try:
-            magnet_link = s.scraper.extract_magnet_link(link)
+            magnet_link = s.scraper.extract_magnet_link(link, title=title)
             if not magnet_link:
                 s.store.record_download(user, title, link, None, "error",
                                         "Failed to extract magnet link",
@@ -135,7 +145,7 @@ def set_route():
         return jsonify({"message": "Tor is not available on this server."}), 409
     session["route_mode"] = mode
     session.permanent = True  # remember the choice across browser restarts
-    return jsonify({"mode": mode})
+    return jsonify({"mode": mode, "tor_status": s.tor.status()})
 
 
 @bp.route("/settings/prefetch", methods=["POST"])
@@ -162,13 +172,14 @@ def wanted_sync():
     """Refresh the list from Hardcover now and make every open row due for a
     re-search; the background worker drains them a few per minute."""
     s = svc()
-    if not s.wanted.enabled:
+    if not (s.wanted.enabled and s.wanted.hardcover):
         return jsonify({"message": "Hardcover is not configured."}), 503
     try:
         s.wanted.sync_list()
     except Exception as e:
         return jsonify({"message": f"Hardcover sync failed: {e}"}), 502
     s.wanted.requeue_unresolved()
+    s.wanted.sweep_owned_now()  # "Sync now" also answers "did my sends land?"
     return redirect(url_for("pages.wanted"))
 
 
@@ -191,8 +202,9 @@ def wanted_add():
         return redirect(url_for("pages.wanted", added=outcome, t=title))
     row = next((r for r in s.store.wanted_rows() if r["hc_id"] == hc_id), None)
     status = s.wanted.search_and_autodownload(row)
-    if status == "unreachable":
-        return redirect(url_for("pages.wanted", added="unreachable", t=title))
+    if status in ("unreachable", "tor-unavailable"):
+        return redirect(url_for("pages.wanted", t=title,
+                                added="tor" if status == "tor-unavailable" else "unreachable"))
     # Report where the row actually ended up (auto-send may have flipped
     # found -> sent already).
     fresh = next((r for r in s.store.wanted_rows() if r["hc_id"] == hc_id), None)
@@ -202,7 +214,8 @@ def wanted_add():
 
 @bp.route("/wanted/remove/<int(signed=True):hc_id>", methods=["POST"])
 def wanted_remove(hc_id):
-    """Delete a manually-added book (Hardcover rows are removed on Hardcover)."""
+    """Delete an app-added book — or any book while the Hardcover sync is off
+    (with it on, Hardcover rows are removed on Hardcover)."""
     s = svc()
     if not s.wanted.enabled:
         return jsonify({"message": "The wanted list is not configured."}), 503
@@ -217,7 +230,7 @@ def wanted_skip(hc_id):
     """Take an unfound book out of the search rotation until re-allowed."""
     s = svc()
     if not s.wanted.enabled:
-        return jsonify({"message": "Hardcover is not configured."}), 503
+        return jsonify({"message": "The wanted list is not configured."}), 503
     ok, message = s.wanted.skip(hc_id)
     if not ok:
         return jsonify({"message": message}), 409
@@ -229,8 +242,21 @@ def wanted_unskip(hc_id):
     """Put a skipped book back in the queue (due immediately)."""
     s = svc()
     if not s.wanted.enabled:
-        return jsonify({"message": "Hardcover is not configured."}), 503
+        return jsonify({"message": "The wanted list is not configured."}), 503
     ok, message = s.wanted.unskip(hc_id)
+    if not ok:
+        return jsonify({"message": message}), 409
+    return redirect(url_for("pages.wanted"))
+
+
+@bp.route("/wanted/reopen/<int(signed=True):hc_id>", methods=["POST"])
+def wanted_reopen(hc_id):
+    """"Not actually in my library": back into the search queue, ignoring the
+    library match that claimed it."""
+    s = svc()
+    if not s.wanted.enabled:
+        return jsonify({"message": "The wanted list is not configured."}), 503
+    ok, message = s.wanted.reopen(hc_id, current_user_label())
     if not ok:
         return jsonify({"message": message}), 409
     return redirect(url_for("pages.wanted"))
@@ -242,10 +268,12 @@ def wanted_research(hc_id):
     over the requesting browser's route)."""
     s = svc()
     if not s.wanted.enabled:
-        return jsonify({"message": "Hardcover is not configured."}), 503
+        return jsonify({"message": "The wanted list is not configured."}), 503
     row = next((r for r in s.store.wanted_rows() if r["hc_id"] == hc_id), None)
     if not row:
         return jsonify({"message": "Unknown wanted book."}), 404
     # Same path as the worker: a find here auto-downloads too (when enabled).
-    s.wanted.search_and_autodownload(row)
+    # fresh: a human asking gets a fresh AI look, not the remembered verdicts.
+    if s.wanted.search_and_autodownload(row, fresh=True) == "tor-unavailable":
+        return redirect(url_for("pages.wanted", added="tor", t=row["title"]))
     return redirect(url_for("pages.wanted"))

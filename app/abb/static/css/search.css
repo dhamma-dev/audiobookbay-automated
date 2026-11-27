@@ -596,6 +596,45 @@
   font-style: italic;
 }
 
+.series-gap-note .spinner-icon {
+  display: inline-block;
+  vertical-align: -2px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--color-accent-soft);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.series-gap-icon {
+  display: inline-flex;
+}
+
+/* A gap you already own: nothing to look for. */
+.series-entry.is-gap-owned .series-gap-row {
+  border-style: solid;
+  border-color: var(--color-border);
+}
+
+.series-entry.is-gap-owned .series-gap-icon,
+.series-entry.is-gap-owned .series-gap-note {
+  color: var(--color-success);
+  font-style: normal;
+}
+
+.series-gap-want {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+}
+
+/* Caption tag on a shelf entry the gap fill found. */
+.series-found-note {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  font-style: italic;
+}
+
 /* Omnibus / box-set row pinned above the individual books. */
 .series-seq--set {
   display: inline-flex;
@@ -653,4 +692,22 @@
 
 .tor-booting-text {
   margin-right: auto;
+}
+
+/* Tor down (not merely booting): same banner, warning tones. */
+.tor-booting.tor-unavailable {
+  background: var(--color-warning-muted);
+  border-color: var(--color-warning-muted);
+}
+
+.tor-booting.tor-unavailable > svg {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--color-warning);
+}
+
+/* The longer explanation wraps beside its icon instead of below it. */
+.tor-booting.tor-unavailable .tor-booting-text {
+  flex: 1 1 18rem;
 }

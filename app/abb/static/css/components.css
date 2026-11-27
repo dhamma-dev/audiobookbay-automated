@@ -207,6 +207,12 @@
   border-color: rgba(215, 106, 82, 0.32);
 }
 
+.alert-info {
+  background-color: var(--color-info-muted);
+  color: var(--color-info);
+  border-color: var(--color-info-muted);
+}
+
 .alert code {
   background-color: rgba(0, 0, 0, 0.25);
   color: inherit;
@@ -394,6 +400,29 @@
   background-color: var(--color-warning-muted);
   color: var(--color-warning);
   border-color: rgba(224, 139, 60, 0.3);
+}
+
+/* Probably yours, but the owned copy has no series number to confirm the
+   volume — neutral, so it reads as a question rather than a claim. */
+.library-flag-suspected {
+  background-color: transparent;
+  color: var(--color-text-muted);
+  border: 1px dashed var(--color-border-strong);
+}
+
+/* Which Audiobookshelf item a flag matched, for checking by eye. */
+.library-match {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+}
+
+.library-match a {
+  color: var(--color-text-muted);
+  text-decoration: underline;
+}
+
+.library-match a:hover {
+  color: var(--color-accent);
 }
 
 .metadata-grid {
@@ -895,4 +924,26 @@
   display: flex;
   align-items: center;
   gap: var(--space-4);
+}
+
+/* "Set series: Name #2" — writes the label a shelf worked out onto the owned
+   Audiobookshelf copy. Quiet, like the line it sits in. */
+.library-label-btn {
+  margin-left: var(--space-1);
+  padding: 0 var(--space-2);
+  font: inherit;
+  color: var(--color-accent);
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.library-label-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.library-label-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
